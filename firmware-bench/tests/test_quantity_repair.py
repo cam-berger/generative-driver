@@ -12,7 +12,7 @@ from generative_driver.configurator import digest, _outcome
 class QuantityRepairTests(GatewayConditionFixture):
     def setUp(self):
         super().setUp()
-        from generative_driver.benchmark import supplied_inputs
+        from firmware_bench.benchmark import supplied_inputs
         self.run_dir = self.root/'home/runs/run-fixture'
         # The stored run stands in for a supplied run of the case: its firmware and its mission, as the harness
         # supplies them.
@@ -37,7 +37,7 @@ class QuantityRepairTests(GatewayConditionFixture):
         (self.workspace/'capabilities.json').write_text(json.dumps(self.mapping))
         self.assignment['inputs'] = {str(self.model_dir): digest(self.model_dir)}
         self.save_assignment()
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         _write(self.run_dir/'supplied/state.json', {'adapted_model_dir': str(self.model_dir),
             'adaptation': {'adapted_model_sha256': digest(self.model_dir/'model.json')}, 'revision': 0})
 

@@ -16,19 +16,26 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver import benchmark
-from generative_driver.benchmark_support import capabilities as grader_rules, case_assets, emulated_actions, evaluator
-from generative_driver.benchmark_support.grader_identity import grader_closure
-from generative_driver.benchmark_support.registry import pin_case
-from generative_driver.benchmark_support.snapshots import snapshot_case
+from firmware_bench import benchmark
+from firmware_bench.benchmark_support import capabilities as grader_rules, case_assets, emulated_actions, evaluator
+from firmware_bench.benchmark_support.grader_identity import grader_closure
+from firmware_bench.benchmark_support.registry import pin_case
+from firmware_bench.benchmark_support.snapshots import snapshot_case
 from generative_driver.supplied import capabilities as tool_rules, package_runner, stages
 from tool_fixtures import package_env
-from test_benchmark_legacy_cases_dropped import GRADING_CODE
 from test_evaluation import PASS, reference
 from tool_fixtures import BINDING, TemporaryDirectoryCase, hand_written_package
 from test_unlocked_keys import SealedTrialFixture
 
 CASES = ('tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1', 'zephyr-modbus-v1')
+# What `grader_closure()` names. The constant came unchanged from the test file of Feature 04 of this Run, which
+# went with Feature 12 (docs/features/untangle/12-firmware-bench.md).
+GRADING_CODE = tuple('benchmark_support' + name for name in (
+    '', '.behavior', '.calibration', '.capabilities', '.case_assets', '.device_provider', '.emulated_actions',
+    '.emulator', '.evaluator', '.evidence', '.execution', '.families', '.family_support', '.generated',
+    '.generated_device', '.generated_sets', '.grader_identity', '.instruments', '.integrity', '.labels', '.mcp_reuse',
+    '.missions', '.native', '.native_comparison', '.native_firmware', '.parameter_store', '.registrations', '.registry',
+    '.sampled_sensor', '.snapshots', '.tq9_v2', '.truth', '.upstream', '.zephyr_modbus'))
 
 
 class SuppliedInputsTests(TemporaryDirectoryCase):

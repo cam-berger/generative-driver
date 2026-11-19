@@ -5,7 +5,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from generative_driver.benchmark_support.native import NativeSession, render_stimuli
+from firmware_bench.benchmark_support.native import NativeSession, render_stimuli
 
 
 def recipe():
@@ -195,9 +195,9 @@ class LifecycleValidationTests(unittest.TestCase):
             renode.write_bytes(b''); image.write_bytes(b'\0')
             private = root / 'trial/private/native'
             sources = {**recipe(), 'source_files': {'setup.resc': 'mach create'}, 'setup': 'setup.resc'}
-            with patch('generative_driver.benchmark_support.native.tempfile.mkdtemp',
+            with patch('firmware_bench.benchmark_support.native.tempfile.mkdtemp',
                        side_effect=AssertionError('temporary directory made')), \
-                    patch('generative_driver.benchmark_support.native.subprocess.Popen',
+                    patch('firmware_bench.benchmark_support.native.subprocess.Popen',
                           side_effect=OSError('scripted launch failure')), \
                     self.assertRaisesRegex(OSError, 'scripted launch failure'):
                 NativeSession.start(renode=renode, image=image, recipe=sources, private_dir=private)
@@ -236,7 +236,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, _ = self.authoring(root)
@@ -251,7 +251,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, _ = self.authoring(root, fail=True)
@@ -266,7 +266,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         for change in ('output', 'source', 'step', 'version'):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -285,7 +285,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, _ = self.authoring(root)
@@ -309,7 +309,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, _ = self.authoring(root)
@@ -327,7 +327,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, manifest = self.authoring(root)
@@ -344,7 +344,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, manifest = self.authoring(root)
@@ -368,7 +368,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, _ = self.authoring(root)
@@ -388,7 +388,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, manifest = self.authoring(root)
@@ -405,7 +405,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         for token in ('@options', '-Wl,@options', '-specs=options', '-includeunhashed.h'):
             with self.subTest(token=token), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -423,7 +423,7 @@ class BuildTests(unittest.TestCase):
         import sys
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             author, manifest = self.authoring(root)

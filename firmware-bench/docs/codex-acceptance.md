@@ -6,13 +6,13 @@ The suite export reports `equivalent_and_mission` alongside `equivalence` and `f
 
 ## Scripted regression lane
 
-Run the [installed-package checks](verification.md#reproduce-software-checks). `test_acquisition_pipeline.py` exercises actual configurator dispatch, acquisition and sealed interpretation inputs with scripted Codex-format workers and synthetic USB/I2C backends. It verifies that USB discovery opens no serial port, observed files survive acquisition, and the blind firmware worker receives the image, analysis helper, exporter and input hashes. `test_assistive_reports.py` verifies joint success, missing reuse evidence, independently regraded exports and comparisons. These are software contracts, not measurements of a model's reverse-engineering capability.
+`test_assistive_reports.py` verifies joint success, missing reuse evidence, independently regraded exports and comparisons. These are software contracts, not measurements of a model's reverse-engineering capability.
 
 ## Native model acceptance lane
 
-Use the [repeated-suite instructions](../bench/README.md#run-a-repeated-suite) with `--executor codex`, a verified OpenAI Codex CLI, an explicit model and the three-family `development-pilot.json` manifest. That starts nine fresh trials. Candidate workers receive firmware and generic tooling; the evaluator alone holds source-derived truth and passwords. Fresh reuse receives the emitted package and its mission. Save every failed, stopped and unscored trial. Prior gated-protocol measurements cannot qualify an `assistive/1` run.
+Use the [repeated-suite instructions](../README.md#run-a-repeated-suite) with `--executor codex`, a verified OpenAI Codex CLI, an explicit model and the three-family `development-pilot.json` manifest. That starts nine fresh trials. Candidate workers receive firmware and generic tooling; the evaluator alone holds source-derived truth and passwords. Fresh reuse receives the emitted package and its mission. Save every failed, stopped and unscored trial.
 
-Before starting, the password holder must perform [native reference calibration](../bench/groundtruth/README.md) for the installed evaluator. This integration changes its identity; existing calibration is insufficient. Same-user filesystem isolation remains unverified, so this is password-based answer-key separation, not a demonstrated sandbox.
+Before starting, the password holder must perform [native reference calibration](evaluator.md) for the installed evaluator. Same-user filesystem isolation remains unverified, so this is password-based answer-key separation, not a demonstrated sandbox.
 
 After the suite finishes, create a private JSON file outside candidate workspaces and the checkout:
 
@@ -34,7 +34,7 @@ After the suite finishes, create a private JSON file outside candidate workspace
 Populate `evidence_files` with every graded trial's key and sealed evidence path from the harness records; the abbreviated example above is not a complete nine-trial configuration. With the same installed environment and existing configurator, set `GD_NATIVE_CODEX_SUITE` to that JSON file's absolute path and run:
 
 ```sh
-python firmware-bench/tests/native_codex_pipeline.py -v
+python tests/native_codex_pipeline.py -v
 ```
 
-The gate regrades the sealed evidence through the benchmark API, requires Codex with a recorded model, at least three families and three repetitions, and requires equivalence plus successful fresh reuse in every planned trial. Missing configuration fails explicitly. The gate launches no new inference. A pass establishes those recorded trials only; broader reliability needs held-out firmware and repeated measurements. This acceptance lane has not been run for the integrated branch.
+The gate regrades the sealed evidence through the benchmark API, requires Codex with a recorded model, at least three families and three repetitions, and requires equivalence plus successful fresh reuse in every planned trial. Missing configuration fails explicitly. The gate launches no new inference. A pass establishes those recorded trials only; broader reliability needs held-out firmware and repeated measurements.

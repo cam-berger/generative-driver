@@ -24,7 +24,7 @@ def model_invoker(model_dir, capabilities, binding, output_dir, probes):
     """Use the toolkit's normal probe operation; retain executable probe evidence."""
     import json
     from pathlib import Path
-    from ..toolkit import call_tool
+    from generative_driver.toolkit import call_tool
     from .behavior import bind_task
     from .emulated_actions import _binding_failure
     model = json.loads((Path(model_dir)/'model.json').read_text())
@@ -63,7 +63,7 @@ def run_reference(pin, truth, model, capabilities, *, renode, image, output_dir,
         raise ValueError('Unknown behavior phase')
     import interface_runtime
     from interface_runtime.engine import validate_model
-    from ..toolkit import call_tool
+    from generative_driver.toolkit import call_tool
     from .behavior import validate_records
     from .calibration import reference_model_bytes
     from .case_assets import write_json
@@ -155,7 +155,7 @@ def calibrate(case_id, options):
     from .emulator import truth_for_case
     from .case_assets import write_json as _write
     from ..benchmark import case_root
-    from ..toolkit import resources_root
+    from generative_driver.toolkit import resources_root
     definition=resolve_case(case_id)
     from .families import family_for
     from .registrations import registration_for

@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 class CaseRegistrationTests(unittest.TestCase):
     def test_benchmark_run_refuses_unsupported_executor_before_creating_output_or_a_harness(self):
-        from generative_driver.benchmark import run
+        from firmware_bench.benchmark import run
         with tempfile.TemporaryDirectory() as temp, \
-                patch('generative_driver.benchmark_support.harness.launch') as launch:
+                patch('firmware_bench.benchmark_support.harness.launch') as launch:
             for case in ('setup-smoke', 'tq9-v2'):
                 with self.subTest(case=case), self.assertRaisesRegex(ValueError, 'Unsupported executor'):
                     run(case, Path(temp) / 'output', executor='unknown-runtime')
@@ -21,20 +21,20 @@ class CaseRegistrationTests(unittest.TestCase):
             self.assertEqual(list(Path(temp).iterdir()), [])
 
     def test_counterfeit_family_is_refused_before_a_benchmark_harness_starts(self):
-        from generative_driver.benchmark import run
+        from firmware_bench.benchmark import run
         from suite_fixtures import public_case_fixture
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public_case_fixture(root, family='zephyr-modbus')
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.harness.launch') as launch:
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.harness.launch') as launch:
                 with self.assertRaisesRegex(ValueError, 'family'):
                     run('tq9-v2')
                 launch.assert_not_called()
 
     def test_sensor_observation_does_not_import_an_unused_family(self):
-        from generative_driver.benchmark_support.instruments import observation
+        from firmware_bench.benchmark_support.instruments import observation
         original_import = builtins.__import__
         def without_modbus(name, globals=None, locals=None, fromlist=(), level=0):
             if name.endswith('zephyr_modbus') or 'zephyr_modbus' in (fromlist or ()):
@@ -47,7 +47,7 @@ class CaseRegistrationTests(unittest.TestCase):
         self.assertEqual(observed['units'], {'reference_temperature': 'degC', 'monitor_sequence': 'count'})
 
     def test_unknown_reuse_case_cannot_inherit_the_tq9_mission(self):
-        from generative_driver.benchmark_support.case_assets import reuse_mission as _mission
+        from firmware_bench.benchmark_support.case_assets import reuse_mission as _mission
         capabilities = {'tasks': {'temperature': {'operation': 'read',
             'outputs': {'temperature': {'output': 'reading'}}}}}
         events = [{'operation': 'read', 'result': {'ok': True, 'outputs': {'reading': 25}},
@@ -58,15 +58,15 @@ class CaseRegistrationTests(unittest.TestCase):
         self.assertIn('Unknown benchmark case', mission['reason'])
 
     def test_case_inventory_labels_public_availability_without_claiming_admission(self):
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         from suite_fixtures import public_case_fixture
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             public_case_fixture(root, 'zephyr-modbus-v1')
             output = io.StringIO()
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.emulator.truth_for_case',
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.emulator.truth_for_case',
                           side_effect=AssertionError('Discovery must not unlock evaluator truth')), \
                     contextlib.redirect_stdout(output):
                 self.assertEqual(main(['cases']), 0)
@@ -78,7 +78,7 @@ class CaseRegistrationTests(unittest.TestCase):
             self.assertEqual(row.get('authenticated_admission'), 'not-checked')
 
     def test_invalid_inventory_is_refused_before_loading_a_native_family(self):
-        from generative_driver.benchmark_support.upstream import hydrate_truth
+        from firmware_bench.benchmark_support.upstream import hydrate_truth
         original_import = builtins.__import__
         def without_modbus(name, globals=None, locals=None, fromlist=(), level=0):
             if name.endswith('zephyr_modbus') or 'zephyr_modbus' in (fromlist or ()):
@@ -100,7 +100,7 @@ class RegistrationTableTests(unittest.TestCase):
 
     def test_the_table_holds_every_registered_case(self):
         # Catches a registration lost or changed when the table moved from code into data, tq9-v3 (no resources) included.
-        from generative_driver.benchmark_support.registrations import CaseRegistration, _CASES
+        from firmware_bench.benchmark_support.registrations import CaseRegistration, _CASES
         self.assertEqual(_CASES, (
             CaseRegistration('setup-smoke', 'setup-smoke', '1', 'smoke', None, execution='scripted-replay',
                              evidence_track='recorded-replay', default_effects=[], default_scope='installation',
@@ -125,7 +125,7 @@ class RegistrationTableTests(unittest.TestCase):
 
     def test_a_duplicate_key_an_unknown_or_missing_field_or_a_duplicate_id_is_refused(self):
         from dataclasses import asdict
-        from generative_driver.benchmark_support.registrations import _CASES, read_cases
+        from firmware_bench.benchmark_support.registrations import _CASES, read_cases
         entry = asdict(_CASES[0])
         def table(cases, schema='benchmark-case-registrations/1'):
             return json.dumps({'schema': schema, 'cases': cases})
@@ -147,9 +147,9 @@ class RegistrationTableTests(unittest.TestCase):
         import sys
         from dataclasses import asdict
         from tool_fixtures import package_env
-        from generative_driver.benchmark_support.registrations import _CASES, registered_case_ids
+        from firmware_bench.benchmark_support.registrations import _CASES, registered_case_ids
         forged = {'schema': 'benchmark-case-registrations/1', 'cases': [{**asdict(_CASES[0]), 'id': 'forged-v1'}]}
-        script = 'from generative_driver.benchmark_support import registrations; print(*registrations.registered_case_ids())'
+        script = 'from firmware_bench.benchmark_support import registrations; print(*registrations.registered_case_ids())'
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             # A forged table inside the selected tree, and beside it, as the installed table sits beside resources/bench.

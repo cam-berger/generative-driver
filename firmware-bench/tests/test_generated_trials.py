@@ -15,24 +15,24 @@ from unittest.mock import patch
 
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, REFERENCE_B,
                                 fixture_mission, fixture_start, registrations_table, write_fixture_set)
-from generative_driver.benchmark_support import (evaluator, generated_sets, generated_trials, harness, registry,
+from firmware_bench.benchmark_support import (evaluator, generated_sets, generated_trials, harness, registry,
                                                   set_qualification, snapshots)
-from generative_driver.benchmark_support.evidence import public_pin
-from generative_driver.benchmark_support.families import family_for
-from generative_driver.benchmark_support.registrations import registration_for
-from generative_driver.benchmark_support.registry import PendingCaseError, pin_case
-from generative_driver.benchmark_support.snapshots import canonical_digest
-from generative_driver.benchmark_support.suites import (SCHEDULER, child_request, harness_driven, normalize_manifest,
+from firmware_bench.benchmark_support.evidence import public_pin
+from firmware_bench.benchmark_support.families import family_for
+from firmware_bench.benchmark_support.registrations import registration_for
+from firmware_bench.benchmark_support.registry import PendingCaseError, pin_case
+from firmware_bench.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support.suites import (SCHEDULER, child_request, harness_driven, normalize_manifest,
                                                         preflight_selection, refuse_secrets, resume_suite, start_suite)
-from generative_driver.benchmark_support.truth import UnlockedTruth
+from firmware_bench.benchmark_support.truth import UnlockedTruth
 from suite_fixtures import book, drive_suite, public_case_fixture, suite_call
 from tool_fixtures import gateway_identity, scripted_stages, task_of
 from test_evaluation import PendingRunFixture
 from test_unlocked_keys import SealedTrialFixture
 
 SET = 'fixture-v1'
-SETS_FILE = 'generative_driver.benchmark_support.generated_sets._SETS_FILE'
-START = 'generative_driver.benchmark_support.native.NativeSession.start'
+SETS_FILE = 'firmware_bench.benchmark_support.generated_sets._SETS_FILE'
+START = 'firmware_bench.benchmark_support.native.NativeSession.start'
 EVIDENCE = 'e' * 64
 _QUALIFIED = []
 
@@ -157,8 +157,8 @@ def resources_with_case(test, root):
     """The tq9-v2 case of `public_case_fixture` under `root`, the case root patched to it: its (case file, image,
     truth)."""
     manifest = public_case_fixture(root, calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
-    for target in ('generative_driver.benchmark.case_root',
-                   'generative_driver.benchmark_support.case_assets.case_root'):
+    for target in ('firmware_bench.benchmark.case_root',
+                   'firmware_bench.benchmark_support.case_assets.case_root'):
         guard = patch(target, return_value=root)
         guard.start()
         test.addCleanup(guard.stop)
@@ -317,13 +317,13 @@ class DevicePinTests(unittest.TestCase):
         self.entries = {entry['id']: entry for entry in self.manifest['devices']}
 
     def pin(self, device_id='0000d001'):
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         return device_pin(self.manifest, device_id, EVIDENCE)
 
     def test_03_B6_a_pin_holds_the_keys_of_pin_case_and_the_devices_hashes(self):
         with tempfile.TemporaryDirectory() as temp:
             resources = Path(temp).resolve()
-            with patch('generative_driver.benchmark_support.case_assets.case_root', return_value=resources):
+            with patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=resources):
                 public_case_fixture(resources, calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
                 keys = set(pin_case('tq9-v2', 'original', 0))
         pin, entry = self.pin(), self.entries['0000d001']
@@ -345,7 +345,7 @@ class DevicePinTests(unittest.TestCase):
                          'images': {'firmware.bin': entry['image_sha256']},
                          'assets': {'mission.json': entry['mission_sha256']},
                          'truth': {'sha256': entry['answer']['sha256']}, 'default_effects': ['write', 'actuate']}})
-        from generative_driver.benchmark_support.execution import artifact_name
+        from firmware_bench.benchmark_support.execution import artifact_name
         self.assertEqual(artifact_name(pin['manifest']), 'firmware.bin')
         registry.validate_pinned_workflow(pin)
         with self.assertRaisesRegex(ValueError, 'Unknown generated device'):
@@ -406,10 +406,10 @@ class DevicePinTests(unittest.TestCase):
     def test_03_B11_benchmark_run_of_the_generated_case_stays_refused(self):
         import contextlib
         import io
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         printed = io.StringIO()
         with tempfile.TemporaryDirectory() as temp, contextlib.redirect_stdout(printed), \
-                patch('generative_driver.benchmark_support.harness._spawn',
+                patch('firmware_bench.benchmark_support.harness._spawn',
                       side_effect=AssertionError('a harness started')):
             code = main(['run', '--home', str(Path(temp) / 'home'), '--case', 'generated', '--executor', 'codex'])
         self.assertEqual(code, 1, printed.getvalue())
@@ -426,7 +426,7 @@ class RowTests(unittest.TestCase):
                           selected.default_effects),
                          ('generated', 'actual-agent-emulation', 'firmware', 'emulator', ['write', 'actuate']))
         # The benchmark's own check of the emulator approval reads the same row.
-        from generative_driver.benchmark_support.suites import emulator_approval
+        from firmware_bench.benchmark_support.suites import emulator_approval
         emulator_approval('generated')
 
     def test_03_B19_a_handmade_row_still_reads_its_changed_case(self):
@@ -435,7 +435,7 @@ class RowTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'resolved'):
                     registry.case_selection(case)
         # The benchmark's check of the emulator approval reads the case; the service's start reads no registry.
-        from generative_driver.benchmark_support.suites import emulator_approval
+        from firmware_bench.benchmark_support.suites import emulator_approval
         with patch.object(registry, 'resolve_case', side_effect=ValueError('resolved')):
             with self.assertRaisesRegex(ValueError, 'resolved'):
                 emulator_approval('tq9-v2')
@@ -537,7 +537,7 @@ class SuiteStartFixture(unittest.TestCase):
 class SuiteStartPinTests(SuiteStartFixture):
     def test_03_B4_every_entry_gets_its_pin_before_the_configurator_is_contacted(self):
         root, password, manifest = qualified_set()
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         with patch.object(generated_sets, 'load_set', wraps=generated_sets.load_set) as loading:
             def call(method, params=None):
                 self.assertTrue(loading.called)
@@ -597,7 +597,7 @@ class SuiteStartPinTests(SuiteStartFixture):
         self.assertFalse(home.exists())
         # The detached harness reads the table the test registered the set in.
         fixture = self.base / 'registered_harness_fixture.py'
-        fixture.write_text('from pathlib import Path\nfrom generative_driver.benchmark_support import generated_sets, '
+        fixture.write_text('from pathlib import Path\nfrom firmware_bench.benchmark_support import generated_sets, '
                            'generated_trials\ngenerated_trials.set_unreachable = lambda root: True\n'
                            'generated_sets._SETS_FILE = Path(' + repr(str(generated_sets._SETS_FILE)) + ')\n')
         with patch.dict(os.environ, {'GD_TEST_HARNESS_FIXTURE': str(fixture)}):
@@ -654,7 +654,7 @@ class WholeRecordRefusalTests(SuiteStartFixture):
                            set_root=str(resealed_set(self, failure)))
 
     def test_04_B6_each_slots_admit_refuses_the_same_way(self):
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         root = resealed_set(self, no_native_process)
         _, _, manifest = qualified_set()
         trial = self.base / 'trial'
@@ -762,7 +762,7 @@ class SuiteResumeTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.base = Path(directory.name).resolve()
         self.root, self.password, self.manifest = qualified_set()
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         self.pin = device_pin(self.manifest, '0000d001', recorded_digest(self.root))
         out_of_reach(self)
 
@@ -817,7 +817,7 @@ class SetSuiteFixture(PendingRunFixture):
     def setUp(self):
         super().setUp()
         self.set_root, self.handle, self.manifest = qualified_set()
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         self.pins = {device: device_pin(self.manifest, device, EVIDENCE) for device in ('0000d001', '0000d002')}
 
     def suite_start(self, device_pins, **changes):
@@ -878,11 +878,10 @@ class SetTableAfterFreezeTests(SetSuiteFixture):
         super().setUp()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        package = Path(temporary.name).resolve() / 'generative_driver'
-        source = Path(snapshots.__file__).resolve().parents[1]
-        for name, target in ((source, package),
-                             (source.parent / 'interface_runtime', package.parent / 'interface_runtime')):
-            shutil.copytree(name, target, ignore=shutil.ignore_patterns('__pycache__'))
+        # The benchmark's package alone: the suite book takes the tool's folders from `tool_install`.
+        package = Path(temporary.name).resolve() / 'firmware_bench'
+        shutil.copytree(Path(snapshots.__file__).resolve().parents[1], package,
+                        ignore=shutil.ignore_patterns('__pycache__'))
         self.package = package
         self.table = package / 'resources/registrations/sets.json'
         self.write_table({SET: {'manifest_sha256': self.manifest['manifest_sha256'], 'scoring': False}})
@@ -972,7 +971,7 @@ class AdmissionTests(unittest.TestCase):
         self.trial.mkdir()
 
     def qualified(self, device_id='0000d001'):
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         root, _, manifest = qualified_set()
         return root, manifest, held_device(root, device_id), device_pin(manifest, device_id, recorded_digest(root))
 
@@ -981,7 +980,7 @@ class AdmissionTests(unittest.TestCase):
                              pin=pin)
 
     def test_03_B12_a_device_of_a_set_not_admitted_is_refused_with_every_reason(self):
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         root, _, manifest = qualified_set()
         pin = device_pin(manifest, '0000d001', EVIDENCE)
         unqualified = resealed_set(self, lambda record: record.update(status='pending'))
@@ -998,7 +997,7 @@ class AdmissionTests(unittest.TestCase):
 
     def test_03_B13_it_opens_the_device_once_and_returns_the_grade_its_answer_key(self):
         root, manifest, device, pin = self.qualified()
-        from generative_driver.benchmark_support import execution
+        from firmware_bench.benchmark_support import execution
         with patch.object(generated_sets, 'open_held', wraps=generated_sets.open_held) as opened, \
                 patch.object(execution, 'validate_setup', wraps=execution.validate_setup) as validated:
             provider, admission, unlocked, admitted = self.admit(device, pin)
@@ -1046,7 +1045,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(provider.stop()['confirmed'], True)
 
     def test_03_B13_the_answer_key_of_a_resume_is_its_devices(self):
-        from generative_driver.benchmark_support.generated_trials import answer_key
+        from firmware_bench.benchmark_support.generated_trials import answer_key
         root, manifest, device, pin = self.qualified('0000d002')
         unlocked = answer_key(device, PASSWORD)
         self.assertEqual((unlocked.payload, unlocked.sha256), (FIXTURE_ANSWER_KEY, pin['truth_sha256']))
@@ -1054,7 +1053,7 @@ class AdmissionTests(unittest.TestCase):
 
 class SnapshotSourceTests(unittest.TestCase):
     def setUp(self):
-        from generative_driver.benchmark_support.generated_trials import device_pin
+        from firmware_bench.benchmark_support.generated_trials import device_pin
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.base = Path(directory.name).resolve()
@@ -1067,7 +1066,7 @@ class SnapshotSourceTests(unittest.TestCase):
                                                               separators=(',', ':'), ensure_ascii=False).encode())
 
     def test_03_B15_the_snapshot_copies_from_the_folder_the_harness_sends(self):
-        from generative_driver.benchmark_support.case_assets import case_inputs
+        from firmware_bench.benchmark_support.case_assets import case_inputs
         run = self.base / 'run'
         saved = snapshots.snapshot_case(run, self.pin, {}, public_inputs=str(self.folder))
         self.assertEqual(saved['public_files'], {**self.pin['image_hashes'], **self.pin['manifest']['assets']})
@@ -1099,7 +1098,7 @@ class SnapshotSourceTests(unittest.TestCase):
 
 class AdapterTests(unittest.TestCase):
     def test_03_B16_adapter_for_reads_the_registration_and_opens_no_file(self):
-        from generative_driver.benchmark_support import adapters
+        from firmware_bench.benchmark_support import adapters
         opened = []
         real = Path.read_bytes
 
@@ -1316,7 +1315,7 @@ NOT_JUDGED = {'name': 'fresh_worker_mission', 'passed': None, 'reason': 'This ca
 
 class FreshReuseTests(GeneratedTrialFixture):
     def test_03_B22_a_family_that_returns_none_is_not_judged_on_any_grade_path(self):
-        from generative_driver.benchmark_support import case_assets
+        from firmware_bench.benchmark_support import case_assets
         run = self.root / 'no-run'
         run.mkdir()
         self.assertEqual(case_assets.reuse_mission('generated', [], {}), NOT_JUDGED)
@@ -1329,19 +1328,19 @@ class FreshReuseTests(GeneratedTrialFixture):
         final = {'contract': {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a' * 64, 'checks': []},
                  'records': [], 'frozen_artifact_sha256': 'a' * 64, 'generated_reuse_required': True,
                  'generated_reuse_verified': False}
-        with patch('generative_driver.benchmark_support.behavior.validate_records',
+        with patch('firmware_bench.benchmark_support.behavior.validate_records',
                    return_value={'verdict': 'passed', 'checks': []}):
             self.assertEqual(evaluator.final_record(final, NOT_JUDGED, protocol='assistive/1')['mission'],
                              NOT_JUDGED)
             other = {'name': 'fresh_worker_mission', 'passed': True}
             self.assertEqual(evaluator.final_record(final, other, protocol='assistive/1')['mission'],
                              {'name': 'fresh_worker_mission', 'passed': False, 'reason': evaluator.OWNER_PROOF})
-        with patch('generative_driver.benchmark_support.mcp_reuse.required', return_value=True), \
-                patch('generative_driver.benchmark_support.mcp_reuse.verified', return_value=False):
+        with patch('firmware_bench.benchmark_support.mcp_reuse.required', return_value=True), \
+                patch('firmware_bench.benchmark_support.mcp_reuse.verified', return_value=False):
             self.assertEqual(evaluator.reuse_mission('generated', self.root, [], 'a' * 64, {}), NOT_JUDGED)
 
     def test_03_B22_every_other_family_is_judged_as_it_was(self):
-        from generative_driver.benchmark_support import case_assets, families
+        from firmware_bench.benchmark_support import case_assets, families
         from dataclasses import replace
         real = families.family_for
         judged = patch.object(case_assets, 'family_for', side_effect=lambda case: replace(
@@ -1359,7 +1358,7 @@ class FreshReuseTests(GeneratedTrialFixture):
                          'Fresh reuse did not run the frozen package')
 
     def test_03_B22_a_graded_trial_reports_it_whether_or_not_the_worker_called_the_driver(self):
-        from generative_driver.benchmark_support.scorecard import trial_metrics
+        from firmware_bench.benchmark_support.scorecard import trial_metrics
         for name, options in (('called', {}), ('not called', {'reuse': False})):
             with self.subTest(name), self.staged(REFERENCE_A, **options):
                 record = self.drive('0000d001', request_id='reuse-' + name)
@@ -1420,7 +1419,7 @@ class LaterHarnessTests(GeneratedTrialFixture):
         import contextlib
         import io
         import sys
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         trial = self.root / 'a-trial'
         trial.mkdir()
         (trial / 'trial.json').write_text(json.dumps({'case': 'generated', 'trial_id': 't', 'run_id': 'r',
@@ -1528,7 +1527,7 @@ class PairingTests(unittest.TestCase):
         return report
 
     def test_03_B24_two_devices_of_one_case_pair_as_two(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         compared = paired_comparison(self.report({'0000d001': 'pass', '0000d002': 'failure'}),
                                      self.report({'0000d001': 'failure', '0000d002': 'failure'}))
         self.assertTrue(compared['compatible'], compared)
@@ -1537,7 +1536,7 @@ class PairingTests(unittest.TestCase):
         self.assertNotIn('0000d00', json.dumps(compared))
 
     def test_03_B24_a_device_only_one_report_tried_is_absent(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         compared = paired_comparison(self.report({'0000d001': 'pass', '0000d002': 'pass'}),
                                      self.report({'0000d001': 'pass'}))
         self.assertTrue(compared['compatible'], compared)
@@ -1545,14 +1544,14 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(compared['excluded']['absent'], 1)
 
     def test_03_B24_a_device_whose_pin_differs_is_incompatible_only_for_that_device(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         before = self.report({'0000d001': 'pass', '0000d002': 'pass'})
         after = self.report({'0000d001': 'pass', '0000d002': 'pass'})
         after['experiment']['comparison_identity']['entry_pins'][1]['truth_sha256'] = 'f' * 64
         self.assertEqual(paired_comparison(before, after)['incompatible_fields'], ['entry_pins'])
 
     def test_03_B24_a_repeated_set_manifest_counts_its_devices_repeated(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         before = self.report({'0000d001': 'pass', '0000d002': 'pass'})
         again = copy.deepcopy(next(row for row in before['trials'] if row['device_id'] == '0000d001'))
         before['trials'].append(again)
@@ -1561,7 +1560,7 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(compared['devices']['both'], 1)
 
     def test_03_B24_handmade_reports_pair_as_they_did(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         from test_pairing import suite_report
         compared = paired_comparison(suite_report('assistive/1', {'d0': 'pass', 'd1': 'failure'}),
                                      suite_report('assistive/1', {'d0': 'pass', 'd1': 'pass'}))
@@ -1599,7 +1598,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, TESTS)
 from generated_fixtures import fixture_start
-from generative_driver.benchmark_support import generated_sets, generated_trials
+from firmware_bench.benchmark_support import generated_sets, generated_trials
 generated_sets._SETS_FILE = Path(TABLE)
 patch(START, side_effect=fixture_start(process=True)).start()
 generated_trials.set_unreachable = lambda root: True
@@ -1623,7 +1622,7 @@ class WholeSuiteTests(unittest.TestCase):
     def finished_suite(self):
         """A replay suite over the two devices through its detached harness, under whichever table the test registers
         the set in: (its home, its saved report, read as a saved one is)."""
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, report_suite
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, report_suite
         from suite_fixtures import wait_harnesses
         from test_replay_executor import serve
         set_root, handle, _ = qualified_set()
@@ -1651,8 +1650,8 @@ class WholeSuiteTests(unittest.TestCase):
         return home, _saved_report(json.loads((output / 'suite.json').read_text()))
 
     def test_04_B11_a_saved_report_of_a_scoring_suite_pairs_with_no_hand_added_value(self):
-        from generative_driver.benchmark_support.pairing import paired_comparison
-        from generative_driver.benchmark_support.scorecard import suite_scorecard
+        from firmware_bench.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.scorecard import suite_scorecard
         as_scoring_set(self)
         set_root, _, manifest = qualified_set()
         home, saved = self.finished_suite()
@@ -1672,16 +1671,16 @@ class WholeSuiteTests(unittest.TestCase):
 
     def test_04_B11_a_development_suites_report_is_refused_by_that_check(self):
         # No RED of its own: this pins what must stay.
-        from generative_driver.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.pairing import paired_comparison
         _, saved = self.finished_suite()
         self.assertNotIn('scoring_set', saved['experiment']['comparison_identity'])
         with self.assertRaisesRegex(ValueError, 'Pairing needs two reports that carry a scoring set'):
             paired_comparison(saved, copy.deepcopy(saved))
 
     def test_03_B25_a_suite_over_two_devices_with_one_candidate_finishes_and_regrades(self):
-        from generative_driver.benchmark_support.harness import read_suite
-        from generative_driver.benchmark_support.pairing import paired_comparison
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, report_suite
+        from firmware_bench.benchmark_support.harness import read_suite
+        from firmware_bench.benchmark_support.pairing import paired_comparison
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, report_suite
         from suite_fixtures import wait_harnesses
         from test_replay_executor import serve
         set_root, handle, _ = qualified_set()

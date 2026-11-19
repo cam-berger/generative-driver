@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support import sampled_sensor
-from generative_driver.benchmark_support.behavior import validate_records
-from generative_driver.benchmark_support.emulated_actions import execute_plan
-from generative_driver.benchmark_support.family_support import integer_vector, signed16
+from firmware_bench.benchmark_support import sampled_sensor
+from firmware_bench.benchmark_support.behavior import validate_records
+from firmware_bench.benchmark_support.emulated_actions import execute_plan
+from firmware_bench.benchmark_support.family_support import integer_vector, signed16
 from benchmark_family_fixtures import toy_sensor_phase, records_for
 
 

@@ -41,8 +41,8 @@ class Sensor(Raw):
 
 class DevelopmentConditionFixture(unittest.TestCase):
     def setUp(self):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.harness import DeviceServer
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.harness import DeviceServer
         from generative_driver.device_client import open_device
         temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
@@ -212,7 +212,7 @@ class GatewayConditionTests(GatewayConditionFixture):
         self.assertEqual(self.sensor.stimuli, [])
 
     def test_stage_guidance_carries_catalog_without_equipment_coordinates(self):
-        from generative_driver import benchmark
+        from firmware_bench import benchmark
         from generative_driver.configurator import stage_options
         from generative_driver.supplied.stages import prepare_stage
         model = self.model_dir/'model.json'

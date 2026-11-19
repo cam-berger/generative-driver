@@ -14,14 +14,14 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver import benchmark
-from generative_driver.benchmark_support import evaluator, harness, trial_store
-from generative_driver.benchmark_support.audit import TRANSCRIPT, audit_commands
-from generative_driver.benchmark_support.outcomes import pass_rate_line
-from generative_driver.benchmark_support.scorecard import (bench_trial_dirs, scorecard_markdown, suite_scorecard,
+from firmware_bench import benchmark
+from firmware_bench.benchmark_support import evaluator, harness, trial_store
+from firmware_bench.benchmark_support.audit import TRANSCRIPT, audit_commands
+from firmware_bench.benchmark_support.outcomes import pass_rate_line
+from firmware_bench.benchmark_support.scorecard import (bench_trial_dirs, scorecard_markdown, suite_scorecard,
                                                             trial_metrics)
-from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
-from generative_driver.benchmark_support.suites import resume_suite
+from firmware_bench.benchmark_support.suite_reporting import compare_suites, report_suite
+from firmware_bench.benchmark_support.suites import resume_suite
 from generated_fixtures import REFERENCE_A
 from suite_fixtures import book, standing_in, suite_call
 from test_generated_trials import PASSWORD, SET, set_manifest
@@ -134,7 +134,7 @@ class RerunReportTests(ReportFixture):
     def test_06_B11_a_grade_unscored_for_integrity_is_a_failure_in_the_report_and_its_saved_form(self):
         # The harness counts the benchmark's own class as an integrity stop (08-B12 of
         # docs/features/untangle/08-reports.md).
-        from generative_driver.benchmark_support.integrity import IntegrityError
+        from firmware_bench.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='integrity')
@@ -145,7 +145,7 @@ class RerunReportTests(ReportFixture):
     def test_06_B2_the_exporters_unqualified_verdict_is_a_fault_with_no_rerun(self):
         with self.scripted():
             record = self.run_harness(request_id='unqualified')
-            with patch('generative_driver.benchmark_support.suite_reporting._recorded_equivalence', return_value=False):
+            with patch('firmware_bench.benchmark_support.suite_reporting._recorded_equivalence', return_value=False):
                 report = self.report(record)
         self.assertEqual([row['scored'] for row in report['trials']], ['fault', 'fault'])
         self.assertCompleted(record)
@@ -178,7 +178,7 @@ class OtherSuiteReportTests(ReportFixture):
         self.table.write_text(self.table.read_text().replace('"scoring": true', '"scoring": false'))
 
     def test_06_B1_a_development_suite_is_not_held_to_the_scoring_rule_for_integrity(self):
-        from generative_driver.benchmark_support.integrity import IntegrityError
+        from firmware_bench.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='development', manifest=set_manifest(FIRST))
@@ -641,8 +641,8 @@ class SealedSuiteTests(AuditFixture):
         return patch.object(trial_store, 'seal_trial', seal), figures
 
     def figures_of(self, run_id, trial_dir, run_dir):
-        from generative_driver.benchmark_support.run_reporting import report_run
-        from generative_driver.benchmark_support.suite_reporting import _public_report
+        from firmware_bench.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.suite_reporting import _public_report
         with tempfile.TemporaryDirectory() as temporary:
             report = report_run(run_id, home=self.home, output=Path(temporary) / 'report.json', autostart=False)
         return trial_metrics(self.home, run_id, trial_dir=trial_dir, run_dir=run_dir), _public_report(report)

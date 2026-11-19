@@ -7,7 +7,7 @@ import threading
 
 
 def model():
-    from generative_driver.benchmark import case_root
+    from firmware_bench.benchmark import case_root
     result = json.loads((case_root()/'cases/setup-smoke/model.json').read_text())
     result['schema'] = 'interface-model/4'
     result['operations']['measure']['outputs']['temperature'] = {'from':'reply','kind':'kv_number','key':'T:', 'scale':1, 'unit':'degC'}
@@ -118,7 +118,7 @@ class Silicon:
         self.closed=True
         for server in self.servers:server.shutdown();server.server_close()
     def session(self, recipe, private):
-        from generative_driver.benchmark_support.native import NativeSession
+        from firmware_bench.benchmark_support.native import NativeSession
         Path(private).mkdir(parents=True,exist_ok=True)
         result=NativeSession.attach({'binding':{'host':'127.0.0.1','port':self.servers[0].server_address[1]},
             'monitor_port':self.servers[1].server_address[1],'private_dir':str(private)},recipe)
@@ -142,7 +142,7 @@ def silicon_start(test, peers, root):
 
 WORKER = r'''
 import hashlib,json,pathlib,sys,urllib.request
-sys.path[:0]=[PACKAGE_PARENT,FIXTURE_PARENT]
+sys.path[:0]=[*PACKAGE_PARENTS,FIXTURE_PARENT]
 from tq9_workflow_fixture import model,capabilities,replies
 prompt=sys.stdin.read()
 if not prompt.startswith('Execute exactly'):

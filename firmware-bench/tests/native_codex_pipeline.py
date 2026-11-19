@@ -13,7 +13,7 @@ import unittest
 
 class NativeCodexPipelineTests(unittest.TestCase):
     def test_blind_firmware_recovery_and_fresh_package_reuse(self):
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         configuration = os.environ.get('GD_NATIVE_CODEX_SUITE')
         self.assertTrue(configuration, 'Set GD_NATIVE_CODEX_SUITE to the private acceptance configuration')
         options = json.loads(Path(configuration).read_text(encoding='utf-8'))

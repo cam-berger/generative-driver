@@ -1,9 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
-from generative_driver.benchmark_support.grader_identity import grader_identity
-from generative_driver.benchmark_support.registry import pin_case
-from generative_driver.benchmark_support.snapshots import snapshot_case, require_snapshot, execution_provenance
+from firmware_bench.benchmark_support import tool_install
+from firmware_bench.benchmark_support.grader_identity import grader_identity
+from firmware_bench.benchmark_support.registry import pin_case
+from firmware_bench.benchmark_support.snapshots import snapshot_case, require_snapshot, execution_provenance
 
 
 class SnapshotTests(unittest.TestCase):
@@ -45,22 +46,22 @@ class SnapshotTests(unittest.TestCase):
 
     def test_evaluator_revision_is_the_grader_identity_of_the_case(self):
         identity = grader_identity(case_id='tq9-v2')['sha256']
-        provenance = execution_provenance({}, case_ids=('tq9-v2',))
+        provenance = execution_provenance({}, case_ids=('tq9-v2',), **tool_install.folders())
         self.assertEqual(provenance['evaluator_revision'], identity)
         self.assertEqual(provenance['evaluator_revisions'], {'tq9-v2': identity})
 
     def test_cases_of_several_families_are_stamped_with_the_digest_of_their_revisions(self):
-        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
         revisions = {case: grader_identity(case_id=case)['sha256'] for case in ('tq9-v2', 'sampled-sensor-v1')}
-        provenance = execution_provenance({}, case_ids=('tq9-v2', 'sampled-sensor-v1'))
+        provenance = execution_provenance({}, case_ids=('tq9-v2', 'sampled-sensor-v1'), **tool_install.folders())
         self.assertEqual(provenance['evaluator_revision'], canonical_digest(revisions))
         self.assertEqual(provenance['evaluator_revisions'], revisions)
 
     def test_a_system_change_moves_the_toolchain_and_skills_revisions_but_not_the_evaluator_revision(self):
         from unittest.mock import patch
-        before = execution_provenance({}, case_ids=('tq9-v2',))
-        with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='0' * 64):
-            after = execution_provenance({}, case_ids=('tq9-v2',))
+        before = execution_provenance({}, case_ids=('tq9-v2',), **tool_install.folders())
+        with patch('firmware_bench.benchmark_support.integrity.tree_hash', return_value='0' * 64):
+            after = execution_provenance({}, case_ids=('tq9-v2',), **tool_install.folders())
         for field in ('toolchain_revision', 'skills_revision'):
             self.assertNotEqual(after[field], before[field])
         self.assertEqual(after['evaluator_revision'], before['evaluator_revision'])
@@ -118,8 +119,8 @@ class ControllerSnapshotTests(unittest.TestCase):
                 run = controller.start(request)
                 self.wait_stopped(controller, run)
                 config.write_text('invalid edited configuration')
-                with patch('generative_driver.benchmark.case_root', return_value=root / 'unavailable'), \
-                        patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'unavailable'):
+                with patch('firmware_bench.benchmark.case_root', return_value=root / 'unavailable'), \
+                        patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root / 'unavailable'):
                     duplicate = controller.start(dict(request))
                 self.assertEqual(duplicate['run_id'], run['run_id'])
                 self.assertTrue(duplicate['duplicate'])
@@ -217,7 +218,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         import json
         import shutil
         from unittest.mock import patch
-        from generative_driver.benchmark import case_root
+        from firmware_bench.benchmark import case_root
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -227,8 +228,8 @@ class ControllerSnapshotTests(unittest.TestCase):
             def execute(request, config, cancel):
                 observed.append((request.workspace / 'description.bin').read_bytes())
                 return self.blocked_executor(request, config, cancel)
-            with patch('generative_driver.benchmark.case_root', return_value=installed), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=installed), \
+            with patch('firmware_bench.benchmark.case_root', return_value=installed), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=installed), \
                     patch('generative_driver.configurator.execute', execute):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
@@ -255,7 +256,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         # The bench harness compares the implementation itself before it resumes a stopped run (06-B16): its check
         # of the snapshot is asked here, with the configuration the trial recorded.
         from unittest.mock import patch
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             controller = Controller(Path(temp))
@@ -266,7 +267,7 @@ class ControllerSnapshotTests(unittest.TestCase):
                 before = self.wait_stopped(controller, run)
                 run_dir = Path(temp) / 'runs' / run['run_id']
                 harness.check_snapshot(start.trial_dir, run_dir, before, config=start['executor_config'])
-                with patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
+                with patch('firmware_bench.benchmark_support.integrity.tree_hash', return_value='changed-installation'):
                     with self.assertRaisesRegex(ValueError, 'implementation'):
                         harness.check_snapshot(start.trial_dir, run_dir, before, config=start['executor_config'])
                 self.assertEqual(controller.call('result', run)['worker_reports'], before['worker_reports'])
@@ -286,7 +287,7 @@ class ControllerSnapshotTests(unittest.TestCase):
         import json
         from unittest.mock import patch
         from generative_driver.configurator import Controller
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         with tempfile.TemporaryDirectory() as temp, patch('generative_driver.configurator.execute', self.blocked_executor):
             root = Path(temp)
             controller = Controller(root)
@@ -321,14 +322,14 @@ class ControllerSnapshotTests(unittest.TestCase):
         # The bench harness admits a case now: a trial of an uncalibrated v2 case ends before any run starts.
         from unittest.mock import patch
         from test_case_registry import RegistryTests
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             RegistryTests._v2_case(root / 'installed')
             (root / 'password-handle').write_text('synthetic fixture credential')
-            with patch('generative_driver.benchmark.case_root', return_value=root / 'installed'), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root / 'installed'):
+            with patch('firmware_bench.benchmark.case_root', return_value=root / 'installed'), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root / 'installed'):
                 controller = Controller(root / 'home')
                 scripted_runtime(root / 'home')
                 configurator = lambda method, params=None, **kwargs: (

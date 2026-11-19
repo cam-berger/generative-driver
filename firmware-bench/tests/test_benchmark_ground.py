@@ -70,7 +70,7 @@ class GroundEvidenceTests(unittest.TestCase):
             root = Path(temporary)
             for accepted in ([], [{'stage': 'probe', 'artifacts': []}]):
                 with self.subTest(accepted=accepted), patch(
-                        'generative_driver.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')):
+                        'firmware_bench.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')):
                     prepared = prepare_stage('tq9-v2', 'ground', root/'run', root/'worker', accepted=accepted)
                     self.assertIn('no interpreted model available', prepared['skip'])
 

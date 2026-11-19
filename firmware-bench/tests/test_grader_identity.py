@@ -1,4 +1,8 @@
-"""The grader's import closure and the identity computed from it."""
+"""The grader's import closure and the identity computed from it.
+
+The grading code lies in the package `firmware_bench`, and the system under test is another package: the walk names
+an import of the tool in full and never reads it (12-B2 of docs/features/untangle/12-firmware-bench.md).
+"""
 import base64
 import hashlib
 import importlib.metadata
@@ -12,41 +16,45 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
 
+import firmware_bench
 import generative_driver
 import interface_runtime
-from generative_driver.benchmark_support import registrations, sampled_sensor, snapshots
-from generative_driver.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
-from generative_driver.benchmark_support.registry import case_truth
-from generative_driver.benchmark_support.families import family_for
-from generative_driver.benchmark_support.generated_sets import set_registrations
-from generative_driver.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
+from firmware_bench.benchmark_support import registrations, sampled_sensor, snapshots
+from firmware_bench.benchmark_support.calibration import hydrate_truth, inventory, validate_calibration
+from firmware_bench.benchmark_support.registry import case_truth
+from firmware_bench.benchmark_support.families import family_for
+from firmware_bench.benchmark_support.generated_sets import set_registrations
+from firmware_bench.benchmark_support.grader_identity import (ENTRY_MODULES, SYSTEM_MODULES, grader_closure,
                                                                  grader_identity)
-from generative_driver.benchmark_support.integrity import tree_hash
-from generative_driver.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support.integrity import tree_hash
+from firmware_bench.benchmark_support.snapshots import canonical_digest
 
 
 class PackageCopy:
     def copy_package(self):
-        """A copy of the installed generative_driver package under a temporary root, removed when the test ends."""
+        """A copy of the installed firmware_bench package under a temporary root, removed when the test ends."""
         directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
-        root = Path(directory.name) / 'generative_driver'
-        shutil.copytree(Path(generative_driver.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
+        root = Path(directory.name) / 'firmware_bench'
+        shutil.copytree(Path(firmware_bench.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
         return root
 
 
 class ToolchainRevisionTests(PackageCopy, unittest.TestCase):
-    """What `execution_provenance` hashes, on a copy of the package and `interface_runtime`: the shipped file is never
-    edited."""
+    """What `execution_provenance` hashes, on a copy of the package, of the tool's package and of `interface_runtime`:
+    the shipped file is never edited."""
 
     def setUp(self):
         self.root = self.copy_package()
-        shutil.copytree(Path(interface_runtime.__file__).parent, self.root.parent / 'interface_runtime',
+        self.tool, self.runtime = self.root.parent / 'generative_driver', self.root.parent / 'interface_runtime'
+        shutil.copytree(Path(generative_driver.__file__).parent, self.tool,
+                        ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(Path(interface_runtime.__file__).parent, self.runtime,
                         ignore=shutil.ignore_patterns('__pycache__'))
         self.table = self.root / 'resources' / 'registrations' / 'sets.json'
 
     def provenance(self):
         with patch.object(snapshots, '__file__', str(self.root / 'benchmark_support' / 'snapshots.py')):
-            return snapshots.execution_provenance({}, case_ids=('tq9-v2',))
+            return snapshots.execution_provenance({}, case_ids=('tq9-v2',), tool=self.tool, runtime=self.runtime)
 
     def write_table(self, sets):
         self.table.write_text(json.dumps({'schema': 'generated-set-registrations/2', 'sets': sets}), encoding='utf-8')
@@ -66,7 +74,7 @@ class ToolchainRevisionTests(PackageCopy, unittest.TestCase):
 
     def test_04_B2_any_other_change_under_the_package_still_moves_the_toolchain_revision(self):
         before = self.provenance()['toolchain_revision']
-        for name in ('resources/registrations/cases.json', 'resources/sets.json', 'configurator.py',
+        for name in ('resources/registrations/cases.json', 'resources/sets.json', '../generative_driver/configurator.py',
                      '../interface_runtime/engine.py'):
             path = self.root / name
             kept = path.read_bytes() if path.exists() else None
@@ -127,7 +135,7 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
             from . import sibling
             from .. import toplevel
             from ..subpackage import leaf
-            import generative_driver.absolute
+            import firmware_bench.absolute
             from ... import above_the_package
             import json
             import cryptography
@@ -140,7 +148,7 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
     def test_importing_a_module_counts_its_parent_package(self):
         root = self.copy_package()
         self.add_modules(root, 'outer/__init__.py', 'outer/inner.py')
-        self.import_from_grading(root, 'import generative_driver.outer.inner')
+        self.import_from_grading(root, 'import firmware_bench.outer.inner')
         self.assertLessEqual({'outer', 'outer.inner'}, set(grader_closure(root)))
         before = grader_identity(root)['sha256']
         (root / 'outer' / '__init__.py').write_text('changed = True\n', encoding='utf-8')
@@ -159,7 +167,7 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
 
     def test_identity_pins_module_hashes_and_the_cryptography_version(self):
         identity = grader_identity()
-        behavior = Path(generative_driver.__file__).parent / 'benchmark_support' / 'behavior.py'
+        behavior = Path(firmware_bench.__file__).parent / 'benchmark_support' / 'behavior.py'
         self.assertEqual(set(identity), {'schema', 'scope', 'modules', 'registrations', 'dependencies', 'sha256'})
         self.assertEqual((identity['schema'], identity['scope']), ('benchmark-grader-identity/2', 'grader'))
         self.assertEqual(identity['modules']['benchmark_support.behavior'], hashlib.sha256(behavior.read_bytes()).hexdigest())
@@ -173,7 +181,7 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
     def test_change_outside_the_closure_keeps_identity(self):
         root = self.copy_package(); before = grader_identity(root)['sha256']
         self.assertEqual(before, grader_identity()['sha256'])  # a copy of the installed package is the same grader
-        for name in ('dashboard.py', 'daemon.py'):
+        for name in ('benchmark_support/scorecard.py', 'benchmark_support/tool_install.py'):
             path = root / name; path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
         self.assertEqual(grader_identity(root)['sha256'], before)
 
@@ -184,11 +192,36 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
             grader_closure(root)
 
     def beyond_the_boundary(self, closure):
-        """The modules of `closure` that grading code must never reach: the system under test and the reporting code."""
-        return [m for m in closure if any(m == s or m.startswith(s + '.') for s in SYSTEM_MODULES)]
+        """The modules of `closure` that grading code must never reach: the system under test, which is any module of
+        the tool's two packages, and the benchmark's own run, authoring and reporting code, which `SYSTEM_MODULES`
+        lists."""
+        outside = ('generative_driver', 'interface_runtime', *SYSTEM_MODULES)
+        return [m for m in closure if any(m == s or m.startswith(s + '.') for s in outside)]
 
     def test_closure_excludes_system_modules(self):
         self.assertEqual(self.beyond_the_boundary(grader_closure()), [])
+
+    def test_12_B2_a_grading_module_that_imports_the_tool_crosses_the_boundary(self):
+        for source, named in (('from generative_driver.client import call', 'generative_driver.client'),
+                              ('import generative_driver', 'generative_driver'),
+                              ('from interface_runtime.engine import validate_model', 'interface_runtime.engine'),
+                              # The module that finds the tool's folders imports the tool, so it is no grading code.
+                              ('from . import tool_install', 'generative_driver.toolkit')):
+            with self.subTest(source=source):
+                root = self.copy_package()
+                self.import_from_grading(root, source)
+                closure = grader_closure(root)
+                self.assertIn(named, closure)
+                self.assertIn(named, self.beyond_the_boundary(closure))
+                # It is named in full and never read: the identity hashes no file of the tool.
+                self.assertNotIn(named, grader_identity(root)['modules'])
+
+    def test_12_B2_the_system_modules_are_modules_of_the_benchmark_that_exist(self):
+        package = Path(firmware_bench.__file__).parent
+        for name in SYSTEM_MODULES:
+            with self.subTest(name=name):
+                base = package.joinpath(*name.split('.'))
+                self.assertTrue(base.with_suffix('.py').is_file() or (base / '__init__.py').is_file())
 
     def test_a_grading_module_that_imports_reporting_code_crosses_the_boundary(self):
         # Catches reporting code (the outcomes, the audit, the pairing, the scorecard, the suite report and the corpus) that a
@@ -214,8 +247,8 @@ class GraderClosureTests(PackageCopy, unittest.TestCase):
 
     def test_system_change_keeps_identity(self):
         root = self.copy_package(); before = grader_identity(root)['sha256']
-        for name in ('configurator.py', 'toolkit.py', 'benchmark.py', 'supplied/stages.py',
-                     'benchmark_support/harness.py', 'benchmark_support/reference_calibration.py'):
+        for name in ('benchmark.py', 'benchmark_support/harness.py', 'benchmark_support/reference_calibration.py',
+                     'benchmark_support/tool_install.py'):
             path = root / name; path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n', encoding='utf-8')
         self.assertEqual(grader_identity(root)['sha256'], before)
 
@@ -245,8 +278,8 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
 
     @staticmethod
     def hashed(closure):
-        """The modules of `closure` an identity hashes: interface_runtime modules are named but never read."""
-        return {name for name in closure if not name.startswith('interface_runtime')}
+        """The modules of `closure` an identity hashes: modules of the tool's two packages are named but never read."""
+        return {name for name in closure if name.partition('.')[0] not in ('generative_driver', 'interface_runtime')}
 
     def test_a_case_keeps_its_identity_when_unrelated_code_or_cases_change(self):
         root = self.copy_package()
@@ -280,7 +313,7 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
 
     def test_a_case_identity_changes_with_the_cryptography_version(self):
         before = grader_identity(case_id='tq9-v2')['sha256']
-        with patch('generative_driver.benchmark_support.grader_identity.importlib.metadata.version',
+        with patch('firmware_bench.benchmark_support.grader_identity.importlib.metadata.version',
                    return_value='0.0+another-build'):
             self.assertNotEqual(grader_identity(case_id='tq9-v2')['sha256'], before)
 
@@ -320,7 +353,7 @@ class CaseIdentityTests(PackageCopy, unittest.TestCase):
             grader_identity(case_id='unregistered-v1')
 
     def test_case_revisions_name_each_case_once_and_refuse_no_case(self):
-        from generative_driver.benchmark_support.grader_identity import case_revisions
+        from firmware_bench.benchmark_support.grader_identity import case_revisions
         one = grader_identity(case_id='tq9-v2')['sha256']
         self.assertEqual(case_revisions(('tq9-v2', 'tq9-v2')),
                          {'evaluator_revision': one, 'evaluator_revisions': {'tq9-v2': one}})
@@ -356,10 +389,10 @@ class FamilyRoutingTests(unittest.TestCase):
 
     def truth_of(self, case_id, unlocked):
         """`case_truth` of `case_id` when its sealed truth unlocks to `unlocked`, with no vault, case files or run."""
-        with patch('generative_driver.benchmark_support.case_assets.case_inputs',
+        with patch('firmware_bench.benchmark_support.case_assets.case_inputs',
                    return_value=(Path('inputs'), {'truth': {'sha256': 'a' * 64}})), \
-                patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path('root')), \
-                patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value=unlocked):
+                patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=Path('root')), \
+                patch('firmware_bench.benchmark_support.emulator.truth_for_case', return_value=unlocked):
             return case_truth(case_id, Path('run'), None).payload
 
     def test_each_family_declares_the_mutants_its_qualification_requires(self):
@@ -420,8 +453,8 @@ class FamilyRoutingTests(unittest.TestCase):
         self.register('another-sensor-v1', native_module='sampled_sensor')
         self.register('another-upstream-v1', native_module='zephyr_modbus')
         unlocked = {'schema': 'unlocked'}
-        with patch('generative_driver.benchmark_support.calibration.hydrate_truth', return_value='family') as family, \
-                patch('generative_driver.benchmark_support.upstream.hydrate_truth', return_value='upstream') as upstream:
+        with patch('firmware_bench.benchmark_support.calibration.hydrate_truth', return_value='family') as family, \
+                patch('firmware_bench.benchmark_support.upstream.hydrate_truth', return_value='upstream') as upstream:
             self.assertEqual(self.truth_of('another-sensor-v1', unlocked), 'family')
             self.assertEqual(self.truth_of('another-upstream-v1', unlocked), 'upstream')
         family.assert_called_once_with(unlocked)
@@ -430,8 +463,8 @@ class FamilyRoutingTests(unittest.TestCase):
     def test_a_truth_of_a_schema_the_core_does_not_hydrate_comes_back_as_unlocked(self):
         self.register('generated-fixture-v1', truth_schema='generated-answer-key/2')
         unlocked = {'schema': 'generated-answer-key/2', 'references': {}}
-        with patch('generative_driver.benchmark_support.calibration.hydrate_truth', side_effect=AssertionError('hydrated')), \
-                patch('generative_driver.benchmark_support.upstream.hydrate_truth', side_effect=AssertionError('hydrated')):
+        with patch('firmware_bench.benchmark_support.calibration.hydrate_truth', side_effect=AssertionError('hydrated')), \
+                patch('firmware_bench.benchmark_support.upstream.hydrate_truth', side_effect=AssertionError('hydrated')):
             self.assertIs(self.truth_of('generated-fixture-v1', unlocked), unlocked)
             self.assertIs(self.truth_of('tq9-v2', unlocked), unlocked)  # a registration with no truth schema
 

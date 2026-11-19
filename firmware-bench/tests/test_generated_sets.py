@@ -11,12 +11,12 @@ from unittest.mock import patch
 
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, fixture_mission, registrations_table,
                                 write_fixture_set)
-from generative_driver.benchmark_support import generated_sets
-from generative_driver.benchmark_support.generated_device import FRAMINGS
-from generative_driver.benchmark_support.generated_sets import (is_scoring, load_set, open_device, seal_device,
+from firmware_bench.benchmark_support import generated_sets
+from firmware_bench.benchmark_support.generated_device import FRAMINGS
+from firmware_bench.benchmark_support.generated_sets import (is_scoring, load_set, open_device, seal_device,
                                                                 set_registrations, write_manifest)
-from generative_driver.benchmark_support.snapshots import canonical_digest
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 
 SET = 'fixture-v1'
 

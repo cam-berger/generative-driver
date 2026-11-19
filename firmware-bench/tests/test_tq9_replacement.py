@@ -6,18 +6,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from generative_driver.benchmark_support.registry import pin_case, resolve_case, validate_pinned_workflow
+from firmware_bench.benchmark_support.registry import pin_case, resolve_case, validate_pinned_workflow
 from suite_fixtures import public_case_fixture
-from generative_driver.benchmark_support.truth import read_password
+from firmware_bench.benchmark_support.truth import read_password
 
 
 class Tq9ReplacementTests(unittest.TestCase):
     def test_replacement_retains_the_tq9_instrument_units(self):
-        from generative_driver.benchmark_support.instruments import units
+        from firmware_bench.benchmark_support.instruments import units
         self.assertEqual(units('tq9-v3'), {'duty': 'permille', 'temperature_reference': 'degC'})
 
     def test_unavailable_native_tools_cannot_qualify_the_replacement(self):
-        from generative_driver.benchmark_support.authoring import calibrate
+        from firmware_bench.benchmark_support.authoring import calibrate
         from tq9_workflow_fixture import capabilities, model
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
@@ -44,8 +44,8 @@ class Tq9ReplacementTests(unittest.TestCase):
             self.assertIn('Native Renode, Ghidra and Java paths are required', record['failure'])
 
     def test_replacement_uses_registered_native_adapter_and_public_mission(self):
-        from generative_driver.benchmark_support.families import family_for
-        from generative_driver.benchmark_support.missions import load_mission
+        from firmware_bench.benchmark_support.families import family_for
+        from firmware_bench.benchmark_support.missions import load_mission
         self.assertIs(family_for('tq9-v3').contract, family_for('tq9-v2').contract)
         self.assertEqual(load_mission('tq9-v3')['tasks'], load_mission('tq9-v2')['tasks'])
         self.assertEqual(load_mission('tq9-v3')['case_id'], 'tq9-v3')

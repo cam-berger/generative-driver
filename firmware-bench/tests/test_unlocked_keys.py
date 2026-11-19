@@ -14,8 +14,8 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import evaluator, families, harness, registry, truth
-from generative_driver.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support import evaluator, families, harness, registry, truth
+from firmware_bench.benchmark_support.snapshots import canonical_digest
 from suite_fixtures import file_changes, public_case_fixture, standing_in, suite_call, symlinks_refused
 from tool_fixtures import gateway_identity, scripted_stages, task_of
 from test_evaluation import CASE_TRUTH, FAIL, HarnessTrialFixture, PASS, PendingRunFixture, reference
@@ -27,7 +27,7 @@ SOURCE = Path(truth.__file__).resolve().parents[1]
 EVIDENCE = '9' * 64
 SENTINEL = 'UNLOCKED KEYS SENTINEL'
 EMULATOR = 'scripted-emulator-handle'
-CASE_ROOTS = ('generative_driver.benchmark.case_root', 'generative_driver.benchmark_support.case_assets.case_root')
+CASE_ROOTS = ('firmware_bench.benchmark.case_root', 'firmware_bench.benchmark_support.case_assets.case_root')
 
 
 def toy_truth(**changes):
@@ -275,7 +275,7 @@ class PinWithoutTruthFileTests(PendingRunFixture):
     def test_02_B22_adapter_for_opens_no_file_and_a_changed_case_does_not_raise_from_it(self):
         # Narrowed by 03-B16: `adapter_for` reads the registration alone; a start and the grade still refuse a changed
         # case.
-        from generative_driver.benchmark_support.adapters import adapter_for
+        from firmware_bench.benchmark_support.adapters import adapter_for
         truth_file = self.root / 'resources/groundtruth/tq9-v2.enc'
         read = []
         real = Path.read_bytes
@@ -321,7 +321,7 @@ class PinWithoutTruthFileTests(PendingRunFixture):
         truth_file.write_bytes(b'replaced after the run started')
         self.assertEqual(evaluator.accepted_driver('tq9-v2', self.root / 'trial', run_dir, result)[1][1], driver[1])
         # A changed manifest or a changed pinned truth hash still raises IntegrityError, and a changed image fails.
-        from generative_driver.benchmark_support.integrity import IntegrityError
+        from firmware_bench.benchmark_support.integrity import IntegrityError
         case = self.root / 'resources/cases/tq9-v2/case.json'
         manifest = json.loads(case.read_text())
         for name, changed in (('the manifest', {**manifest, 'limitations': ['changed']}),
@@ -421,7 +421,7 @@ class TrialPasswordTests(HarnessTrialFixture):
         self.assertIn('a device was started', failed['reason'])
 
     def test_02_B8_a_trial_given_no_password_fails_naming_the_password_as_required(self):
-        from generative_driver.benchmark_support.emulator import truth_for_case
+        from firmware_bench.benchmark_support.emulator import truth_for_case
         with self.assertRaisesRegex(ValueError, 'Evaluator password file is required'):
             truth_for_case(self.root, {'truth': {'path': 'x', 'sha256': '0' * 64}}, None)
         trial = self.root / 'bench/no-password'
@@ -471,7 +471,7 @@ class SealedTrialFixture(HarnessTrialFixture):
         manifest['calibration']['evidence_sha256'] = canonical_digest(toy_truth()['calibration'])
         (self.image.parent / 'case.json').write_text(json.dumps(manifest))
         admits_calibration(self)
-        guard = patch('generative_driver.benchmark_support.native.NativeSession.start',
+        guard = patch('firmware_bench.benchmark_support.native.NativeSession.start',
                       side_effect=silicon_start(self, [], self.root))
         guard.start(); self.addCleanup(guard.stop)
 
@@ -984,21 +984,21 @@ class CommandReadTests(unittest.TestCase):
         self.password = truth.EvaluatorPassword(SECRET)
 
     def test_02_B9_score_reads_its_file_once(self):
-        from generative_driver import benchmark
+        from firmware_bench import benchmark
         for schema, regrade in (('benchmark-report/3', 'regrade_v3'), ('benchmark-report/2', 'regrade_v2')):
             spy, paths = read_spy()
-            with self.subTest(schema=schema), spy, patch('generative_driver.benchmark_support.evidence.' + regrade,
+            with self.subTest(schema=schema), spy, patch('firmware_bench.benchmark_support.evidence.' + regrade,
                                                          return_value={'ok': True}) as grading:
                 benchmark.score({'schema': schema}, str(self.handle), evidence_path=self.root / 'evidence')
                 self.assertEqual(paths, [str(self.handle)])
                 self.assertIsInstance(grading.call_args.args[2], truth.EvaluatorPassword)
         spy, paths = read_spy()
-        with spy, patch('generative_driver.benchmark_support.evidence.regrade_v3', return_value={'ok': True}) as grading:
+        with spy, patch('firmware_bench.benchmark_support.evidence.regrade_v3', return_value={'ok': True}) as grading:
             benchmark.score({'schema': 'benchmark-report/3'})
         self.assertEqual((paths, grading.call_args.args[2]), ([], None))
 
     def test_02_B9_report_suite_reads_once_per_case_across_all_its_trials(self):
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         from test_suite_reporting import export_fixture
         call, _, _, evidence, passwords = export_fixture(self.root, one_case=True)
         self.assertEqual((len(evidence), len(passwords)), (2, 1))
@@ -1009,13 +1009,13 @@ class CommandReadTests(unittest.TestCase):
         self.assertEqual(paths, [str(path) for path in passwords.values()])
 
     def corpus(self, passwords, admission=None):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         from test_corpus_preflight import public_case
         with public_case() as (catalog, row, pin):
             plan = plan_corpus(catalog, repetitions=1)
             spy, paths = read_spy()
-            with spy, patch('generative_driver.benchmark_support.registry.require_calibration', **(admission or {})) as admitting:
+            with spy, patch('firmware_bench.benchmark_support.registry.require_calibration', **(admission or {})) as admitting:
                 result = check_corpus(plan, {'evaluator_password_files': passwords(row['case'])})
         return next(case for case in result['cases'] if case['lineage'] == row['id']), result, paths, admitting
 
@@ -1041,7 +1041,7 @@ class CommandReadTests(unittest.TestCase):
         self.assertEqual((checked['status'], checked['evidence_sha256'], result['ok']), ('qualified', 'd' * 64, True))
 
     def test_02_B9_manage_reads_its_file_once_and_rekey_each_file_once(self):
-        from generative_driver.benchmark_support.evaluator_cli import manage
+        from firmware_bench.benchmark_support.evaluator_cli import manage
         sealed_case(self, self.root / 'resources', self.password)
         new = self.root / 'new-handle'
         new.write_text('another synthetic credential')
@@ -1057,10 +1057,10 @@ class CommandReadTests(unittest.TestCase):
         self.assertEqual(rekeyed, toy_truth())
 
     def test_02_B9_manage_calibrate_reads_once_and_hands_the_object_to_the_native_calibration(self):
-        from generative_driver.benchmark_support.evaluator_cli import manage
+        from firmware_bench.benchmark_support.evaluator_cli import manage
         for case, target in (('zephyr-modbus-v1', 'upstream_qualification.calibrate'), ('tq9-v2', 'authoring.calibrate')):
             spy, paths = read_spy()
-            with self.subTest(case=case), spy, patch('generative_driver.benchmark_support.' + target, return_value={'ok': True}) as calibrating:
+            with self.subTest(case=case), spy, patch('firmware_bench.benchmark_support.' + target, return_value={'ok': True}) as calibrating:
                 manage('calibrate', case, str(self.handle), self.root / 'out')
                 self.assertEqual(paths, [str(self.handle)])
                 options = calibrating.call_args.args[1]
@@ -1068,7 +1068,7 @@ class CommandReadTests(unittest.TestCase):
                 self.assertNotIn('evaluator_password_file', options)
 
     def test_02_B9_family_calibration_reads_its_sibling_file_once(self):
-        from generative_driver.benchmark_support import family_calibration
+        from firmware_bench.benchmark_support import family_calibration
         for name in ('renode', 'compiler'):
             (self.root / name).write_text('')
         ghidra, java = self.root / 'ghidra', self.root / 'java'
@@ -1087,7 +1087,7 @@ class CommandReadTests(unittest.TestCase):
         spy, paths = read_spy()
         with spy, patch.object(family_calibration, 'authoring_payload', return_value={'case_id': 'sampled-sensor-v1'}), \
                 patch.object(family_calibration, 'validate_calibration', return_value={'ok': True}), \
-                patch('generative_driver.benchmark_support.authoring.calibrate', side_effect=native):
+                patch('firmware_bench.benchmark_support.authoring.calibrate', side_effect=native):
             family_calibration.calibrate('sampled-sensor-v1', authoring_root=author, renode=self.root / 'renode', ghidra_home=ghidra,
                                          java_home=java, output_dir=output, compiler=self.root / 'compiler')
         self.assertEqual(paths, [str(handle)])
@@ -1101,7 +1101,7 @@ class CommandReadTests(unittest.TestCase):
                                              java_home=java, output_dir=self.root / 'empty-output', compiler=self.root / 'compiler')
 
     def test_02_B9_prepare_execution_reads_its_file_once(self):
-        from generative_driver.benchmark_support import upstream_build
+        from firmware_bench.benchmark_support import upstream_build
         build = self.root / 'build'; build.mkdir()
         image = b'\x7fELFtoy'
         (build / 'firmware.elf').write_bytes(image)
@@ -1113,24 +1113,24 @@ class CommandReadTests(unittest.TestCase):
                                                      'validated_behavior': [], 'hardware_gaps': ['Test only']}}))
         spy, paths = read_spy()
         with spy, patch.object(upstream_build, 'native_recipe', return_value={'backend': 'native-sim'}), \
-                patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value={}) as unlocking:
+                patch('firmware_bench.benchmark_support.emulator.truth_for_case', return_value={}) as unlocking:
             upstream_build.prepare_execution(build, str(self.handle), self.root / 'resources')
         self.assertEqual(paths, [str(self.handle)])
         self.assertIsInstance(unlocking.call_args.args[2], truth.EvaluatorPassword)
 
     def test_02_B9_exercise_execution_reads_its_file_once(self):
-        from generative_driver.benchmark_support.rehosting import exercise_execution
+        from firmware_bench.benchmark_support.rehosting import exercise_execution
         spy, paths = read_spy()
-        with spy, patch('generative_driver.benchmark_support.emulator.truth_for_case', side_effect=ValueError('stop here')) as unlocking, \
+        with spy, patch('firmware_bench.benchmark_support.emulator.truth_for_case', side_effect=ValueError('stop here')) as unlocking, \
                 self.assertRaisesRegex(ValueError, 'stop here'):
             exercise_execution('zephyr-modbus-v1', str(self.handle), self.root / 'output', renode='r')
         self.assertEqual(paths, [str(self.handle)])
         self.assertIsInstance(unlocking.call_args.args[2], truth.EvaluatorPassword)
 
     def test_02_B9_the_option_filters_drop_the_password_object(self):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.snapshots import public_configuration
-        from generative_driver.benchmark_support.run_reporting import _public
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.snapshots import public_configuration
+        from firmware_bench.benchmark_support.run_reporting import _public
         self.assertEqual(public_configuration({'evaluator_password': self.password, 'kept': 1}), {'kept': 1})
         self.assertEqual(_public({'evaluator_password': self.password, 'kept': 1}, self.root), {'kept': 1})
         with self.assertRaisesRegex(ValueError, 'recipe only'):
@@ -1143,7 +1143,7 @@ class TrialResumeCommandTests(HarnessTrialFixture):
         import io
         import sys
         import types
-        from generative_driver import benchmark
+        from firmware_bench import benchmark
         unlocked = []
         with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial('command')
@@ -1176,7 +1176,7 @@ class GeneratedSetPasswordTests(unittest.TestCase):
 
     def test_02_B21_generated_sets_take_the_password_object(self):
         from generated_fixtures import FIXTURE_IMAGE, PASSWORD
-        from generative_driver.benchmark_support import generated_sets
+        from firmware_bench.benchmark_support import generated_sets
         registrations = {SET: self.sha}
         manifest = generated_sets.load_set(self.root, SET, registrations=registrations)
         self.assertIsInstance(PASSWORD, truth.EvaluatorPassword)
@@ -1186,7 +1186,7 @@ class GeneratedSetPasswordTests(unittest.TestCase):
 
     def test_02_B21_a_plain_string_is_refused_and_writes_no_file(self):
         from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, fixture_mission
-        from generative_driver.benchmark_support import generated_sets, set_qualification
+        from firmware_bench.benchmark_support import generated_sets, set_qualification
         registrations = {SET: self.sha}
         manifest = generated_sets.load_set(self.root, SET, registrations=registrations)
         before = self.listing()

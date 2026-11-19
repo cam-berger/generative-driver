@@ -14,18 +14,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import generative_driver
+import firmware_bench
 from generated_fixtures import (FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, PASSWORD, PASSWORD_TEXT, REFERENCE_A, FixtureDevice,
                                 fixture_mission, fixture_start, registrations_table, write_fixture_set)
-from generative_driver.benchmark import main
-from generative_driver.benchmark_support import generated_sets, reference_calibration, set_qualification, truth
-from generative_driver.benchmark_support.grader_identity import grader_identity
-from generative_driver.benchmark_support.generated_sets import qualification_reasons
-from generative_driver.benchmark_support.set_qualification import qualify, sample
-from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
+from firmware_bench.benchmark import main
+from firmware_bench.benchmark_support import generated_sets, reference_calibration, set_qualification, truth
+from firmware_bench.benchmark_support.grader_identity import grader_identity
+from firmware_bench.benchmark_support.generated_sets import qualification_reasons
+from firmware_bench.benchmark_support.set_qualification import qualify, sample
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, read_password
 
 SET = 'fixture-v1'
-START = 'generative_driver.benchmark_support.native.NativeSession.start'
+START = 'firmware_bench.benchmark_support.native.NativeSession.start'
 MUTANTS = [mutant['id'] for mutant in FIXTURE_ANSWER_KEY['mutants']]
 BOOT_PC = 0x08000100  # what a fixture device's monitor answers to `cpu PC`
 
@@ -657,7 +657,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
         # An earlier record stays as it was: a refused qualification replaces nothing.
         generated_sets.seal_qualification(root, {'schema': 'earlier record'}, PASSWORD)
         earlier = (root / 'qualification.enc').read_bytes()
-        inside = Path(generative_driver.__file__).resolve().parent / 'set-qualification-output'
+        inside = Path(firmware_bench.__file__).resolve().parent / 'set-qualification-output'
         crowded = out.with_name('crowded')
         crowded.mkdir()
         (crowded / 'earlier.json').write_text('{}', encoding='utf-8')
@@ -694,7 +694,7 @@ class PendingSetTests(Workspace, unittest.TestCase):
         in_work = work / 'set'
         in_work.mkdir()
         registered = write_set(in_work, {'0000d001': FIXTURE_ANSWER_KEY})
-        in_package = Path(generative_driver.__file__).resolve().parent / 'generated-set'
+        in_package = Path(firmware_bench.__file__).resolve().parent / 'generated-set'
         for name, root in (('a worker\'s directory', in_work), ('the installed package', in_package)):
             with self.subTest(name), patch(START) as start:
                 with self.assertRaisesRegex(ValueError, 'set must lie outside the repository'):
@@ -825,7 +825,7 @@ class CommandTests(Workspace, unittest.TestCase):
         handle = self.password_file(root)
         real = truth.read_password
         with patch.object(truth, 'read_password', side_effect=real) as reading, \
-                patch('generative_driver.benchmark_support.set_qualification.qualify',
+                patch('firmware_bench.benchmark_support.set_qualification.qualify',
                       return_value={'status': 'passed', 'failures': [], 'seconds': {}}):
             code, _, _ = self.command(root, handle, out)
         self.assertEqual(code, 0)
@@ -845,7 +845,7 @@ class CommandTests(Workspace, unittest.TestCase):
         root, out = self.workspace()
         seconds = {'0000d001/reference-a': 1.25, '0000d001/reference-b': 1.5}
         for status, failures, code in (('passed', [], 0), ('pending', ['reference b failed:0000d001'], 1)):
-            with self.subTest(status), patch('generative_driver.benchmark_support.set_qualification.qualify',
+            with self.subTest(status), patch('firmware_bench.benchmark_support.set_qualification.qualify',
                                              return_value={'status': status, 'failures': failures,
                                                            'seconds': seconds}) as qualifying:
                 exit_code, printed, logged = self.command(root, self.password_file(root), out)

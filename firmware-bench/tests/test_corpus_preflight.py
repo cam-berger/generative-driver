@@ -8,13 +8,13 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 
 
 @contextmanager
 def public_case():
     """Expose a public ready case without opening any evaluator credentials."""
-    from generative_driver.benchmark_support.corpus import load_catalog, lineage_identity
+    from firmware_bench.benchmark_support.corpus import load_catalog, lineage_identity
     catalog = load_catalog()
     for row in catalog['lineages']:
         row['case'] = None
@@ -29,8 +29,8 @@ def public_case():
            'scope': 'full-workflow', 'calibration': {'status': 'passed', 'evidence_sha256': 'c'*64}}
     definition = SimpleNamespace(id=row['case'], execution='actual-agent-emulation',
                                  evidence_track='firmware', manifest=manifest)
-    with patch('generative_driver.benchmark_support.registry.resolve_case', return_value=definition), \
-            patch('generative_driver.benchmark_support.registry.pin_case',
+    with patch('firmware_bench.benchmark_support.registry.resolve_case', return_value=definition), \
+            patch('firmware_bench.benchmark_support.registry.pin_case',
                   side_effect=lambda *args, **_: copy.deepcopy(pin)):
         yield catalog, row, pin
 
@@ -45,15 +45,15 @@ class CorpusPreflightTests(unittest.TestCase):
         return str(path)
 
     def test_public_plan_checks_authenticated_admission_and_retains_blocked_inventory(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         credential = self.credential()
         with public_case() as (catalog, row, pin):
             plan = plan_corpus(catalog, repetitions=2)
             original = copy.deepcopy(plan)
-            with patch('generative_driver.benchmark_support.registry.require_calibration',
+            with patch('firmware_bench.benchmark_support.registry.require_calibration',
                        return_value={'ok': True, 'evidence_sha256': 'd'*64}) as admission, \
-                    patch('generative_driver.benchmark_support.suites.start_suite', side_effect=AssertionError('owner')), \
+                    patch('firmware_bench.benchmark_support.suites.start_suite', side_effect=AssertionError('owner')), \
                     patch('generative_driver.client.call', side_effect=AssertionError('owner')), \
                     patch('subprocess.Popen', side_effect=AssertionError('process')), \
                     patch('subprocess.run', side_effect=AssertionError('process')):
@@ -77,11 +77,11 @@ class CorpusPreflightTests(unittest.TestCase):
         self.assertNotIn('evaluator_password', json.dumps(result))
 
     def test_public_ready_label_without_credentials_is_not_authenticated_admission(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         with public_case() as (catalog, row, _):
             plan = plan_corpus(catalog)
-            with patch('generative_driver.benchmark_support.registry.require_calibration') as admission:
+            with patch('firmware_bench.benchmark_support.registry.require_calibration') as admission:
                 result = check_corpus(plan)
         self.assertFalse(result['ok'])
         checked = next(case for case in result['cases'] if case['lineage'] == row['id'])
@@ -92,15 +92,15 @@ class CorpusPreflightTests(unittest.TestCase):
         admission.assert_not_called()
 
     def test_admission_failures_expose_public_reasons_without_paths_or_secret_error_text(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         credential = self.credential()
         secret = 'sentinel-secret-from-a-loader-error'
         with public_case() as (catalog, row, _):
             plan = plan_corpus(catalog)
             for error in (OSError(credential + ': ' + secret), ValueError(secret)):
                 with self.subTest(error=type(error).__name__), patch(
-                        'generative_driver.benchmark_support.registry.require_calibration', side_effect=error):
+                        'firmware_bench.benchmark_support.registry.require_calibration', side_effect=error):
                     result = check_corpus(plan, {'evaluator_password_files': {row['case']: credential}})
                 self.assertFalse(result['ok'])
                 checked = next(case for case in result['cases'] if case['lineage'] == row['id'])
@@ -111,16 +111,16 @@ class CorpusPreflightTests(unittest.TestCase):
                 self.assertNotIn(secret, json.dumps(result))
 
     def test_real_registry_closure_rejects_incomplete_evidence_despite_public_passed_label(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
-        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
         record = {'schema': 'benchmark-calibration/1', 'status': 'passed'}
         with public_case() as (catalog, row, pin):
             pin['manifest']['images'] = {}
             pin['calibration']['evidence_sha256'] = canonical_digest(record)
             pin['manifest']['calibration'] = copy.deepcopy(pin['calibration'])
             plan = plan_corpus(catalog)
-            with patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value={
+            with patch('firmware_bench.benchmark_support.emulator.truth_for_case', return_value={
                     'calibration': record, 'inventory_state': 'qualified', 'images': {},
                     'input_hashes': {}, 'mutations': {'mutants': []}, 'references': {}}) as truth:
                 result = check_corpus(plan, {'evaluator_password_files': {row['case']: self.credential()}})
@@ -131,8 +131,8 @@ class CorpusPreflightTests(unittest.TestCase):
         self.assertEqual(truth.call_count, 1)
 
     def test_stale_selected_pin_or_lost_readiness_is_refused_before_authentication(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         for defect in ('pin', 'readiness'):
             with self.subTest(defect=defect), public_case() as (catalog, row, pin):
                 plan = plan_corpus(catalog)
@@ -140,7 +140,7 @@ class CorpusPreflightTests(unittest.TestCase):
                     pin['manifest_sha256'] = 'e'*64
                 else:
                     pin['calibration']['status'] = 'pending'
-                with patch('generative_driver.benchmark_support.registry.require_calibration') as admission:
+                with patch('firmware_bench.benchmark_support.registry.require_calibration') as admission:
                     result = check_corpus(plan, {'evaluator_password_files': {row['case']: '/unopened/handle'}})
                 self.assertFalse(result['ok'])
                 checked = next(case for case in result['cases'] if case['lineage'] == row['id'])
@@ -151,8 +151,8 @@ class CorpusPreflightTests(unittest.TestCase):
                 admission.assert_not_called()
 
     def test_full_inventory_drift_refuses_check_and_start_before_authentication(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus, start_corpus, lineage_identity
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus, start_corpus, lineage_identity
+        from firmware_bench.benchmark_support.preflight import check_corpus
         for selection in ('excluded', 'selected-blocked'):
             with self.subTest(selection=selection), public_case() as (catalog, row, pin):
                 pending = catalog['lineages'][0]
@@ -170,11 +170,11 @@ class CorpusPreflightTests(unittest.TestCase):
                 current[0].update(status='ready', blockers=[], case_pin=newly_ready)
                 by_lineage = {available['lineage']: available for available in current}
                 credential = '/unopened/private-credential-handle'
-                with patch('generative_driver.benchmark_support.corpus._availability',
+                with patch('firmware_bench.benchmark_support.corpus._availability',
                            side_effect=lambda lineage: copy.deepcopy(by_lineage[lineage['id']])), \
-                        patch('generative_driver.benchmark_support.registry.require_calibration',
+                        patch('firmware_bench.benchmark_support.registry.require_calibration',
                               return_value={'ok': True, 'evidence_sha256': 'd'*64}) as admission, \
-                        patch('generative_driver.benchmark_support.suites.start_suite') as start:
+                        patch('firmware_bench.benchmark_support.suites.start_suite') as start:
                     checked = check_corpus(plan, {'evaluator_password_files': {row['case']: credential}})
                     with self.assertRaisesRegex(ValueError, 'freeze a new corpus plan'):
                         start_corpus(plan, executor='codex')
@@ -187,12 +187,12 @@ class CorpusPreflightTests(unittest.TestCase):
                     admission.assert_not_called()
 
     def test_no_selected_ready_cases_fails_and_preserves_exclusion_reasons_and_blockers(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         with public_case() as (catalog, row, _):
             excluded = catalog['lineages'][0]['id']
             plan = plan_corpus(catalog, include=[], exclude=[(excluded, 'Outside this mission.')])
-            with patch('generative_driver.benchmark_support.registry.require_calibration') as admission:
+            with patch('firmware_bench.benchmark_support.registry.require_calibration') as admission:
                 result = check_corpus(plan, {'evaluator_password_files': {row['case']: '/unopened/handle'}})
         self.assertFalse(result['ok'])
         self.assertTrue(all(case['status'] == 'excluded' for case in result['cases']))
@@ -204,8 +204,8 @@ class CorpusPreflightTests(unittest.TestCase):
         admission.assert_not_called()
 
     def test_all_selected_but_blocked_is_not_a_successful_check(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         with public_case() as (catalog, _, _):
             catalog['lineages'][-1]['case'] = None
             result = check_corpus(plan_corpus(catalog))
@@ -213,12 +213,12 @@ class CorpusPreflightTests(unittest.TestCase):
         self.assertTrue(all(case['status'] == 'blocked' and case['selected'] for case in result['cases']))
 
     def test_legacy_plan_selects_all_and_tampering_is_refused_before_admission(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus, _legacy_plan
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus, _legacy_plan
+        from firmware_bench.benchmark_support.preflight import check_corpus
         with public_case() as (catalog, row, _):
             current = plan_corpus(catalog)
             legacy = _legacy_plan(catalog, current['repetitions'], current['availability'])
-            with patch('generative_driver.benchmark_support.registry.require_calibration',
+            with patch('firmware_bench.benchmark_support.registry.require_calibration',
                        return_value={'ok': True, 'evidence_sha256': 'd'*64}) as admission:
                 result = check_corpus(legacy, {'evaluator_password_files': {row['case']: self.credential()}})
                 self.assertTrue(result['ok'])
@@ -230,8 +230,8 @@ class CorpusPreflightTests(unittest.TestCase):
                 admission.assert_not_called()
 
     def test_malformed_credential_maps_are_rejected_without_echoing_values(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
-        from generative_driver.benchmark_support.preflight import check_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.preflight import check_corpus
         with public_case() as (catalog, row, _):
             plan = plan_corpus(catalog)
             for invalid in ([], '', 7, {row['case']: ''}, {row['case']: 7}):

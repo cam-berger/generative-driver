@@ -355,8 +355,10 @@ STEP = '\n'.join((
     "cwd=work, env=env, check=True)",
     "              subprocess.run([sys.executable, '-m', 'generative_driver', 'smoke'], cwd=work, env=env, check=True)",
     ''))
-# The SHA-256 of the workflow's text before that step, as UTF-8: the lines this Feature leaves as they were.
-BEFORE_THE_STEP = 'eba2de7d9a9912d166930987ca0edfb4cf4735deeb0a359ad3d3d4f60e325f99'
+# The SHA-256 of the workflow's text before that step, as UTF-8: the lines this Feature leaves as they were. It was
+# computed anew for the one line that Feature 12 of the untangle Run added under `  native:` (12-B10), the job's
+# time limit.
+BEFORE_THE_STEP = '8497c4afe29b3e8f67391180870d65abc962abc337c53ec9076f382f50b860bc'
 # The three install blocks of `README.md`, each with the language of its fence and its lines.
 INSTALL_BLOCKS = (
     ('sh', ['python3 -m venv .venv', '.venv/bin/python -m pip install -e ".[dev]"',
@@ -490,6 +492,12 @@ class HostedJobTests(unittest.TestCase):
             # It is the version the step that sets up Python takes.
             step = [line for line in jobs[:versions[0]] if line.lstrip().startswith('- ')][-1]
             self.assertIn('actions/setup-python@', step)
+
+    def test_12_B10_the_job_native_ends_after_sixty_minutes_and_the_line_stands_directly_under_its_name(self):
+        # Feature 12 of the untangle Run, 12-B10: a job that does not end is stopped after an hour, not after
+        # the six hours the host allows.
+        self.assertEqual(self.lines[self.lines.index('  native:') + 1], '    timeout-minutes: 60')
+        self.assertEqual([line for line in self.lines if 'timeout-minutes' in line], ['    timeout-minutes: 60'])
 
 
 PACKAGE = 'generative_driver'

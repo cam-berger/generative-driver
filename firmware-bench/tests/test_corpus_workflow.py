@@ -15,7 +15,7 @@ from suite_fixtures import standing_in
 
 class CorpusWorkflowTests(unittest.TestCase):
     def command(self, *arguments):
-        return subprocess.run([sys.executable, '-m', 'generative_driver.benchmark', 'corpus', *arguments],
+        return subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', 'corpus', *arguments],
                               env={**os.environ, **package_env()}, capture_output=True, text=True, timeout=30)
 
     def test_operator_can_exclude_a_lineage_without_deleting_its_coverage_slot(self):
@@ -55,7 +55,7 @@ class CorpusWorkflowTests(unittest.TestCase):
             self.assertEqual(sum(row['status'] == 'excluded' for row in result['cases']), 6)
 
     def test_operator_can_report_a_live_suite_through_the_corpus_command(self):
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         from test_corpus import measured_fixture
         plan, suite = measured_fixture()
         slot = {**suite['experiment']['comparison_identity']['trials'][0], 'status': 'pending',

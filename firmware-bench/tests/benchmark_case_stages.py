@@ -5,7 +5,7 @@ that runs a stage of a case asks the benchmark for the case's two, as the servic
 it (Feature 05 of the untangle Run, docs/features/untangle/05-supplied-device-stages.md). This file is a benchmark
 item: it goes where the benchmark goes.
 """
-from generative_driver import benchmark
+from firmware_bench import benchmark
 from generative_driver.supplied import stages
 
 

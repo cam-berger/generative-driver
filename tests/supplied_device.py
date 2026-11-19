@@ -109,39 +109,49 @@ class SuppliedDevice:
         raise ValueError('The hand-written device answers no ' + str(method))
 
     def _serve(self):
-        while not self._closed:
-            try:
-                connection = self._listener.accept()
-            except (OSError, EOFError, AuthenticationError):
-                continue
-            with connection:
-                if self._closed:
-                    return
+        try:
+            while not self._closed:
                 try:
-                    if not connection.poll(10):
-                        continue
-                    request = json.loads(connection.recv_bytes(1024 * 1024))
-                    method, params = request.get('method'), request.get('params') or {}
-                    with self._lock:
-                        self.requests.append((method, params))
-                        reply = {'ok': True, 'result': self._answer(method, params)}
-                except Exception as error:
-                    reply = {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
-                with contextlib.suppress(OSError, EOFError):
-                    connection.send_bytes(json.dumps(reply).encode('utf-8'))
+                    connection = self._listener.accept()
+                except (OSError, EOFError, AuthenticationError):
+                    continue
+                with connection:
+                    if self._closed:
+                        return
+                    try:
+                        if not connection.poll(10):
+                            continue
+                        request = json.loads(connection.recv_bytes(1024 * 1024))
+                        method, params = request.get('method'), request.get('params') or {}
+                        with self._lock:
+                            self.requests.append((method, params))
+                            reply = {'ok': True, 'result': self._answer(method, params)}
+                    except Exception as error:
+                        reply = {'ok': False, 'error': type(error).__name__, 'reason': str(error)}
+                    with contextlib.suppress(OSError, EOFError):
+                        connection.send_bytes(json.dumps(reply).encode('utf-8'))
+        finally:
+            self._listener.close()
+
+    def _wake(self):
+        """Connect once, so a serving thread that waits in `accept` sees that the device is closed."""
+        with contextlib.suppress(OSError, EOFError, AuthenticationError):
+            Client(self._endpoint['address'], family=self._endpoint['family'],
+                   authkey=bytes.fromhex(self._endpoint['authkey'])).close()
 
     def close(self):
-        """Withdraw the endpoint and stop the line devices."""
+        """Withdraw the endpoint and stop the line devices, within ten seconds whatever the serving thread does."""
         if self._closed:
             return
         self._closed = True
         self.endpoint_file.unlink(missing_ok=True)
-        with contextlib.suppress(OSError, EOFError, AuthenticationError):
-            # Wake the accept, so the serving thread sees that the device is closed.
-            Client(self._endpoint['address'], family=self._endpoint['family'],
-                   authkey=bytes.fromhex(self._endpoint['authkey'])).close()
+        # Feature 12 of the untangle Run, 12-B10: the wake-up connects from a thread of its own. A serving thread
+        # that has just answered a request ends without accepting again, and a connection nobody accepts waits in
+        # its handshake for ever.
+        threading.Thread(target=self._wake, daemon=True).start()
         self._thread.join(5)
-        self._listener.close()
+        if self._thread.is_alive():
+            self._listener.close()
         self._sessions.close()
         if self._sockets is not None:
             shutil.rmtree(self._sockets, ignore_errors=True)

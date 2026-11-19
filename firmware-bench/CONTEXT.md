@@ -1,40 +1,19 @@
-# Domain
+# Domain of the benchmark
+
+The terms of firmware bench. The terms of the tool it evaluates, such as configurator, stage, handoff, package and fresh reuse, are in the tool's [CONTEXT.md](https://github.com/cam-berger/generative-driver/blob/main/CONTEXT.md).
 
 | Term | Meaning |
 |---|---|
-| Configurator | Background owner of runs, workers and exclusive device access. Codex and the CLI are clients. |
-| Runtime / provider / model | Worker application, AI service and selected model; record separately. |
-| Stage / assignment | Acquire, interpret, probe, ground, emit or reuse; one active worker with bounded inputs/tools/effects. |
-| Handoff | Immutable artifacts and hashed notes: worker checks, truth-free configurator checks and open questions. Empty stages still hand off. |
-| Worker report | A claim, never a reason by itself to stop a run. |
-| Scripted worker | A program the kit ships that the configurator launches in place of the Codex CLI, doing a stage's work by a fixed script with no model. Its runs show the kit's machinery works, never a model's ability. |
-| Stand-in device | A fictional line-protocol device served on a localhost TCP port for one smoke. Its exchanges are not physical evidence. |
-| Kit analysis | The firmware analysis the configurator makes once per run, before interpretation, with its index of functions and likely command dispatchers. Workers read it; they do not rerun it unless the evidence contradicts how it loaded the image. |
-| Interpret task | One fresh worker inside an interpret stage attempt run in task mode: the inventory, one handler task per command, or the cross-check. Tasks are recorded under the stage's one assignment, never as stage attempts. |
-| Supplementary document | A datasheet, protocol specification or operator-supplied file acquired beside the firmware. Interpreters read it as evidence of meanings, units and framing; where it disagrees with the firmware or the device, the firmware or the device wins. |
-| Device-first interpretation | Interpretation in a generic run with no single firmware image: the interpret worker writes the model from the device's replies to operations it declares read-only, and hands it on as usual. |
-| Equivalence | One final verdict: evaluator grade for benchmarks, self-evidence for generic runs. Completion alone does not mean success. |
-| Interface model / binding | Byte operations, decoding and effects / operator-selected host connection. |
-| Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |
-| Declarative protocol | Wire exchanges and decoders implementing the public contract through a versioned shared runtime. |
-| Precondition | Driver-declared requirement checked from fresh read observations before the requested command. |
-| Effect grant | Permission for a driver call to write, actuate or reset; reads need none. The operator grants a run's effects and the grader each hidden step's; a call needing an ungranted effect is refused before any device I/O. |
-| Application MCP layer | Separately authored tools composing public managed-driver operations through the supported SDK. |
-| Semantic uncertainty | Missing or weakly supported operation or field meaning; retained as a scoped warning. |
-| Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |
-| Ground / fresh reuse | Test meanings against the device / new agent uses only package and objective. Reuse is the final stage. |
 | Groundtruth | Password-encrypted, hash-pinned expected behavior held only by the evaluator. |
 | Bench harness | Benchmark operator: holds password, owns emulator/provider, supplies device descriptor and grades after the run. A suite's harness reads each password once, holds its set in memory, starts trials only after the set's folder is out of reach, and seals each concluded scoring trial in place under the set's password. The operator moves the seals into the answer vault after the suite. |
 | Evaluator password | One case's or set's password once read: held in the memory of the process that read it, used only to seal and unlock, and impossible to print or serialize. This catches mistakes in our own code; it does not stop anything that can read that process's memory. |
 | Unlocked truth | A case's answer key decrypted in the bench harness's memory, once per trial and again for a trial resumed later, with the hash of the ciphertext it came from. The harness passes it to the grader, which never decrypts an answer key. |
-| Instrument observation | Device-state readings visible to workers, never grades. Generated devices offer none for now: workers see only their UART. |
 | Lineage | Upstream firmware ancestry selected in a corpus. Repetitions of one lineage do not demonstrate another device family. |
 | Case | Registered, versioned image and evaluator contract, with public mission data and a separately encrypted answer key. A generated device is a case registered through its set. |
-| Device pin | The frozen identity of one generated device in a trial: its set, the set's manifest hash, its id and the hashes of its image, answer file and qualification record. The bench harness builds it and the configurator freezes it. It never holds the level or framing, because a worker can read it. |
+| Device pin | The frozen identity of one generated device in a trial: its set, the set's manifest hash, its id and the hashes of its image, answer file and qualification record. The bench harness builds it and freezes it with the trial's snapshot. It never holds the level or framing, because a worker can read it. |
 | Boot reading | A generated device's startup observation, read from a fresh emulator before anything else touches it. A device's graded runs must all give the same reading, or its set stays pending, because recovery relies on it to show a replacement emulator started clean. |
 | Rerun | A scoring suite's one replacement trial for a device whose first trial ended in a fault, run after every first attempt. It stays one result for that device, and its result stands. |
 | Execution setup | The case's method, actual executable artifact, substitutions, validated behavior and remaining hardware gaps. Native and MCU binaries have distinct identities. |
-| Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
 | Trial | One fresh six-stage run. A repetition starts another trial, not another lineage. |
 | Pass / failure | The evaluator grades a trial's frozen driver equivalent / not equivalent, a departure from the original function; a trial that emits no driver fails. Fresh reuse is reported beside a pass, never inside it. |
 | Unknown | A completed grade with no failed step and at least one step the evaluator could not decide; neither pass nor failure. |
@@ -57,6 +36,13 @@
 | Availability / admission | Public inventory checks / authenticated reference qualification against the case's current grader identity: the hashes of the code the grader imports for that case and of the case's own registration entry, never of the system under test. Availability does not establish admission. A generated set is admitted when both references pass on every device and every mutant fails on a sample of two devices per level and framing. |
 | Reference driver / mutant | A correct driver the grader must pass, two distinct ones per case / a deliberately wrong driver the grader must fail. |
 
-Functional compatibility compares required outputs/effects, not source code. Hashes prove identity/integrity, not physical truth or access control. Keep passwords/answers out of candidate inputs; the configurator holds no truth.
+What the benchmark adds to four of the tool's terms:
 
-Only safety, integrity, operator and host stops end runs. Model/device differences drive bounded interpretation repair. Operator stops need configuration; host stops need environment repair. After repair budget is spent, continue with the best revision. The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host stops as faults.
+| Term | The benchmark's part |
+|---|---|
+| Equivalence | For a benchmark run the final verdict is the evaluator's grade. |
+| Effect grant | The grader grants each hidden step's effects. |
+| Instrument observation | Generated devices offer none for now: workers see only their UART. |
+| Public mission | Hidden vectors remain evaluator-owned. A generated mission states only each task's effect; ranges, refusal conditions, framing and the mapping onto firmware commands stay hidden. |
+
+The pass rate scores safety and integrity stops, like a spent budget, as failures, and other operator stops and host stops as faults.

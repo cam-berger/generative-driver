@@ -21,11 +21,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import evaluator, generated_sets, generated_trials, harness
-from generative_driver.benchmark_support.evidence import public_pin
-from generative_driver.benchmark_support.suite_book import SuiteBook
-from generative_driver.benchmark_support.suites import resume_suite
-from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth
+from firmware_bench.benchmark_support import evaluator, generated_sets, generated_trials, harness
+from firmware_bench.benchmark_support.evidence import public_pin
+from firmware_bench.benchmark_support.suite_book import SuiteBook
+from firmware_bench.benchmark_support.suites import resume_suite
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, UnlockedTruth
 from generative_driver.configurator import Controller
 from generated_fixtures import FIXTURE_ANSWER_KEY, PASSWORD, REFERENCE_A
 from suite_fixtures import (book, drive_suite, owner_call, settled_suite, standing_in, suite_call, symlinks_refused,

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support.audit import audit_commands, forbidden_paths
+from firmware_bench.benchmark_support.audit import audit_commands, forbidden_paths
 
 
 def command(text, kind='item.completed'):

@@ -1,9 +1,9 @@
 # Generated-device interface
 
-Status: specified on 2026-11-02 from the interface review in the [benchmark baseline spec](../.scratch/benchmark-baseline/spec.md), and enforced by `generated_device` ([ADR 0007](adr/0007-one-validator-defines-a-generated-device.md)), whose validator `seal_device` and `open_device` run. The bench harness's part, under [What a trial and a verdict reveal](#what-a-trial-and-a-verdict-reveal), comes with the harness.
+Status: specified on 2026-11-02.
 
 This is what the private device generator must hand over for a generated device to be sealed, graded and admitted. Each rule is checked in one of three places:
-- by the validator in `generative_driver.benchmark_support`, which `seal_device` runs before writing anything and `open_device` runs before returning a device;
+- by the validator in `firmware_bench.benchmark_support`, which `seal_device` runs before writing anything and `open_device` runs before returning a device;
 - by qualification's emulator runs;
 - where neither can check it, by the generator's own tests, as a [generator duty](#generator-duties).
 
@@ -20,7 +20,7 @@ A set is a directory in the answer vault ([ADR 0003](adr/0003-generated-devices-
 | `devices/<id>.answer.enc` | The sealed answer key, `generated-answer-key/2`, read only by grading and qualification |
 | `qualification.enc` | The sealed qualification record, written by `firmware-bench set qualify`, never by the generator |
 
-Each sealed file is a `generative-driver-groundtruth/1` envelope: AES-256-GCM under a key derived from the set's one password. Pass `seal_device` the password exactly as the operator's password file holds it, without surrounding whitespace, since `firmware-bench set qualify` strips the file's. The set's secret seed, if the generator keeps one, stays in the answer vault outside the bundle. Registering and qualifying a set are the operator's steps, in the [authoring guide](benchmark-case-authoring.md#generated-sets).
+Each sealed file is a `generative-driver-groundtruth/1` envelope: AES-256-GCM under a key derived from the set's one password. Pass `seal_device` the password exactly as the operator's password file holds it, without surrounding whitespace, since `firmware-bench set qualify` strips the file's. The set's secret seed, if the generator keeps one, stays in the answer vault outside the bundle. Registering and qualifying a set are the operator's steps, in the [authoring guide](case-authoring.md#generated-sets).
 
 ## Manifest
 
@@ -47,7 +47,7 @@ A device's framing is how its commands and replies travel over its UART:
 
 Every reply is self-delimiting, refusals included: a text reply is whole lines, and a binary reply's length follows from its own header or from the request.
 
-The image is the raw firmware binary, not an ELF file, that the recipe's setup loads from `$bin`; a trial's worker receives the same bytes. It is built with the Arm GNU Toolchain 14.2 for Cortex-M, as [asset_build.py](../src/generative_driver/benchmark_support/asset_build.py) builds the hand-made cases. Command names appear as plain strings at easy levels and are encoded at hard ones.
+The image is the raw firmware binary, not an ELF file, that the recipe's setup loads from `$bin`; a trial's worker receives the same bytes. It is built with the Arm GNU Toolchain 14.2 for Cortex-M, as [asset_build.py](../src/firmware_bench/benchmark_support/asset_build.py) builds the hand-made cases. Command names appear as plain strings at easy levels and are encoded at hard ones.
 
 ## Public mission
 
@@ -143,7 +143,7 @@ Beyond each field's own shape, the validator checks that the parts agree:
 
 ## Rules only an emulator run can check
 
-`firmware-bench set qualify` runs both references on every device, and every mutant on the first two devices by id of each level and framing ([qualification](benchmark-case-authoring.md#generated-sets)). Together with the validator's rules, these runs enforce:
+`firmware-bench set qualify` runs both references on every device, and every mutant on the first two devices by id of each level and framing ([qualification](case-authoring.md#generated-sets)). Together with the validator's rules, these runs enforce:
 
 | Obligation | Checked by |
 |---|---|
@@ -157,7 +157,7 @@ Beyond each field's own shape, the validator checks that the parts agree:
 
 A set is registered in `resources/registrations/sets.json`, `generated-set-registrations/2`: `{"schema", "sets": {<name>: {"manifest_sha256", "scoring"}}}`, where `scoring` is true for a scoring set and false for a development set.
 
-Admission reads the whole record, not only the device it is asked about. Beyond the [record's identity and status](benchmark-case-authoring.md#generated-sets), it refuses a set whose record holds a failure; whose devices or sample are not the manifest's; where any device's two references did not both pass; where a mutant row was not rejected, repeats another or lies outside the sample, or a sampled device lacks a required mutant; whose runs are not exactly each device's two references and each mutant row; where any run's `native_process_observed` is not `true`; or where a device's runs show boot readings (a boot reading is the startup observation's values, read at the start of a grade) that differ, are missing or are empty. A record does not list a key's mutants, so a mutant dropped beyond the required ones is not detected. These checks read the record correctly; only a real qualification shows that Renode ran.
+Admission reads the whole record, not only the device it is asked about. Beyond the [record's identity and status](case-authoring.md#generated-sets), it refuses a set whose record holds a failure; whose devices or sample are not the manifest's; where any device's two references did not both pass; where a mutant row was not rejected, repeats another or lies outside the sample, or a sampled device lacks a required mutant; whose runs are not exactly each device's two references and each mutant row; where any run's `native_process_observed` is not `true`; or where a device's runs show boot readings (a boot reading is the startup observation's values, read at the start of a grade) that differ, are missing or are empty. A record does not list a key's mutants, so a mutant dropped beyond the required ones is not detected. These checks read the record correctly; only a real qualification shows that Renode ran.
 
 ## Generator duties
 
@@ -183,4 +183,4 @@ They show no expected value, input or state name.
 
 ## Versions and the worked example
 
-From this version on, a change to any rule here changes the version of the schema it touches. Version 1 of the answer key is refused. A reference's capability mapping declares the schema `capabilities/2`. A mapping under the earlier name of that schema is refused, so a set sealed with it is refused; no set is registered. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [firmware-bench/tests/generated_fixtures.py](../firmware-bench/tests/generated_fixtures.py), is the worked example, and the validator accepts it.
+From this version on, a change to any rule here changes the version of the schema it touches. A reference's capability mapping declares the schema `capabilities/2`. The manifest keeps version 1 with the eight-digit id, since no set was written before it. The public test fixture, [tests/generated_fixtures.py](../tests/generated_fixtures.py), is the worked example, and the validator accepts it.

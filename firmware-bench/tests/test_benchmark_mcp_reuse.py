@@ -10,7 +10,7 @@ class GeneratedMcpWorkflowTests(unittest.TestCase):
 
 class GeneratedMissionVerdictTests(unittest.TestCase):
     def test_authentic_generated_calls_report_the_fresh_worker_mission_beside_the_verdict(self):
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         from test_evaluation import contract, EXPECTED
         sha = 'a' * 64
         definition = contract(sha)

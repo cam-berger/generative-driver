@@ -12,10 +12,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from generated_fixtures import REFERENCE_A, FixtureDevice, fixture_start
-from generative_driver.benchmark_support import evaluator, generated_sets, generated_trials, harness, trial_store
-from generative_driver.benchmark_support.outcomes import classify
-from generative_driver.benchmark_support.suite_store import SuiteStore
-from generative_driver.benchmark_support.suites import child_disposition, scoring_disposition
+from firmware_bench.benchmark_support import evaluator, generated_sets, generated_trials, harness, trial_store
+from firmware_bench.benchmark_support.outcomes import classify
+from firmware_bench.benchmark_support.suite_store import SuiteStore
+from firmware_bench.benchmark_support.suites import child_disposition, scoring_disposition
 from suite_fixtures import book, drive_suite, sqlite_context, suite_call
 from tool_fixtures import gateway_identity
 from test_generated_trials import (PASSWORD, SET, START, GeneratedTrialFixture, SetSuiteFixture, as_scoring_set,
@@ -1155,7 +1155,7 @@ class RegradeTests(ScoringFixture):
     def test_06_B11_a_grade_unscored_for_integrity_stands_with_no_regrade_or_rerun(self):
         # The harness counts the benchmark's own class as an integrity stop (08-B12 of
         # docs/features/untangle/08-reports.md).
-        from generative_driver.benchmark_support.integrity import IntegrityError
+        from firmware_bench.benchmark_support.integrity import IntegrityError
         self.grading_error = IntegrityError('A hash differs')
         with self.scripted(), self.grading_faults(d0000d001=1):
             record = self.run_harness(request_id='integrity')

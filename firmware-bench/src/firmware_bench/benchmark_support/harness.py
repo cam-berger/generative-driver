@@ -269,7 +269,7 @@ def settled_executor(home, request, start=None):
     that executor in the `executors` entry of the home's `config.json`, with the request's `executor_config` laid over
     them and `runtime` set to the executor, as the configurator settles it. A suite child's configuration (`start`)
     is complete already and is taken as it is."""
-    from ..setup import resolve_executor
+    from generative_driver.setup import resolve_executor
     if start is not None:
         return resolve_executor(start.get('executor')), dict(start.get('executor_config') or {})
     executor = resolve_executor(request.get('executor'))
@@ -284,8 +284,10 @@ def frozen_inputs(trial_dir, pin, config, *, options=None, public_inputs=None):
     pin and the snapshot's hash. The snapshot lies under `trial_dir/benchmark`, and its provenance is that of the
     run's configuration `config`. A device of a generated set is frozen from the folder `public_inputs`."""
     from ..benchmark import supplied_inputs
+    from . import tool_install
     from .snapshots import execution_provenance, snapshot_case
-    saved = snapshot_case(trial_dir, pin, execution_provenance(config, case_ids=(pin['case_id'],)),
+    saved = snapshot_case(trial_dir, pin,
+                          execution_provenance(config, case_ids=(pin['case_id'],), **tool_install.folders()),
                           public_inputs=public_inputs)
     supplied = supplied_inputs(pin['case_id'], trial_dir, options)
     return {'firmware': supplied['firmware'], 'mission': supplied['mission'],
@@ -323,6 +325,7 @@ def check_snapshot(trial_dir, run_dir, result, *, config=None):
     one the trial froze in its own folder. With the run's configuration `config`, the snapshot must also name the
     provenance of the installed code for it. A difference raises IntegrityError, in the words the configurator used
     while it checked the snapshot itself."""
+    from . import tool_install
     from .integrity import IntegrityError
     from .snapshots import execution_provenance, read_snapshot, require_snapshot
     named = result.get('client_record') or {}
@@ -333,8 +336,8 @@ def check_snapshot(trial_dir, run_dir, result, *, config=None):
         raise IntegrityError('Execution snapshot hash differs from saved run') from error
     if saved['snapshot_sha256'] != named.get('snapshot_sha256') or frozen != saved:
         raise IntegrityError('Execution snapshot hash differs from saved run')
-    if config is not None and \
-            execution_provenance(config, case_ids=(saved['case_pin']['case_id'],)) != saved['executed']:
+    if config is not None and execution_provenance(config, case_ids=(saved['case_pin']['case_id'],),
+                                                   **tool_install.folders()) != saved['executed']:
         raise IntegrityError('Execution snapshot implementation or runtime environment changed; start a new run')
     return saved
 
@@ -392,7 +395,7 @@ def conclude(trial_dir, case_id, run_dir, result, *, password, truth_source, ren
     (`check_snapshot`): a difference is an integrity stop, posted unscored. The plaintext evaluation never outlives
     this call. A grading that counted package calls returns `package_output`, its largest output and its calls, for
     the trial record alone: however the grade or seal or post ended, and never in what is sealed or posted."""
-    from ..client_interface import verdict_errors
+    from generative_driver.client_interface import verdict_errors
     from . import evaluator
     from .emulated_actions import OutputMeter
     # Grading code and the harness's check of the snapshot raise the benchmark's own class: that is an integrity stop.
@@ -559,7 +562,7 @@ def _configurator(home, autostart=True):
     these are sent again once the connection drops (each finds what an earlier one did): the book's requests may start
     one while it serves such a suite call, and no other. Status and result reconnect with a deadline. Once a home that
     existed is removed, requests fail without recreating it."""
-    from ..client import call
+    from generative_driver.client import call
     from .suite_book import SuiteBook, answered
     home = Path(home)
     starting = ('ping', 'start', 'suite_start', 'suite_resume', 'suite_start_child', 'suite_resume_child')
@@ -1092,7 +1095,7 @@ def resume(trial_dir, *, password, renode=None, call=None, device=None, audit=No
     suite holds: without it, it is refused here. A scoring suite's completed child (`audit`, its slot's `_SlotAudit`)
     grades whatever the trial recorded of its device or its harness, since grading uses a fresh emulator that a leftover
     one cannot touch, unless the audit flags it first: then its handoffs are sealed with no grade."""
-    from ..client import call as client_call
+    from generative_driver.client import call as client_call
     from . import evaluator
     from .registrations import registered_case_ids, registration_for
     from .registry import case_truth
@@ -1312,7 +1315,7 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
     the trial until the harness has finished with it. Password file and emulator paths reach the harness on its stdin
     only. A repeated request_id with the same inputs follows the trial it started, with no second harness or device;
     with other inputs it is refused."""
-    from ..client import default_home
+    from generative_driver.client import default_home
     options = dict(options or {})
     home = Path(options.pop('home', None) or default_home()).expanduser().resolve()
     bench = Path(options.pop('bench_home', None) or bench_home(home)).expanduser().resolve()
@@ -1331,7 +1334,7 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
         raise ValueError('Unsupported options for a benchmark trial: ' + ', '.join(sorted(options)))
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
         raise ValueError('request_id must be a nonblank string')
-    from ..setup import resolve_executor
+    from generative_driver.setup import resolve_executor
     executor = resolve_executor(executor)
     if (executor == 'replay') != (candidate is not None):
         raise ValueError('Only the replay executor takes a saved candidate, and it needs one: replay_candidate')
@@ -1367,13 +1370,17 @@ def launch(case, output_dir=None, executor=None, options=None, approval=None, *,
 
 def _spawn(directory, arguments, payload):
     """Start a detached harness process in `directory`, like the configurator's own start (an argv list; a new session
-    on POSIX, a detached process on Windows), and hand it `payload` on its stdin, never on its command line."""
+    on POSIX, a detached process on Windows), and hand it `payload` on its stdin, never on its command line. Its search
+    path is the folder that holds this package and the folder that holds the tool's, in place of the inherited one, so
+    the child runs the code this process runs."""
+    from . import tool_install
     env = os.environ.copy()
-    env['PYTHONPATH'] = str(Path(__file__).resolve().parents[2])
+    holders = (str(Path(__file__).resolve().parents[2]), str(tool_install.tool_folder().parent))
+    env['PYTHONPATH'] = os.pathsep.join(dict.fromkeys(holders))
     flags = ({'creationflags': subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == 'nt'
              else {'start_new_session': True})
     with (Path(directory) / 'harness.log').open('ab') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'generative_driver.benchmark_support.harness', *arguments],
+        process = subprocess.Popen([sys.executable, '-m', 'firmware_bench.benchmark_support.harness', *arguments],
                                    cwd=directory, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log, **flags)
     threading.Thread(target=process.wait, daemon=True).start()
     try:
@@ -1781,7 +1788,7 @@ def _suite_trial(suite_dir, slot, child, configurator, *, home, passwords, renod
     (`launch(params)`), which starts and attaches it only while the suite runs. A slot whose child exists continues it:
     one still running is waited for, a completed one awaiting its grade is evaluated again (never a final the
     evaluator's draft holds), and a stopped one with nothing uncertain gets a device anew and resumes through its suite
-    (`resume_run(params)`), with the approved child budget `extension` if any. Every child, legacy tq9 included, is
+    (`resume_run(params)`), with the approved child budget `extension` if any. Every child is
     graded once after its run. A slot of a set suite takes its password by its set, and its `SetDevice` from its frozen
     pin and the set the harness holds (`held`), in the same step. Immediately before a worker can start, on a new child
     or a continued one, `gate(slot)` must find the set's folder out of reach, or `_NoWorkerStarted` ends the slot; a
@@ -1976,7 +1983,7 @@ def _follow_suite(suite_dir, process, timeout, *, duplicate):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog='python -m generative_driver.benchmark_support.harness')
+    parser = argparse.ArgumentParser(prog='python -m firmware_bench.benchmark_support.harness')
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument('--trial-dir')
     where.add_argument('--suite-dir', help='Drive a suite; its request, password files and emulator path arrive on stdin')

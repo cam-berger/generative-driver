@@ -18,7 +18,7 @@ from pathlib import Path
 
 # The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
 from .benchmark_support.case_assets import STAGES, case_root
-from .setup import SUPPORTED_EXECUTORS, resolve_executor
+from generative_driver.setup import SUPPORTED_EXECUTORS, resolve_executor
 
 
 def supplied_inputs(case_id, run_dir, options=None):
@@ -183,8 +183,8 @@ def main(argv=None):
     running.add_argument('--home')
     running.add_argument('--request-id')
     approval_flags=running.add_mutually_exclusive_group()
-    approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned BME280 tools for the selected physical binding and effects')
-    approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped tq9 emulator MCP tools; no physical device approval')
+    approval_flags.add_argument('--approve-bound-device-tools', action='store_true', help='Explicitly authorize assigned tools for the selected physical binding and effects')
+    approval_flags.add_argument('--approve-emulator-tools', action='store_true', help='Explicitly authorize scoped emulator MCP tools; no physical device approval')
     running.add_argument('--binding-json', help='Operator-owned binding JSON, e.g. {"url":"ftdi://selected/1"}')
     running.add_argument('--wait', action='store_true', help='Follow a trial until its bench harness has finished')
     resuming = commands.add_parser('trial-resume', help='Complete the evaluation of a trial whose harness has finished: '
@@ -199,7 +199,7 @@ def main(argv=None):
     scoring = commands.add_parser('score')
     scoring.add_argument('report')
     scoring.add_argument('--password-file')
-    scoring.add_argument('--evidence', help='V2 sealed evidence, or the saved BME280 independent reference file (digest checked)')
+    scoring.add_argument('--evidence', help='V2 sealed evidence (digest checked)')
     evaluator = commands.add_parser('truth')
     evaluator.add_argument('action', choices=['unlock','rekey','rebuild','calibrate'])
     evaluator.add_argument('--case',required=True,choices=case_ids())
@@ -288,7 +288,7 @@ def main(argv=None):
                                       password=_read_password(args.password_file), set_root=args.set_root,
                                       vault=args.vault_folder)
             elif args.action == 'scorecard':
-                from .client import default_home
+                from generative_driver.client import default_home
                 from .benchmark_support.scorecard import bench_trial_dirs, suite_scorecard, write_scorecard
                 from .benchmark_support.suite_reporting import _export_suite
                 home = Path(default_home()).expanduser().resolve()
@@ -302,7 +302,7 @@ def main(argv=None):
                                          password=password, set_root=args.set_root, vault=args.vault_folder)
                 write_scorecard(result, args.output)
             elif args.action == 'store':
-                from .client import call, default_home
+                from generative_driver.client import call, default_home
                 from .benchmark_support.suite_book import suite_call
                 from .benchmark_support.trial_store import store
                 home = Path(default_home()).expanduser().resolve()
@@ -392,7 +392,7 @@ def _read_password(path):
 def _unseal(suite_id, trial, password_file, vault_folder, output):
     """Write one sealed trial into the folder `output`, for a person checking a flagged command. It writes only under
     the given vault folder, in a folder new or empty."""
-    from .client import default_home
+    from generative_driver.client import default_home
     from .benchmark_support.trial_store import opened
     vault, target = Path(vault_folder).expanduser().resolve(), Path(output).expanduser().resolve()
     if not vault.is_dir() or target == vault or not target.is_relative_to(vault):
@@ -408,9 +408,9 @@ def _unseal(suite_id, trial, password_file, vault_folder, output):
 def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, autostart=True, wait=False):
     """Run the installation replay, or start an actual-agent trial. Every actual-agent case starts a detached bench
     harness, which admits the case, holds the evaluator password file and grades the frozen driver once after the run;
-    it provides the emulator of an emulated case (v2 or legacy tq9) and leaves the operator's bound device (bme280)
-    alone. The configurator never receives the password file. That returns {trial_id, run_id}; `wait` follows the
-    trial until the harness has finished with it."""
+    it provides the emulator of an emulated case and leaves an operator's bound device alone. The configurator never
+    receives the password file. That returns {trial_id, run_id}; `wait` follows the trial until the harness has
+    finished with it."""
     from .benchmark_support.registry import resolve_case, pin_case
     options = dict(options or {})
     definition = resolve_case(case)
@@ -420,24 +420,24 @@ def run(case='setup-smoke', output_dir=None, executor=None, options=None, *, aut
     pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     approval = options.pop('scoped_tool_approval', None)
     if approval == 'emulator' and not (definition.execution == 'actual-agent-emulation' and definition.approval_scope == 'emulator'):
-        raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
+        raise ValueError('Scoped approval requires a case with that approval scope')
     if approval == 'emulator' and 'binding' in options:
         raise ValueError('Emulator approval cannot authorize an operator-supplied binding')
     if approval not in (None, 'emulator') and approval != definition.approval_scope:
-        raise ValueError('Scoped approval requires tq9/emulator or bme280/bound-device')
+        raise ValueError('Scoped approval requires a case with that approval scope')
     if approval == 'bound-device' and (not isinstance(options.get('binding'),dict) or not options['binding']):
         raise ValueError('Bound-device approval requires an explicit operator binding')
     if definition.execution.startswith('actual-agent-'):
         from .benchmark_support.harness import launch
         if not autostart:
             # A configurator that must already run (Windows) is asked before any harness or device starts.
-            from .client import call, default_home
+            from generative_driver.client import call, default_home
             reachable = call('ping', {}, home=Path(options.get('home') or default_home()).expanduser(), autostart=False)
             if not reachable.get('ok'):
                 return reachable
         return launch(case, output_dir, executor, options, approval, effects=definition.default_effects,
                       autostart=autostart, wait=wait)
-    from .toolkit import call_tool
+    from generative_driver.toolkit import call_tool
     started = time.monotonic()
     output = Path(output_dir or tempfile.mkdtemp(prefix='generative-driver-smoke-')).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -601,8 +601,6 @@ def score(report, password_file=None, *, evidence_path=None):
         return regrade_v2(data, evidence_path, password)
     case = data.get('case')
     case_id = case.get('id') if isinstance(case, dict) else case
-    if case_id == 'bme280':
-        return adapter_for(case_id).score(data, password, evidence_path=evidence_path)
     return adapter_for(case_id).score(data, password)
 
 

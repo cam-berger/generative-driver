@@ -289,4 +289,4 @@ def safe_summary(record):
 
 
 if __name__=='__main__':
-    raise SystemExit('Family calibration moved: run python -m generative_driver.benchmark_support.family_calibration')
+    raise SystemExit('Family calibration moved: run python -m firmware_bench.benchmark_support.family_calibration')

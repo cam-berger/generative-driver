@@ -1,6 +1,6 @@
 import unittest
 
-from generative_driver.benchmark import compare, score_observations
+from firmware_bench.benchmark import compare, score_observations
 
 
 class BehavioralScoreTests(unittest.TestCase):
@@ -41,7 +41,7 @@ if __name__ == '__main__':
 
 class SavedScoreTests(unittest.TestCase):
     def test_saved_smoke_observations_are_rescored_instead_of_trusting_verdict(self):
-        from generative_driver.benchmark import score
+        from firmware_bench.benchmark import score
         report = {'schema':'benchmark-report/1','case':'setup-smoke','execution':'scripted-replay',
                   'verdict':'passed','observations':{'temperature':215},'stages':{}}
         self.assertEqual(score(report)['verdict'], 'failed')

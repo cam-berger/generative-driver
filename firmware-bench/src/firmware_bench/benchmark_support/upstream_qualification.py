@@ -24,7 +24,7 @@ def qualify(payload, manifest, image, output, *, renode, ghidra_home, java_home)
     from .reference_calibration import calibration_run
     from .families import family_for
     from .upstream import hydrate_truth
-    from ..toolkit import resources_root
+    from generative_driver.toolkit import resources_root
     truth = hydrate_truth(payload)
     artifact = artifact_name(manifest)
     native = manifest.get('execution_setup', {}).get('method') == 'native-sim'

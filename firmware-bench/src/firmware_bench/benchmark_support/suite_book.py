@@ -71,7 +71,7 @@ def stored_candidate(config, store):
     """The candidate of `config`, stored under `store` by its sha256, where a suite keeps the candidates it froze: the
     stored copy's configuration. Every child of the suite replays those bytes, whatever happens to the saved
     candidate."""
-    from ..integrity import digest
+    from generative_driver.integrity import digest
     store = Path(store)
     target = store / config['candidate_sha256']
     if not target.is_dir():
@@ -328,7 +328,8 @@ class SuiteBook:
     def suite_start(self, params):
         """Freeze and store a suite for the bench harness that drives it, attached by the sha256 of its token. Nothing
         is scheduled here: the harness reserves, starts, attaches and settles each slot."""
-        from ..setup import resolve_executor
+        from generative_driver.setup import resolve_executor
+        from . import tool_install
         from .snapshots import execution_provenance
         from .suites import freeze_suite, normalize_manifest, refuse_secrets
         manifest = normalize_manifest(params.get('manifest'))
@@ -346,7 +347,8 @@ class SuiteBook:
                 config = {**self._configured_executors().get(executor, {}), 'runtime': executor}
                 if executor == 'replay':
                     config = _replay_suite_config(manifest, options, self.home)
-                provenance = execution_provenance(config, case_ids=[entry['case'] for entry in manifest['entries']])
+                provenance = execution_provenance(config, case_ids=[entry['case'] for entry in manifest['entries']],
+                                                  **tool_install.folders())
                 frozen = freeze_suite(manifest, executor, config, options, provenance, harness_token_sha256=token,
                                       device_pins=pins)
                 saved = self.store.create(frozen, params.get('request_id'), harness_pid=pid, harness_lock=lock,
@@ -839,6 +841,7 @@ class SuiteBook:
             time.sleep(.05)
 
     def _verify_suite(self, suite):
+        from . import tool_install
         from .families import family_for
         from .snapshots import execution_provenance
         frozen = suite['frozen']
@@ -846,7 +849,8 @@ class SuiteBook:
             if family_for(pin['case_id']).current_pin(pin) != pin:
                 raise ValueError('Frozen suite case pin changed')
         cases = [entry['case'] for entry in frozen['manifest']['entries']]
-        if execution_provenance(frozen['executor_config'], case_ids=cases) != frozen['provenance']:
+        if execution_provenance(frozen['executor_config'], case_ids=cases,
+                                **tool_install.folders()) != frozen['provenance']:
             raise ValueError('Frozen suite implementation or execution environment changed')
         for trial in suite['trials']:
             found = self.find_request(trial['child_request_id'])
@@ -864,7 +868,7 @@ class SuiteBook:
         which first attaches a device it provides anew and passes an approved child budget extension itself. A scoring
         suite refuses a child budget extension here, the authority, since pairing calls any such override
         incompatible. The suite goes on under the configurator that answers now, whose process id is noted."""
-        from ..setup import SUPPORTED_EXECUTORS
+        from generative_driver.setup import SUPPORTED_EXECUTORS
         from .suites import NO_CHILD_EXTENSION, harness_driven
         uncertain = 'Outstanding effect is uncertain; operator must respond with confirmed_safe after reconciliation'
         with self._suite_lock(suite_id):
@@ -991,7 +995,7 @@ class SuiteBook:
 
     def _suite_experiment(self, suite):
         # Public provenance is an allowlist, never the private execution snapshot.
-        from ..client_interface import PROTOCOL
+        from generative_driver.client_interface import PROTOCOL
         from .evidence import public_pin
         frozen = suite['frozen']
         manifest, provenance, config = frozen['manifest'], frozen['provenance'], frozen['executor_config']
@@ -1053,7 +1057,7 @@ def suite_call(method, params=None, home=None, *, autostart=True):
     """What the book of the configurator at `home` answers the suite call, for a command or a reader of the
     benchmark. The book's requests may start a configurator only with `autostart`, which is what that place gave its
     suite call when the configurator served it. `client.call` is looked up when this is called."""
-    from .. import client
+    from generative_driver import client
     directory = Path(home or client.default_home()).expanduser().resolve()
 
     def configurator(name, request=None):

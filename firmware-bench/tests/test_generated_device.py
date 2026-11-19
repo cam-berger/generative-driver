@@ -4,7 +4,7 @@ import copy
 import unittest
 
 from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, fixture_mission
-from generative_driver.benchmark_support.generated_device import validate_device
+from firmware_bench.benchmark_support.generated_device import validate_device
 
 DEVICE = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
 

@@ -30,15 +30,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import firmware_bench
 import generative_driver
 import interface_runtime
-from generative_driver import benchmark, client, client_interface, integrity, replay
-from generative_driver.benchmark_support import grader_identity, harness, trial_store
+from firmware_bench import benchmark
+from generative_driver import client, client_interface, integrity, replay
+from firmware_bench.benchmark_support import grader_identity, harness, trial_store
 from test_benchmark_runs import CASE, SnapshotCase, TrialCase
 from test_benchmark_suite_book import ScriptedSuiteCase
 
-REPO = Path(__file__).resolve().parents[2]
-PACKAGE = Path(generative_driver.__file__).resolve().parent
+# The benchmark's package and the tool's, each found through its import, so the tests also run on installed
+# packages (Feature 12 of this Run, docs/features/untangle/12-firmware-bench.md).
+PACKAGE = Path(firmware_bench.__file__).resolve().parent
+TOOL = Path(generative_driver.__file__).resolve().parent
+RUNTIME = Path(interface_runtime.__file__).resolve().parent
 SUPPORT = PACKAGE / 'benchmark_support'
 REPORT_NAMES = ('summarize', 'markdown', 'report_run', '_usage', '_interventions', '_public', '_awaiting', '_why',
                 '_tree_hash')
@@ -66,9 +71,11 @@ GRADED = {'schema': 'equivalence/2', 'status': 'graded', 'equivalent': True, 'ba
 FORMS = {'1': 'benchmark-report/1', '2': 'benchmark-report/2', '3': 'benchmark-report/3',
          '3-unscored': 'benchmark-report/3', '3-stopped': 'benchmark-report/3'}
 # The SHA-256 of the `report.json` and of the `report.md` the tool's report module wrote for each canned run before
-# it moved (commit 023324f, `src/generative_driver/reporting.py`), over their text as UTF-8.
+# it moved (commit 023324f, `src/generative_driver/reporting.py`), over their text as UTF-8. The digest of the
+# `report.json` of form `1` was computed anew for Feature 12 of this Run (12-B2): its `toolchain_revision` joins three
+# tree hashes, of the tool, of its runtime and of the benchmark, where it joined two.
 BEFORE = {
-    '1': ['7f86a3ea8fdcf8e920697fe1b8eb6f0610e8b0a2abb2f8c58f3d433b6b685f2d',
+    '1': ['1be3c71d7baae7ecbb073302b30580cc0c4a9e0bda12da2bdcd40f31e90f8627',
           'f7af4591de008e30bd4f33a419cd22cdf64ee04226af829646d880e2972dcf82'],
     '2': ['a0898f6b6693fbde1b176cd63b25598a85956e8c4cb86d7e1d60d68f0c824299',
           '3701903e5815ab64a5baef4c5ddef273058c2d7e32a7caf71c869e2f9d155f1f'],
@@ -82,12 +89,12 @@ BEFORE = {
 
 def report_module():
     """The benchmark's module of the run report."""
-    return importlib.import_module('generative_driver.benchmark_support.run_reporting')
+    return importlib.import_module('firmware_bench.benchmark_support.run_reporting')
 
 
 def snapshot():
     """An execution snapshot of the canned case, with its hash."""
-    from generative_driver.benchmark_support.snapshots import canonical_digest
+    from firmware_bench.benchmark_support.snapshots import canonical_digest
     body = {'schema': 'benchmark-execution-snapshot/1', 'case_pin': PIN, 'public_files': {}, 'executed': EXECUTED}
     return {**body, 'snapshot_sha256': canonical_digest(body)}
 
@@ -218,7 +225,7 @@ class RunReportTests(TemporaryHomeCase):
         for name in REPORT_NAMES:
             with self.subTest(name=name):
                 self.assertTrue(callable(getattr(module, name, None)), name)
-        from generative_driver.benchmark_support import integrity
+        from firmware_bench.benchmark_support import integrity
         self.assertIs(module._tree_hash, integrity.tree_hash)
 
     def test_08_B1_report_run_writes_the_same_report_and_markdown_as_before_in_each_format(self):
@@ -231,16 +238,17 @@ class RunReportTests(TemporaryHomeCase):
                 self.assertEqual(json.loads(saved), report)
                 self.assertEqual(digests(saved, text), BEFORE[form])
 
-    def test_08_B1_a_run_without_a_snapshot_names_the_revisions_of_the_same_folders_as_before(self):
+    def test_08_B1_a_run_without_a_snapshot_names_the_revisions_of_the_folders_12_B2_gives(self):
         report, _, _, hashed = exported(report_module(), '1', self.home)
-        skills = PACKAGE / 'resources' / 'toolchain' / 'skills'
-        self.assertEqual(hashed, [PACKAGE, Path(interface_runtime.__file__).resolve().parent, skills])
-        # The two packages lie side by side, under `src/` in this repository.
-        self.assertEqual([folder.relative_to(PACKAGE.parent).as_posix() for folder in hashed],
-                         ['generative_driver', 'interface_runtime', 'generative_driver/resources/toolchain/skills'])
+        skills = TOOL / 'resources' / 'toolchain' / 'skills'
+        # The tool's package, its runtime and the benchmark's package, each where it is installed, then the tool's
+        # skills: the files the two revisions covered while the three lay in one source tree.
+        self.assertEqual(hashed, [TOOL, RUNTIME, PACKAGE, skills])
+        self.assertEqual([folder.name for folder in hashed],
+                         ['generative_driver', 'interface_runtime', 'firmware_bench', 'skills'])
         self.assertTrue(all(folder.is_dir() for folder in hashed))
-        both = hashlib.sha256(b'tree of generative_drivertree of interface_runtime').hexdigest()
-        self.assertEqual((report['toolchain_revision'], report['skills_revision']), (both, 'tree of skills'))
+        three = hashlib.sha256(b'tree of generative_drivertree of interface_runtimetree of firmware_bench').hexdigest()
+        self.assertEqual((report['toolchain_revision'], report['skills_revision']), (three, 'tree of skills'))
         # A run with a snapshot takes both from the snapshot, and hashes nothing.
         report, _, _, hashed = exported(report_module(), '3', self.home)
         self.assertEqual(hashed, [])
@@ -395,7 +403,7 @@ class ReplayCandidateTests(TemporaryHomeCase):
         self.assertEqual(payload['executor_config'], replay.candidate_config({'candidate': beside}))
 
     def test_08_B6_suite_candidates_refuses_it_and_so_does_the_suite_call_before_anything_is_stored(self):
-        from generative_driver.benchmark_support import suite_book
+        from firmware_bench.benchmark_support import suite_book
         from suite_fixtures import scripted_manifest
         inside = saved_candidate(self.bench / 'candidate')
         with self.assertRaises(ValueError) as refusal:
@@ -416,7 +424,7 @@ class ReplayCandidateTests(TemporaryHomeCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM suites').fetchone()[0], 0)
 
     def test_08_B6_start_suite_refuses_it_before_a_harness_starts(self):
-        from generative_driver.benchmark_support import suites
+        from firmware_bench.benchmark_support import suites
         from suite_fixtures import scripted_manifest
         self.no_harness()
         inside = saved_candidate(self.bench / 'candidate')
@@ -444,22 +452,27 @@ class ReplayCandidateTests(TemporaryHomeCase):
 def benchmark_sources():
     """The benchmark's code: `benchmark.py` and every module under `benchmark_support/`, each as its file and the
     dotted name of its package."""
-    return [(PACKAGE / 'benchmark.py', 'generative_driver'),
-            *((path, 'generative_driver.benchmark_support') for path in sorted(SUPPORT.rglob('*.py')))]
+    return [(PACKAGE / 'benchmark.py', 'firmware_bench'),
+            *((path, 'firmware_bench.benchmark_support') for path in sorted(SUPPORT.rglob('*.py')))]
+
+
+# The folder that holds each of the three packages.
+HOLDERS = {'firmware_bench': PACKAGE.parent, 'generative_driver': TOOL.parent, 'interface_runtime': RUNTIME.parent}
 
 
 def is_module(name):
-    """Whether the dotted `name` is a module or a package of the source tree."""
-    base = PACKAGE.parent.joinpath(*name.split('.'))
+    """Whether the dotted `name` is a module or a package of the benchmark or of the tool."""
+    holder = HOLDERS.get(name.split('.')[0])
+    if holder is None:
+        return False
+    base = holder.joinpath(*name.split('.'))
     return base.with_suffix('.py').is_file() or (base / '__init__.py').is_file()
 
 
 def is_tool(name):
-    """Whether the dotted `name` is a tool module: `interface_runtime` or one of its modules, or `generative_driver`
-    or a module of it outside `benchmark.py` and `benchmark_support/`."""
-    parts = name.split('.')
-    return parts[0] == 'interface_runtime' or (parts[0] == 'generative_driver'
-                                               and parts[1:2] not in (['benchmark'], ['benchmark_support']))
+    """Whether the dotted `name` is a tool module: `interface_runtime` or `generative_driver`, or a module of either.
+    The benchmark is the package `firmware_bench`."""
+    return name.split('.')[0] in ('interface_runtime', 'generative_driver')
 
 
 def tool_imports(source, package):
@@ -508,7 +521,7 @@ def unlisted(source, package):
 
 def lock_module():
     """The benchmark's module of lock helpers."""
-    return importlib.import_module('generative_driver.benchmark_support.process_lock')
+    return importlib.import_module('firmware_bench.benchmark_support.process_lock')
 
 
 def body(function):
@@ -544,7 +557,7 @@ class LockHelperTests(TemporaryHomeCase):
                 self.assertEqual(body(mine), body(tools))
                 self.assertEqual(inspect.signature(mine), inspect.signature(tools))
         self.assertEqual(tool_imports((SUPPORT / 'process_lock.py').read_text(encoding='utf-8'),
-                                      'generative_driver.benchmark_support'), [])
+                                      'firmware_bench.benchmark_support'), [])
 
     def test_08_B13_a_lock_one_side_holds_is_one_the_other_sees_held(self):
         for holder in (lock_module().hold_process_lock, client.hold_process_lock):
@@ -602,7 +615,7 @@ class LockHelperTests(TemporaryHomeCase):
             'suite_book': [(1, 'process_lock', 'process_lock_held'), (1, 'process_lock', 'wait_for_exit')]})
 
     def test_08_B13_a_harness_is_told_to_run_by_the_lock_it_holds_and_else_by_its_process(self):
-        from generative_driver.benchmark_support.suite_book import SuiteBook
+        from firmware_bench.benchmark_support.suite_book import SuiteBook
         folder = self.home / 'trial'
         folder.mkdir()
         mine = {'pid': os.getpid()}
@@ -624,21 +637,24 @@ class LockHelperTests(TemporaryHomeCase):
                                                            'lock': str(folder / harness.HARNESS_LOCK)}}), False)
 
 
-SUPPORT_PACKAGE = 'generative_driver.benchmark_support'
+SUPPORT_PACKAGE = 'firmware_bench.benchmark_support'
 # What the scan of 08-B12 says of each form of an import, for a source of `benchmark_support/`.
 FORMS_OF_IMPORT = {
-    'from ..configurator import PROTOCOL':
+    'from generative_driver.configurator import PROTOCOL':
         ['imports PROTOCOL of generative_driver.configurator, a module the interface does not list'],
-    'from .. import configurator':
+    'from generative_driver import configurator':
         ['imports the module of generative_driver.configurator, a module the interface does not list'],
-    'from .. import __version__': ['imports __version__ of generative_driver, a module the interface does not list'],
-    'def launch():\n    from ..client import _wait_for_exit, call':
+    'from generative_driver import __version__':
+        ['imports __version__ of generative_driver, a module the interface does not list'],
+    'def launch():\n    from generative_driver.client import _wait_for_exit, call':
         ['takes _wait_for_exit from generative_driver.client'],
-    'from ..integrity import IntegrityError, digest': ['takes IntegrityError from generative_driver.integrity'],
+    'from generative_driver.integrity import IntegrityError, digest':
+        ['takes IntegrityError from generative_driver.integrity'],
     'from generative_driver.replay import RUNTIME, candidate_config': ['takes RUNTIME from generative_driver.replay'],
-    'from ..setup import *': ['takes * from generative_driver.setup'],
-    'from .. import client\nclient.call("ping")\nclient._request': ['reads _request of generative_driver.client'],
-    'from .. import client as tool\ntool.default_home()\ntool.SERVICE_LOCK':
+    'from generative_driver.setup import *': ['takes * from generative_driver.setup'],
+    'from generative_driver import client\nclient.call("ping")\nclient._request':
+        ['reads _request of generative_driver.client'],
+    'from generative_driver import client as tool\ntool.default_home()\ntool.SERVICE_LOCK':
         ['reads SERVICE_LOCK of generative_driver.client'],
     'import generative_driver.setup as chosen\nchosen.home_path()': ['reads home_path of generative_driver.setup'],
     'import interface_runtime.engine\ninterface_runtime.engine.validate_model\ninterface_runtime.engine.execute':
@@ -651,8 +667,10 @@ FORMS_OF_IMPORT = {
     'import interface_runtime\ninterface_runtime.__file__': [],
     'from interface_runtime.engine import validate_model\nfrom interface_runtime import engine\n'
     'engine.validate_model': [],
-    'from .. import client, replay\nclient.call\nclient.default_home\nclient.__file__\nreplay.candidate_config': [],
-    'from ..client_interface import CALLS, IMPORTS, PROTOCOL, verdict_errors\nfrom ..toolkit import call_tool': [],
+    'from generative_driver import client, replay\nclient.call\nclient.default_home\nclient.__file__\n'
+    'replay.candidate_config': [],
+    'from generative_driver.client_interface import CALLS, IMPORTS, PROTOCOL, verdict_errors\n'
+    'from generative_driver.toolkit import call_tool': [],
     'from .integrity import IntegrityError\nfrom . import trial_store\nfrom ..benchmark import STAGES\nimport json': [],
 }
 # The tool names the benchmark's code took at the base and takes no more, each as (module, name).
@@ -701,11 +719,11 @@ class ToolImportTests(TrialCase):
         for source, problems in FORMS_OF_IMPORT.items():
             with self.subTest(source=source):
                 self.assertEqual(unlisted(source, SUPPORT_PACKAGE), problems)
-        # A source of the package itself, as `benchmark.py` is, names the tool's modules one level nearer.
-        self.assertEqual(unlisted('from .setup import home_path, resolve_executor', 'generative_driver'),
+        # A source of the package itself, as `benchmark.py` is, names the tool's modules the same way.
+        self.assertEqual(unlisted('from generative_driver.setup import home_path, resolve_executor', 'firmware_bench'),
                          ['takes home_path from generative_driver.setup'])
-        self.assertEqual(unlisted('from .benchmark_support import harness\nfrom .client import call',
-                                  'generative_driver'), [])
+        self.assertEqual(unlisted('from .benchmark_support import harness\nfrom generative_driver.client import call',
+                                  'firmware_bench'), [])
 
     def test_08_B12_what_the_benchmark_took_outside_the_list_is_gone(self):
         taken = self.taken()
@@ -721,25 +739,23 @@ class ToolImportTests(TrialCase):
         self.assertIn(own_error, imported_in('harness', 'conclude'))
         self.assertEqual([entry for entry in imported_in('harness', 'conclude') if entry[2] == 'IntegrityError'],
                          [own_error])
-        self.assertIn((2, 'client_interface', 'PROTOCOL'), imported_in('suite_reporting', '_recorded_equivalence'))
-        self.assertIn((2, 'client_interface', 'PROTOCOL'), imported_in('run_reporting', 'markdown'))
+        listed_protocol = (0, 'generative_driver.client_interface', 'PROTOCOL')
+        self.assertIn(listed_protocol, imported_in('suite_reporting', '_recorded_equivalence'))
+        self.assertIn(listed_protocol, imported_in('run_reporting', 'markdown'))
         self.assertIn((1, 'labels', 'equivalence_label'), imported_in('run_reporting', 'markdown'))
-        self.assertEqual(imported_in('authoring', 'evaluator_directory'), [(2, 'client', 'default_home')])
-        self.assertEqual(imported_in('suite_book', 'stored_candidate'), [(2, 'integrity', 'digest')])
-        # The dropped legacy module is held to the list by its import line.
-        self.assertEqual([entry for entry in imported_in('physical', 'prepare_stage')
-                          if entry[2] in ('IntegrityError', 'digest')],
-                         [own_error, (2, 'integrity', 'digest')])
+        self.assertEqual(imported_in('authoring', 'evaluator_directory'),
+                         [(0, 'generative_driver.client', 'default_home')])
+        self.assertEqual(imported_in('suite_book', 'stored_candidate'), [(0, 'generative_driver.integrity', 'digest')])
 
     def test_08_B12_the_benchmarks_integrity_error_is_its_own_class_and_a_value_error(self):
-        from generative_driver.benchmark_support import integrity as own
+        from firmware_bench.benchmark_support import integrity as own
         self.assertIsNot(own.IntegrityError, integrity.IntegrityError)
         self.assertEqual(own.IntegrityError.__name__, 'IntegrityError')
         self.assertTrue(issubclass(own.IntegrityError, ValueError))
         self.assertFalse(issubclass(own.IntegrityError, integrity.IntegrityError))
 
     def test_08_B12_the_check_of_a_snapshot_raises_the_benchmarks_integrity_error_with_the_same_texts(self):
-        from generative_driver.benchmark_support import integrity as own
+        from firmware_bench.benchmark_support import integrity as own
         folder, record = self.trial()
         result, run_dir = self.result(record), self.run_dir(record)
         self.assertEqual(harness.check_snapshot(folder, run_dir, result)['case_pin']['case_id'], CASE)
@@ -765,7 +781,7 @@ class ToolImportTests(TrialCase):
         return difference['reason']
 
     def test_08_B12_conclude_counts_only_the_benchmarks_integrity_error_as_an_integrity_stop(self):
-        from generative_driver.benchmark_support import integrity as own
+        from firmware_bench.benchmark_support import integrity as own
         self.assertEqual(self.unscored_for('own', own.IntegrityError('A hash differs')), 'integrity: A hash differs')
         # The tool's class is any other fault of the evaluator's host: nothing the harness calls while it grades
         # raises it.
@@ -773,7 +789,7 @@ class ToolImportTests(TrialCase):
                          'evaluator host fault: IntegrityError')
 
     def test_08_B12_a_stored_candidate_keeps_the_runtime_of_the_configuration_the_tool_gave(self):
-        from generative_driver.benchmark_support import suite_book
+        from firmware_bench.benchmark_support import suite_book
         candidate = saved_candidate(self.root / 'candidate')
         checked = replay.candidate_config({'candidate': candidate})
         store = self.root / 'store'
@@ -784,7 +800,7 @@ class ToolImportTests(TrialCase):
         self.assertEqual(integrity.digest(stored['candidate']), checked['candidate_sha256'])
 
     def test_08_B12_an_evaluator_folder_under_the_homes_runs_is_refused_as_before(self):
-        from generative_driver.benchmark_support import authoring
+        from firmware_bench.benchmark_support import authoring
         with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}):
             inside = self.home / 'runs' / 'run-1' / 'evaluator'
             with self.assertRaises(ValueError) as refusal:
@@ -918,7 +934,9 @@ class SentByASuiteTests(Recording, ScriptedSuiteCase):
         self.assertEqual(sorted(set(self.fixture.received[before:]) - set(client_interface.CALLS)), [])
 
 
-DOCUMENT = REPO / 'docs' / 'client-interface.md'
+# The tool's interface document, which lies two folders above these tests while the benchmark is in the tool's
+# repository. The tests that read it are skipped where it is not there.
+DOCUMENT = Path(__file__).resolve().parents[2] / 'docs' / 'client-interface.md'
 # The names in SQL that are no table and no column.
 SQL_WORDS = {'SELECT', 'FROM', 'WHERE', 'ORDER', 'BY', 'AND'}
 # The places where the benchmark's code opens the service's database, and where it reads the operator's settings.
@@ -929,6 +947,8 @@ SETTINGS_READERS = [('harness.py', 'settled_executor'), ('suite_book.py', '_conf
 
 def records_section():
     """The lines of the interface document's section `Records on disk`."""
+    if not DOCUMENT.is_file():
+        raise unittest.SkipTest(f'The tool\'s interface document is not two folders above these tests: {DOCUMENT}')
     lines = DOCUMENT.read_text(encoding='utf-8').splitlines()
     start = lines.index('## Records on disk') + 1
     end = next(number for number in range(start, len(lines)) if lines[number].startswith('## '))
@@ -1057,8 +1077,9 @@ class GraderListTests(unittest.TestCase):
         closure = grader_identity.grader_closure()
         self.assertIn('benchmark_support.evidence', closure)
         self.assertEqual([name for name in closure if name.endswith(('.run_reporting', '.process_lock'))], [])
-        beyond = [name for name in closure
-                  if any(name == listed or name.startswith(listed + '.') for listed in grader_identity.SYSTEM_MODULES)]
+        # Nor any module of the tool, by the name of either of its packages (12-B2 of Feature 12 of this Run).
+        outside = ('generative_driver', 'interface_runtime', *grader_identity.SYSTEM_MODULES)
+        beyond = [name for name in closure if any(name == listed or name.startswith(listed + '.') for listed in outside)]
         self.assertEqual(beyond, [])
 
 

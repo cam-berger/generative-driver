@@ -17,9 +17,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import evaluator, harness
-from generative_driver.benchmark_support.registry import pin_case
-from generative_driver.benchmark_support.snapshots import execution_provenance, read_snapshot
+from firmware_bench.benchmark_support import evaluator, harness, tool_install
+from firmware_bench.benchmark_support.registry import pin_case
+from firmware_bench.benchmark_support.snapshots import execution_provenance, read_snapshot
 from generative_driver.client_interface import verdict_errors
 from suite_fixtures import harness_devices
 from tool_fixtures import scripted_stages
@@ -129,7 +129,7 @@ class HarnessStartTests(TrialCase):
         frozen = folder / 'benchmark' / 'inputs' / 'firmware.bin'
         self.assertEqual(start['firmware'], {'path': str(frozen), 'sha256': pin['image_hashes']['firmware.bin']})
         self.assertEqual(hashlib.sha256(frozen.read_bytes()).hexdigest(), start['firmware']['sha256'])
-        from generative_driver.benchmark import case_root
+        from firmware_bench.benchmark import case_root
         mission = json.loads((case_root() / 'missions' / (CASE + '.json')).read_text(encoding='utf-8'))
         self.assertEqual(start['mission'], {key: mission[key] for key in ('tasks', 'reuse_objective')})
         self.assertRegex(start['evaluation_token_sha256'], '^[0-9a-f]{64}$')
@@ -149,7 +149,8 @@ class HarnessStartTests(TrialCase):
         # The run has the configuration the harness settled, and the snapshot names its provenance.
         agent = self.result(record)['agent']
         self.assertEqual((agent['model'], agent['settings']), ('requested-model', {'reasoning_effort': 'high'}))
-        self.assertEqual(read_snapshot(folder)['executed'], execution_provenance(settled, case_ids=(CASE,)))
+        self.assertEqual(read_snapshot(folder)['executed'],
+                         execution_provenance(settled, case_ids=(CASE,), **tool_install.folders()))
 
     def test_06_B15_without_a_requested_configuration_the_run_has_what_the_operator_configured(self):
         folder, record = self.trial()
@@ -192,7 +193,7 @@ class HarnessAdmissionTests(TrialCase):
                          'admission')
 
     def test_06_B15_a_case_whose_calibration_has_not_passed_is_refused(self):
-        from generative_driver.benchmark_support import registry
+        from firmware_bench.benchmark_support import registry
         pin = pin_case(CASE, 'original', 0)
         pending = {**pin, 'calibration': {**pin['calibration'], 'status': 'pending'}}
         with patch.object(registry, 'pin_case', return_value=pending):
@@ -200,8 +201,8 @@ class HarnessAdmissionTests(TrialCase):
         self.assertEqual(reason, 'ValueError: V2 case requires independently validated passed calibration before a run')
 
     def test_06_B15_an_admission_whose_evidence_is_not_the_pins_is_refused(self):
-        from generative_driver.benchmark_support import registry
-        from generative_driver.benchmark_support.truth import UnlockedTruth
+        from firmware_bench.benchmark_support import registry
+        from firmware_bench.benchmark_support.truth import UnlockedTruth
         from test_device_provider import RECIPE
         other = lambda pin, password: (UnlockedTruth({'recipe': RECIPE}, pin['truth_sha256']),
                                        {'ok': True, 'evidence_sha256': 'f' * 64})
@@ -223,7 +224,7 @@ class HarnessAdmissionTests(TrialCase):
         self.assertEqual(self.refused('seed', start=other_seed), differs)
 
     def test_06_B15_emulator_approval_of_a_case_that_is_no_emulator_profile_is_refused(self):
-        from generative_driver.benchmark_support import registry
+        from firmware_bench.benchmark_support import registry
         real = registry.case_selection
 
         def no_profile(case_id):
@@ -250,18 +251,18 @@ class SnapshotCase(TrialCase):
     """Trials whose snapshot the harness keeps and checks itself (06-B16)."""
 
     def password(self):
-        from generative_driver.benchmark_support.truth import read_password
+        from firmware_bench.benchmark_support.truth import read_password
         return read_password(self.secrets['password_files'][CASE])
 
     def again(self, continue_trial, folder, outcome=PASS):
         """The trial's record after `continue_trial` (`harness.resume` or `harness.reattach`) ran on it. A resume
         unlocks the answer key again: here the toy one, under the hash the installed case pins."""
-        from generative_driver.benchmark_support.truth import UnlockedTruth
+        from firmware_bench.benchmark_support.truth import UnlockedTruth
         from test_device_provider import RECIPE
         truth = UnlockedTruth({'recipe': RECIPE}, pin_case(CASE, 'original', 0)['truth_sha256'])
         with scripted_stages(self.controller, check=self.check), \
                 patch('generative_driver.client.call', side_effect=self.configurator), \
-                patch('generative_driver.benchmark_support.registry.case_truth', return_value=truth), \
+                patch('firmware_bench.benchmark_support.registry.case_truth', return_value=truth), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(outcome)):
             return continue_trial(folder, password=self.password(), renode=self.secrets['renode'])
 
@@ -336,7 +337,7 @@ class SnapshotCheckTests(SnapshotCase):
             saved = json.loads(path.read_text(encoding='utf-8'))
             saved['executed']['runtime_configuration']['model'] = 'another-model'
             body = {key: value for key, value in saved.items() if key != 'snapshot_sha256'}
-            from generative_driver.benchmark_support.snapshots import canonical_digest
+            from firmware_bench.benchmark_support.snapshots import canonical_digest
             path.write_text(json.dumps({**body, 'snapshot_sha256': canonical_digest(body)}), encoding='utf-8')
 
         def changed_trial(folder, run_dir):
@@ -422,7 +423,7 @@ class SuiteTests(TrialCase):
                  json.loads(self.controller._row(slot['run_id'])['spec'])) for slot in slots]
 
     def test_06_B19_the_harness_keys_are_the_five_a_harness_adds(self):
-        from generative_driver.benchmark_support import suites
+        from firmware_bench.benchmark_support import suites
         self.assertEqual(suites.HARNESS_KEYS, ('device', 'firmware', 'mission', 'evaluation_token_sha256',
                                                'client_record'))
 
@@ -561,7 +562,7 @@ class GraderRecordTests(unittest.TestCase):
         self.assertEqual(built['final_record']['mission'], mission)
 
     def test_06_B18_the_public_record_and_the_verdict_identity_hold_no_method_and_no_capability_hash(self):
-        from generative_driver.benchmark_support import evidence
+        from firmware_bench.benchmark_support import evidence
         for names in (evidence.EQUIVALENCE, evidence.VERDICT_IDENTITY):
             self.assertEqual(set(names) & {'method', 'capabilities_sha256'}, set())
         self.assertEqual(set(evidence.EQUIVALENCE), set(TWELVE) - {'checks', 'diff', 'mission'})
@@ -588,9 +589,9 @@ class PostedRecordTests(TrialCase):
         self.assertEqual(record['status'], 'unscored')
 
     def test_06_B18_the_sealed_final_keeps_the_mapping_hash_and_the_regrade_of_the_sealed_evidence_passes(self):
-        from generative_driver.benchmark_support.evidence import regrade_v3
-        from generative_driver.benchmark_support.truth import read_password
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.evidence import regrade_v3
+        from firmware_bench.benchmark_support.truth import read_password
+        from firmware_bench.benchmark_support.run_reporting import report_run
         folder, record = self.trial()
         password = read_password(self.secrets['password_files'][CASE])
         sealed = password.unlock(folder / evaluator.EVIDENCE, record['evidence']['sha256'])
@@ -618,8 +619,8 @@ class ClientRecordReaderTests(TrialCase):
             self.assertNotIn(key, result)
 
     def test_06_B17_the_grader_takes_the_pin_and_the_hash_from_the_client_record(self):
-        from generative_driver.benchmark_support.integrity import IntegrityError
-        from generative_driver.benchmark_support.truth import read_password
+        from firmware_bench.benchmark_support.integrity import IntegrityError
+        from firmware_bench.benchmark_support.truth import read_password
         folder, record = self.trial(outcome=OSError('the evaluator host stopped'))
         result = self.result(record)
         password = read_password(self.secrets['password_files'][CASE])
@@ -635,8 +636,8 @@ class ClientRecordReaderTests(TrialCase):
             evaluator.accepted_driver(CASE, folder, self.run_dir(record), unpinned)
 
     def test_06_B17_a_report_of_a_scripted_run_holds_what_it_held(self):
-        from generative_driver.benchmark_support.evidence import public_pin
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.evidence import public_pin
+        from firmware_bench.benchmark_support.run_reporting import report_run
         folder, record = self.trial(executor_config={'reasoning_effort': 'high'})
         with patch('generative_driver.client.call', side_effect=self.configurator):
             report = report_run(record['run_id'], home=self.home, output=self.root / 'report.json')
@@ -656,8 +657,8 @@ class ClientRecordReaderTests(TrialCase):
         self.assertEqual(report['equivalence']['evidence_sha256'], record['evidence']['sha256'])
 
     def test_06_B17_the_comparison_of_two_reports_reads_what_it_read(self):
-        from generative_driver import benchmark
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench import benchmark
+        from firmware_bench.benchmark_support.run_reporting import report_run
         reports = []
         for name in ('before', 'after'):
             folder, record = self.trial(name)
@@ -672,7 +673,7 @@ class ClientRecordReaderTests(TrialCase):
 
 class CaseMissionTests(unittest.TestCase):
     def test_06_B6_the_mission_supplied_for_each_registered_case_has_no_fault(self):
-        from generative_driver import benchmark
+        from firmware_bench import benchmark
         from generative_driver.client_interface import mission_errors
         with tempfile.TemporaryDirectory() as temporary:
             for case in ('tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1', 'zephyr-modbus-v1'):
@@ -706,7 +707,7 @@ class DocumentTests(unittest.TestCase):
 
     def test_06_B23_the_validator_of_a_generated_device_refuses_a_mapping_with_the_old_schema_name(self):
         from generated_fixtures import FIXTURE_ANSWER_KEY, FIXTURE_IMAGE, fixture_mission
-        from generative_driver.benchmark_support.generated_device import validate_device
+        from firmware_bench.benchmark_support.generated_device import validate_device
         device = {'id': '0000d001', 'level': 1, 'framing': 'text-lines'}
         given = {'image': FIXTURE_IMAGE, 'mission': fixture_mission(device['id'])}
         validate_device(device, key=FIXTURE_ANSWER_KEY, **given)
@@ -718,7 +719,7 @@ class DocumentTests(unittest.TestCase):
             self.assertIn('Invalid capability schema or input', str(refused.exception.__cause__))
 
     def test_06_B23_no_set_is_registered(self):
-        from generative_driver.benchmark_support.generated_sets import set_registrations
+        from firmware_bench.benchmark_support.generated_sets import set_registrations
         self.assertEqual(set_registrations(), {})
 
 
@@ -726,12 +727,12 @@ class RenameTests(unittest.TestCase):
     """The benchmark's side of the renames (06-B20 to 06-B22)."""
 
     def test_06_B20_the_scorecard_counts_a_package_execute_call_as_a_device_call(self):
-        from generative_driver.benchmark_support import scorecard
+        from firmware_bench.benchmark_support import scorecard
         self.assertIn('package_execute', scorecard.DEVICE_TOOLS)
         self.assertNotIn('benchmark_package_execute', scorecard.DEVICE_TOOLS)
 
     def test_06_B21_the_graders_capability_rules_accept_capabilities_2_and_refuse_the_old_name(self):
-        from generative_driver.benchmark_support import capabilities
+        from firmware_bench.benchmark_support import capabilities
         from tq9_workflow_fixture import capabilities as mapping_of, model as model_of
         model, mapping = model_of(), mapping_of()
         self.assertEqual(mapping['schema'], 'capabilities/2')
@@ -746,7 +747,7 @@ class RenameTests(unittest.TestCase):
             capabilities.bind_task(old, task, inputs, model)
 
     def test_06_B22_the_scorecard_looks_for_an_interpretations_transcript_under_supplied_tools(self):
-        from generative_driver.benchmark_support import scorecard
+        from firmware_bench.benchmark_support import scorecard
         run = Path('a-run')
         sealed = {'id': 'assignment-1', 'workspace': '/elsewhere/interpret/attempt2'}
         places = [path.relative_to(run).as_posix() for path in scorecard._kept(run, 'interpret', sealed)]

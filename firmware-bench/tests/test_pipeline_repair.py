@@ -30,7 +30,7 @@ class InterpretationBindingTests(unittest.TestCase):
     def test_repair_does_not_follow_candidate_links_outside_the_workspace(self):
         # Catches turning a candidate symlink into host-copied repair evidence; a link is noted, never followed.
         from tq9_workflow_fixture import model
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import digest
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve(); ws = root/'worker'; ws.mkdir()
@@ -196,8 +196,8 @@ class IndependentProbeObservationTests(unittest.TestCase):
     def test_live_probe_returns_measured_reference_to_compare_with_candidate_decoder(self):
         # Catches probing bytes without exposing the independent observation channel.
         from tq9_workflow_fixture import Silicon, model
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.harness import DeviceServer
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.harness import DeviceServer
         from generative_driver.configurator import Controller
         from generative_driver.device_client import open_device
         from generative_driver.toolkit import call_tool
@@ -254,9 +254,9 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_runtime_refusal_survives_diagnostic_projection_as_invocation_failure(self):
         # Catches a missing effect grant being presented only as a decoder mismatch.
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.emulated_actions import execute_plan
-        from generative_driver.benchmark_support.reference_calibration import model_invoker
-        from generative_driver.benchmark_support.behavior import project_feedback, validate_records
+        from firmware_bench.benchmark_support.emulated_actions import execute_plan
+        from firmware_bench.benchmark_support.reference_calibration import model_invoker
+        from firmware_bench.benchmark_support.behavior import project_feedback, validate_records
         class Session:
             def set_running(self, value): pass
             def observe(self): return {}
@@ -280,7 +280,7 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_missing_probe_execution_is_host_failure_without_model_feedback(self):
         # Catches toolkit startup/I/O envelopes being scored as missing outputs.
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.reference_calibration import model_invoker
+        from firmware_bench.benchmark_support.reference_calibration import model_invoker
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); (root/'model.json').write_text(json.dumps(model()))
             with patch('generative_driver.toolkit.call_tool', return_value={
@@ -295,7 +295,7 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_final_candidate_binding_failure_is_a_behavioral_result(self):
         # Catches final inputs outside candidate bounds escaping as a host crash.
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        from firmware_bench.benchmark_support.emulated_actions import canonical_package_invoker
         with tempfile.TemporaryDirectory() as temporary:
             package = Path(temporary); (package/'driver').mkdir()
             (package/'driver/model.json').write_text(json.dumps(model()))
@@ -312,7 +312,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_ground_discrepancy_claim_is_a_note_and_never_routes_by_itself(self):
         # Catches a worker's own claim, or an evaluator diagnostic, routing the run: only a device diff repairs.
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write(root/'run/supplied/state.json', {'diagnostic': {'passed': True}})
@@ -324,9 +324,9 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_binding_bounds_errors_reach_repair_without_disclosing_evaluator_inputs(self):
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.behavior import project_feedback, validate_records
-        from generative_driver.benchmark_support.emulated_actions import execute_plan
-        from generative_driver.benchmark_support.reference_calibration import model_invoker
+        from firmware_bench.benchmark_support.behavior import project_feedback, validate_records
+        from firmware_bench.benchmark_support.emulated_actions import execute_plan
+        from firmware_bench.benchmark_support.reference_calibration import model_invoker
         class Session:
             def set_running(self, value):
                 self.running = value
@@ -360,7 +360,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_malformed_mapping_targets_remain_candidate_errors(self):
         from tq9_workflow_fixture import model, capabilities
-        from generative_driver.benchmark_support.behavior import validate_capabilities
+        from firmware_bench.benchmark_support.behavior import validate_capabilities
         mapping = capabilities()
         mapping['tasks']['set_duty']['inputs']['duty']['parameter'] = {'wrong': 'shape'}
         mapping['tasks']['temperature']['outputs']['temperature']['output'] = ['wrong', 'shape']
@@ -372,8 +372,8 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_capability_schema_failures_are_actionable_before_any_device_dispatch(self):
         # Reproduces the live repair's wrong copy key and missing unit metadata.
         from tq9_workflow_fixture import model
-        from generative_driver.benchmark_support.behavior import bind_task, validate_capabilities
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.behavior import bind_task, validate_capabilities
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from hashlib import sha256
         candidate = model()
         candidate['operations']['measure']['outputs']['temperature']['unit'] = 'degC'
@@ -394,7 +394,7 @@ class DiagnosticRepairTests(unittest.TestCase):
             (ws/'capabilities.json').write_text(json.dumps(capabilities))
             _write(root/'run/supplied/state.json', {'adapted_model_dir': str(model_dir),
                 'adaptation': {'adapted_model_sha256': sha256(raw).hexdigest()}})
-            with patch('generative_driver.benchmark_support.evaluator.reference_execute') as dispatch, \
+            with patch('firmware_bench.benchmark_support.evaluator.reference_execute') as dispatch, \
                  patch('generative_driver.toolkit.call_tool') as tools:
                 result = observe_stage('tq9-v2', 'probe', root/'run', ws, {'status': 'completed'})
             dispatch.assert_not_called(); tools.assert_not_called()
@@ -414,7 +414,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_malformed_or_unreadable_candidate_capabilities_are_notes(self):
         # Catches candidate JSON escaping as a host stop, or an unreadable worker file stopping the run.
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from hashlib import sha256
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); ws = root/'worker'; ws.mkdir()
@@ -442,7 +442,7 @@ class DiagnosticRepairTests(unittest.TestCase):
 
     def test_feedback_pairs_observed_discrepancy_with_check_and_channel(self):
         # Catches stripping the information a repair agent needs to locate a defect.
-        from generative_driver.benchmark_support.behavior import project_feedback, validate_records
+        from firmware_bench.benchmark_support.behavior import project_feedback, validate_records
         contract = {'schema': 'benchmark-behavior/1', 'artifact_sha256': 'a'*64, 'checks': [
             {'id': 'diagnostic/read/temperature', 'revision': 0, 'kind': 'number', 'expected': 20,
              'absolute_tolerance': .1, 'unit': 'degC', 'channel': 'runtime-transcript'},
@@ -466,7 +466,7 @@ class DiagnosticRepairTests(unittest.TestCase):
     def test_unsupported_task_is_model_discrepancy_without_device_io(self):
         # Catches misclassifying an incomplete candidate mapping as a host crash.
         from tq9_workflow_fixture import model
-        from generative_driver.benchmark_support.reference_calibration import model_invoker
+        from firmware_bench.benchmark_support.reference_calibration import model_invoker
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root/'model.json').write_text(json.dumps(model()))

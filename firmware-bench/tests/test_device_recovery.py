@@ -31,14 +31,14 @@ class ProvidedRunTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         self.image = self.root / 'resources/cases/tq9-v2/firmware.bin'
-        for target in ('generative_driver.benchmark.case_root',
-                       'generative_driver.benchmark_support.case_assets.case_root'):
+        for target in ('firmware_bench.benchmark.case_root',
+                       'firmware_bench.benchmark_support.case_assets.case_root'):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
         # Nothing here unlocks the case truth: the harness admitted the case before the run.
-        for target in ('generative_driver.benchmark_support.registry.admitted_truth',
-                       'generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock'):
+        for target in ('firmware_bench.benchmark_support.registry.admitted_truth',
+                       'firmware_bench.benchmark_support.emulator.truth_for_case',
+                       'firmware_bench.benchmark_support.truth.EvaluatorPassword.unlock'):
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
             refused.start(); self.addCleanup(refused.stop)
         self.controller = Controller(self.root / 'home')

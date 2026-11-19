@@ -2,8 +2,8 @@
 import json
 import unittest
 
-from generative_driver.benchmark_support import evidence
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support import evidence
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 
 
 class V2EvidenceTests(unittest.TestCase):
@@ -53,7 +53,8 @@ class SealedEvidenceFixture:
         self.password_file.write_text('test-only password')
 
     def payload(self, scenario='original', repaired=False):
-        from generative_driver.benchmark_support.snapshots import canonical_digest, execution_provenance
+        from firmware_bench.benchmark_support import tool_install
+        from firmware_bench.benchmark_support.snapshots import canonical_digest, execution_provenance
         stages = ['acquire','interpret','probe','ground','emit','reuse']
         pin = {'execution':'scripted-contract-fixture', 'case_id':'tq9-v2', 'case_version':'5',
             'scenario_id':scenario, 'case_seed':7, 'manifest_sha256':'c'*64, 'truth_sha256':'d'*64,
@@ -61,7 +62,8 @@ class SealedEvidenceFixture:
             'manifest':{'schema':'benchmark-case/2','id':'tq9-v2','version':'5','evaluator_version':'5',
                 'scenarios':['original'], 'images':{'firmware.bin':'e'*64}, 'required_stages':stages}}
         snapshot = {'schema':'benchmark-execution-snapshot/1','case_pin':pin,
-            'public_files':{}, 'executed':execution_provenance({'runtime':'scripted-contract-fixture'}, case_ids=(pin['case_id'],))}
+            'public_files':{}, 'executed':execution_provenance({'runtime':'scripted-contract-fixture'},
+                                                               case_ids=(pin['case_id'],), **tool_install.folders())}
         snapshot['snapshot_sha256'] = canonical_digest(snapshot)
         revision = 1 if repaired else 0
         digest = 'b'*64 if repaired else 'a'*64
@@ -128,7 +130,7 @@ class EvidenceBoundaryTests(unittest.TestCase):
         import io
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         with tempfile.TemporaryDirectory() as temp:
             report = Path(temp) / 'report.json'
             report.write_text(json.dumps({'schema': 'benchmark-report/2'}))

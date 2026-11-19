@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support.asset_build import (
+from firmware_bench.benchmark_support.asset_build import (
     build_argv, require_private_root, require_toolchain)
-from generative_driver.benchmark_support.truth import read_password
+from firmware_bench.benchmark_support.truth import read_password
 
 GCC = 'arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119'
 OBJCOPY = 'GNU objcopy (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119'
@@ -50,7 +50,7 @@ class FamilyBuildTests(unittest.TestCase):
 class FamilyBuildPipelineTests(unittest.TestCase):
     def fixture(self, root):
         import hashlib
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         author = root / 'toy author'
         author.mkdir()
         inputs = asset_build.inventory('parameter-store-v1') - asset_build.BUILD_FILES
@@ -102,10 +102,10 @@ else:
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build, truth
+        from firmware_bench.benchmark_support import asset_build, truth
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, script = self.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
                 report = asset_build.build_family(author, compiler, root / 'private outputs')
             password = root / 'password'; password.write_text('toy-only-test-password')
             real = truth.read_password
@@ -119,10 +119,10 @@ else:
         import base64
         import hashlib
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build, truth
+        from firmware_bench.benchmark_support import asset_build, truth
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, script = self.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
                 report = asset_build.build_family(author, compiler, root / 'private outputs')
             self.assertEqual(report['execution'], 'scripted-contract-fixture')
             self.assertEqual(report['reproducibility']['builds'], 2)
@@ -151,16 +151,16 @@ else:
 
     def test_nonreproducible_build_never_creates_canonical_images(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, script = self.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script, change_second=True)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script, change_second=True)):
                 with self.assertRaisesRegex(ValueError, 'reproduc'):
                     asset_build.build_family(author, compiler, root / 'outputs')
             self.assertFalse((author / 'build/firmware.bin').exists())
 
     def test_rejects_uninventoried_files_and_symlinks_before_build(self):
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, _ = self.fixture(root)
             extra = author / 'extra-secret'; extra.write_text('private')
@@ -178,10 +178,10 @@ else:
 
     def test_release_rejects_tampered_images_and_plaintext_output(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, script = self.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=self.runner(script)):
                 report = asset_build.build_family(author, compiler, root / 'outputs')
             password = root / 'password'; password.write_text('toy-password')
             release = root / 'release'; release.mkdir(); (release / 'source.c').write_text('private')
@@ -197,7 +197,7 @@ class SharedRunnerBoundaryTests(unittest.TestCase):
     def test_prefix_maps_allow_only_inventoried_source_root_and_dot_destination(self):
         from unittest.mock import patch
         from test_benchmark_native import BuildTests
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         import sys
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, manifest = BuildTests().authoring(root)
@@ -217,7 +217,7 @@ class SharedRunnerBoundaryTests(unittest.TestCase):
                     return real(argv, **kwargs)
                 manifest['steps'] = [[base[0], flag, *base[1:]]]
                 (author / 'build.json').write_text(json.dumps(manifest))
-                with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=run):
+                with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=run):
                     report = build_case(author, Path(sys.executable), root / ('out' + str(len(flag))))
                 self.assertTrue(report['ok'])
             for flag in ['-ffile-prefix-map=/tmp=.', '-ffile-prefix-map={output}=.',
@@ -231,13 +231,13 @@ class SharedRunnerBoundaryTests(unittest.TestCase):
 
     def test_empty_version_and_process_failure_are_private_diagnostics(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         for kind in ('empty_version', 'fail'):
             with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); helper = FamilyBuildPipelineTests()
                 author, compiler, script = helper.fixture(root)
                 script.write_text("import sys\n" + ("sys.exit(0)\n" if kind == 'empty_version' else "sys.stderr.write('private toy diagnostic'); sys.exit(7)\n"))
-                with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
+                with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
                     with self.assertRaises(RuntimeError) as caught:
                         asset_build.build_family(author, compiler, root / 'outputs')
                 self.assertNotIn('private toy diagnostic', str(caught.exception))
@@ -249,7 +249,7 @@ class SharedRunnerBoundaryTests(unittest.TestCase):
 class BuildEdgeTests(unittest.TestCase):
     def test_shared_runner_rejects_empty_image_with_private_diagnostic(self):
         from test_benchmark_native import BuildTests
-        from generative_driver.benchmark_support.authoring import build_case
+        from firmware_bench.benchmark_support.authoring import build_case
         import sys
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,7 +264,7 @@ class BuildEdgeTests(unittest.TestCase):
             self.assertFalse((root / 'output/build-report.json').exists())
 
     def test_output_containment_and_bad_recipe_are_rejected_before_build(self):
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); author, compiler, _ = FamilyBuildPipelineTests().fixture(root)
             for output in (author / 'out', author.parent):
@@ -279,23 +279,23 @@ class BuildEdgeTests(unittest.TestCase):
 
     def test_rebuild_mismatch_preserves_previously_pinned_image(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); helper = FamilyBuildPipelineTests(); author, compiler, script = helper.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
                 asset_build.build_family(author, compiler, root / 'build1')
             script.write_text(script.read_text().replace("b'toy ELF'", "b'changed ELF'"))
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
                 with self.assertRaisesRegex(ValueError, 'pinned'):
                     asset_build.build_family(author, compiler, root / 'build2')
             self.assertEqual((author / 'build/firmware.bin').read_bytes(), b'toy BINoriginal')
 
     def test_scripted_manifest_does_not_claim_actual_native_build(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support import asset_build
+        from firmware_bench.benchmark_support import asset_build
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); helper = FamilyBuildPipelineTests(); author, compiler, script = helper.fixture(root)
-            with patch('generative_driver.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
+            with patch('firmware_bench.benchmark_support.authoring.subprocess.run', side_effect=helper.runner(script)):
                 report = asset_build.build_family(author, compiler, root / 'build1')
             password = root / 'password'; password.write_text('toy-password')
             asset_build.assemble_release(author, report, password, root / 'release')
@@ -313,38 +313,39 @@ class PlacementTests(unittest.TestCase):
                     with self.subTest(base=base), self.assertRaises(ValueError):
                         require_private_root(root / base / 'unrelated-package', [])
 
-class LegacyBuildTests(unittest.TestCase):
-    def test_rebuild_uses_only_the_authenticated_original_source(self):
-        import hashlib
-        import subprocess
-        from types import SimpleNamespace
+class RebuildRefusalTests(unittest.TestCase):
+    def test_12_B3_a_rebuild_without_an_authoring_folder_is_refused_before_anything_else(self):
+        """Feature 12 of the untangle Run (docs/features/untangle/12-firmware-bench.md), 12-B3: the rebuild of the
+        dropped case's firmware is gone, so a rebuild needs the private authoring folder, and says so before the case
+        is resolved, an answer key unlocked or a folder made."""
         from unittest.mock import patch
-        from generative_driver.benchmark_support.evaluator_cli import manage
+        from firmware_bench.benchmark_support.evaluator_cli import manage
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);compiler=root/'arm-none-eabi-gcc';compiler.touch()
-            expected={'firmware.bin':hashlib.sha256(b'toy original').hexdigest()}
-            manifest={'truth':{'path':'toy.enc'},'images':expected}
-            truth={'build':{'flags':[]},'source_files':{'main.c':'toy source','link.ld':'toy link'}}
-            def execute(argv, **kwargs):
-                if argv[0].endswith('objcopy'):
-                    Path(argv[-1]).write_bytes(b'toy original')
-                else:
-                    self.assertEqual((Path(kwargs['cwd'])/'main.c').read_text(),'toy source')
-                    Path(argv[-1]).write_bytes(b'toy ELF')
-                return subprocess.CompletedProcess(argv,0,'','')
-            with patch('generative_driver.benchmark_support.registry.resolve_case',return_value=SimpleNamespace(manifest=manifest)),patch(
-                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
-                'generative_driver.benchmark_support.evaluator_cli.subprocess.run',side_effect=execute),patch(
-                'generative_driver.benchmark_support.evaluator_cli.subprocess.check_output',return_value='toy compiler'):
-                (root/'password').write_text('synthetic credential')
-                result=manage('rebuild','tq9',root/'password',root/'output',compiler=compiler)
-            self.assertTrue(result['ok'])
-            self.assertEqual(result['images'],expected)
-            self.assertEqual({p.name for p in (root/'output').glob('*.bin')},{'firmware.bin'})
+            (root/'password').write_text('synthetic credential')
+            with patch('firmware_bench.benchmark_support.registry.resolve_case') as resolved,patch(
+                    'firmware_bench.benchmark_support.emulator.truth_for_case') as unlocked,patch(
+                    'firmware_bench.benchmark_support.truth.read_password') as read:
+                for case in ('tq9-v2','tq9','setup-smoke','no-such-case'):
+                    with self.subTest(case=case),self.assertRaises(ValueError) as refusal:
+                        manage('rebuild',case,root/'password',root/'output',compiler=compiler)
+                    self.assertEqual(str(refusal.exception),'Rebuild requires --authoring-dir')
+            self.assertEqual([resolved.called,unlocked.called,read.called],[False,False,False])
+            self.assertFalse((root/'output').exists())
+
+    def test_12_B3_a_rebuild_from_an_authoring_folder_refuses_the_smoke_and_an_unregistered_case(self):
+        from firmware_bench.benchmark_support.evaluator_cli import manage
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for case in ('setup-smoke','tq9','bme280','no-such-case'):
+                with self.subTest(case=case),self.assertRaises(ValueError) as refusal:
+                    manage('rebuild',case,None,root/'output',compiler=root/'gcc',authoring_dir=root/'authoring')
+                self.assertEqual(str(refusal.exception),'Private authoring rebuild requires a registered v2 case')
+            self.assertFalse((root/'output').exists())
 
 class DistributedInventoryTests(unittest.TestCase):
     def test_transaction_release_refuses_previous_emulator_version(self):
-        from generative_driver.benchmark_support.registry import validate_public_workflow_identity
+        from firmware_bench.benchmark_support.registry import validate_public_workflow_identity
         for case in ('tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1'):
             with self.subTest(case=case):
                 with self.assertRaisesRegex(ValueError, 'version'):
@@ -352,8 +353,8 @@ class DistributedInventoryTests(unittest.TestCase):
                         'evaluator_version':'4', 'scenario_id':'original', 'revision':0})
 
     def test_every_registered_firmware_pin_has_only_its_original_image_and_truth(self):
-        from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.registry import case_ids, pin_case
+        from firmware_bench.benchmark import case_root
+        from firmware_bench.benchmark_support.registry import case_ids, pin_case
         root=case_root()
         cases={'tq9-v2':'5','sampled-sensor-v1':'5','parameter-store-v1':'5','zephyr-modbus-v1':'1'}
         for case,version in cases.items():

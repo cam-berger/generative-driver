@@ -1,7 +1,7 @@
 """One outcome for every planned trial, and the pass rate printed from the outcomes."""
 import unittest
 
-from generative_driver.benchmark_support.outcomes import classify, pass_rate, pass_rate_line
+from firmware_bench.benchmark_support.outcomes import classify, pass_rate, pass_rate_line
 
 done = {'run_id': 'r', 'status': 'finished', 'outcome_category': 'completed'}
 
@@ -179,7 +179,7 @@ class SuiteExportTests(unittest.TestCase):
 
     def trials_and_rows(self, change=None):
         from test_assistive_reports import assistive_fixture
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         if change:
             change(trials, reports)

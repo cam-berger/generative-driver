@@ -47,7 +47,7 @@ class Unreachable(SealError):
 
 def bench_home(home=None):
     """The bench home: a sibling of the configurator home `home`, never inside it."""
-    from ..client import default_home
+    from generative_driver.client import default_home
     home = Path(home or default_home()).expanduser().resolve()
     return home.parent / (home.name + '-bench')
 
@@ -72,14 +72,19 @@ def _inside(path, root):
 def replay_candidate(candidate, bench):
     """The replay configuration of the saved `candidate`, as the tool's `candidate_config` checks and gives it. Before
     that, a candidate in the bench home `bench` is refused: the bench home holds evaluator records, and the tool does
-    not know where it is (Feature 08 of the untangle Run, docs/features/untangle/08-reports.md). With no `bench`, the
-    tool's check is the only one."""
-    from ..replay import candidate_config
-    if bench is not None and isinstance(candidate, str) and candidate:
+    not know where it is (Feature 08 of the untangle Run, docs/features/untangle/08-reports.md). Then, with or without
+    a `bench`, a candidate inside this package's own folder is refused: the installed cases and answer keys lie
+    there, and the tool refuses a candidate only inside its own resources (Feature 12 of that Run,
+    docs/features/untangle/12-firmware-bench.md, 12-B2)."""
+    from generative_driver.replay import candidate_config
+    if isinstance(candidate, str) and candidate and Path(candidate).is_absolute():
         root = Path(candidate)
-        if root.is_absolute() and _inside(root.resolve(), bench):
+        if bench is not None and _inside(root.resolve(), bench):
             raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: '
                              + str(root))
+        if _inside(root.resolve(), Path(__file__).resolve().parents[1]):
+            raise ValueError('A replay candidate is saved worker output, never the installed case sources or '
+                             'groundtruth')
     return candidate_config({'candidate': candidate})
 
 

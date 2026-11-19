@@ -41,3 +41,12 @@ def tree_hash(root, *, exclude=()):
             hasher.update(relative.encode() + b'\0')
             hasher.update(hashlib.sha256(path.read_bytes()).digest())
     return hasher.hexdigest()
+
+
+def revision_folder(path):
+    """`path` as a folder a revision hashes. ValueError where it does not exist, since `tree_hash` gives the hash of
+    nothing for a missing folder and a revision would then say nothing of the code it names."""
+    path = Path(path)
+    if not path.is_dir():
+        raise ValueError('Revision folder is missing: ' + str(path))
+    return path

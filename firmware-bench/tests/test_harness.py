@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_device_provider import MONITOR, Process, RECIPE, keys
-from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, read_password
 
 EVIDENCE = 'e' * 64
 
@@ -23,7 +23,7 @@ def sha(path):
 def unstarted_provider(test, image, root, peers, recipe=RECIPE):
     """A recipe-only provider of Silicon peers that has not started its device yet."""
     from tq9_workflow_fixture import Silicon
-    from generative_driver.benchmark_support.device_provider import DeviceProvider
+    from firmware_bench.benchmark_support.device_provider import DeviceProvider
     def start(**kwargs):
         peer = Silicon(kwargs['image']); peers.append(peer); test.addCleanup(peer.close)
         session = peer.session(kwargs['recipe'], Path(root) / ('native-' + str(len(peers))))
@@ -36,7 +36,7 @@ class Device:
     """A provided device for a test: Silicon peers behind a recipe-only provider, served on private endpoints."""
 
     def __init__(self, test, image, root, recipe=RECIPE):
-        from generative_driver.benchmark_support.harness import DeviceServer
+        from firmware_bench.benchmark_support.harness import DeviceServer
         self.peers = []
         self.provider = unstarted_provider(test, image, root, self.peers, recipe)
         self.provider.start()
@@ -51,8 +51,8 @@ class DeviceEndpointTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         (self.root / 'firmware.bin').write_bytes(b'synthetic image')
         # Nothing the harness serves to the configurator unlocks the case truth.
-        for target in ('generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock'):
+        for target in ('firmware_bench.benchmark_support.emulator.truth_for_case',
+                       'firmware_bench.benchmark_support.truth.EvaluatorPassword.unlock'):
             guard = patch(target, side_effect=AssertionError('truth unlocked while serving the device'))
             guard.start(); self.addCleanup(guard.stop)
 
@@ -187,8 +187,8 @@ class TrialFinishTests(unittest.TestCase):
     def test_the_harness_seals_only_a_run_it_saw_finish_and_whose_handoffs_it_read(self):
         # Catches sealing an empty or partial set of handoffs, and reporting that seal as good, or grading the run, when
         # the run's result could not be read (a transport failure, a reply over the read limit) or the run had not finished.
-        from generative_driver.benchmark_support import evaluator, harness
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support.registry import pin_case
         from generative_driver.device_client import DeviceClient
         (self.root / 'password-handle').write_text('synthetic fixture credential')
         handoffs = [{'stage': 'acquire', 'artifacts': []}]
@@ -240,7 +240,7 @@ class TrialFinishTests(unittest.TestCase):
     def test_an_unconfirmed_device_stop_names_the_session_left_running(self):
         # Catches a trial record that names only the session the run started with, which a committed recovery
         # replaced, when the device the harness could not stop is the replacement.
-        from generative_driver.benchmark_support.harness import finish
+        from firmware_bench.benchmark_support.harness import finish
         peers = []
         provider = unstarted_provider(self, self.root / 'firmware.bin', self.root, peers)
         started = provider.start()['session_id']
@@ -265,13 +265,13 @@ class StartAdmissionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.manifest = public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
-        for target in ('generative_driver.benchmark.case_root',
-                       'generative_driver.benchmark_support.case_assets.case_root'):
+        for target in ('firmware_bench.benchmark.case_root',
+                       'firmware_bench.benchmark_support.case_assets.case_root'):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
         # The configurator no longer admits a case by unlocking truth: the harness does, before the run.
-        for target in ('generative_driver.benchmark_support.registry.admitted_truth',
-                       'generative_driver.benchmark_support.emulator.truth_for_case'):
+        for target in ('firmware_bench.benchmark_support.registry.admitted_truth',
+                       'firmware_bench.benchmark_support.emulator.truth_for_case'):
             refused = patch(target, side_effect=AssertionError('the configurator unlocked case truth'))
             refused.start(); self.addCleanup(refused.stop)
         from generative_driver.configurator import Controller
@@ -285,7 +285,7 @@ class StartAdmissionTests(unittest.TestCase):
     def test_native_artifact_is_the_device_identity_and_appears_in_the_report(self):
         # Scripted descriptor/worker test; no authentic firmware or admission claim.
         from tool_fixtures import wait_stopped
-        from generative_driver.benchmark_support.run_reporting import summarize
+        from firmware_bench.benchmark_support.run_reporting import summarize
         case = self.root/'resources/cases/tq9-v2'
         (case/'firmware.bin').rename(case/'firmware.elf')
         self.manifest['images'] = {'firmware.elf': self.manifest['images']['firmware.bin']}
@@ -336,7 +336,7 @@ class StartAdmissionTests(unittest.TestCase):
         # Catches the configurator freezing and keeping evaluator password file and emulator paths for a suite, whose
         # emulated children the bench harness provides and grades with them; and a suite no harness drives.
         from suite_fixtures import book, scripted_manifest, suite_call
-        from generative_driver.benchmark_support.trial_store import bench_home
+        from firmware_bench.benchmark_support.trial_store import bench_home
         secret = self.root / 'private-password-handle'
         (self.root / 'home/config.json').write_text(json.dumps({'executors': {'codex': {'command': ['scripted-runtime']}}}))
         manifest = scripted_manifest()
@@ -370,8 +370,8 @@ class StartAdmissionTests(unittest.TestCase):
     def test_an_emulated_case_starts_only_with_the_harness_admission_token_and_device(self):
         from generative_driver.configurator import IntegrityError
         from tool_fixtures import wait_stopped
-        from generative_driver.benchmark_support import harness
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support import harness
+        from firmware_bench.benchmark_support.registry import pin_case
         device = Device(self, self.root / 'resources/cases/tq9-v2/firmware.bin', self.root)
         descriptor = device.server.descriptor
         good = self.supplied(device, goal='g', executor_config={'command': ['missing-runtime-b3']})
@@ -469,13 +469,13 @@ def start(**kwargs):
             return 0 if getattr(peer, 'closed', False) else None
     session.process = Process()
     return session
-patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES)).start()
-patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES)).start()
-from generative_driver.benchmark_support import registry
+patch('firmware_bench.benchmark.case_root', return_value=Path(RESOURCES)).start()
+patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES)).start()
+from firmware_bench.benchmark_support import registry
 def admitted(pin, password):
     return registry.case_truth(pin['case_id'], Path('no-run'), password), {'ok': True, 'evidence_sha256': EVIDENCE}
-patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
-patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
+patch('firmware_bench.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
+patch('firmware_bench.benchmark_support.native.NativeSession.start', side_effect=start).start()
 """
 
 
@@ -503,7 +503,7 @@ def start(**kwargs):
         session.stop = lambda: None
     return session
 def admitted(pin, password):
-    from generative_driver.benchmark_support.truth import UnlockedTruth
+    from firmware_bench.benchmark_support.truth import UnlockedTruth
     return UnlockedTruth({'recipe': RECIPE}, pin['truth_sha256']), {'ok': True, 'evidence_sha256': EVIDENCE_SHA}
 def configurator(method, params=None, home=None, **kwargs):
     if method == 'ping':
@@ -511,10 +511,10 @@ def configurator(method, params=None, home=None, **kwargs):
     if method == 'start':
         return {'ok': False, 'reason': 'configurator refused the fixture run'}
     raise AssertionError(method)
-patch('generative_driver.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
-patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES_DIR)).start()
-patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
-patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start).start()
+patch('firmware_bench.benchmark.case_root', return_value=Path(RESOURCES_DIR)).start()
+patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=Path(RESOURCES_DIR)).start()
+patch('firmware_bench.benchmark_support.registry.admitted_truth', side_effect=admitted).start()
+patch('firmware_bench.benchmark_support.native.NativeSession.start', side_effect=start).start()
 patch('generative_driver.client.call', side_effect=configurator).start()
 """
 
@@ -534,7 +534,7 @@ class LaunchTests(unittest.TestCase):
         (self.root / 'renode-handle').write_text('')
 
     def launch(self, mode, **options):
-        from generative_driver.benchmark_support.harness import launch
+        from firmware_bench.benchmark_support.harness import launch
         fixture = self.root / 'launch_fixture.py'
         fixture.write_text(LAUNCH_FIXTURE.replace('TESTS_DIR', repr(str(Path(__file__).resolve().parent)))
                            .replace('PRIVATE_DIR', repr(str(self.root / 'native')))
@@ -546,7 +546,7 @@ class LaunchTests(unittest.TestCase):
                                    'scenario_id': 'original', **options})
 
     def trial(self):
-        from generative_driver.benchmark_support.harness import read_trial
+        from firmware_bench.benchmark_support.harness import read_trial
         trials = list((self.root / 'home-bench/trials').iterdir())
         self.assertEqual(len(trials), 1)
         return trials[0], read_trial(trials[0])
@@ -569,7 +569,7 @@ class LaunchTests(unittest.TestCase):
     def test_a_claimed_request_whose_harness_never_started_reports_that_failure(self):
         # Catches a request_id claimed by a launch whose harness process could not start: a retry would otherwise wait
         # for a trial that never runs.
-        from generative_driver.benchmark_support.harness import launch
+        from firmware_bench.benchmark_support.harness import launch
         options = {'home': str(self.root / 'home'), 'effects': ['write', 'actuate'], 'scenario_id': 'original',
                    'request_id': 'unstarted-harness', 'evaluator_password_file': str(self.root / 'password-handle')}
         with patch('subprocess.Popen', side_effect=OSError('no interpreter')):
@@ -603,10 +603,10 @@ class HarnessTrialTests(unittest.TestCase):
         import secrets
         import shutil
         import threading
-        import generative_driver
+        from tool_fixtures import package_folders
         from generative_driver import client, daemon
-        from generative_driver.benchmark import run
-        from generative_driver.benchmark_support.harness import read_trial
+        from firmware_bench.benchmark import run
+        from firmware_bench.benchmark_support.harness import read_trial
         from suite_fixtures import public_case_fixture
         from tq9_workflow_fixture import WORKER
         if os.name == 'nt':
@@ -640,11 +640,11 @@ class HarnessTrialTests(unittest.TestCase):
             (home / 'service.json').write_text(json.dumps({'family': 'AF_UNIX', 'address': str(sockets / 'owner.sock'),
                                                            'authkey': secrets.token_hex(32), 'pid': os.getpid(),
                                                            'code': client.code_identity()}))
-            for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
-                                  ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
-                                  ('generative_driver.benchmark_support.registry.admitted_truth',
+            for target, value in (('firmware_bench.benchmark.case_root', {'return_value': resources}),
+                                  ('firmware_bench.benchmark_support.case_assets.case_root', {'return_value': resources}),
+                                  ('firmware_bench.benchmark_support.registry.admitted_truth',
                                    {'side_effect': AssertionError('the configurator admitted the case')}),
-                                  ('generative_driver.benchmark_support.emulator.truth_for_case',
+                                  ('firmware_bench.benchmark_support.emulator.truth_for_case',
                                    {'side_effect': AssertionError('the configurator unlocked the case truth')})):
                 guard = patch(target, **value); guard.start(); self.addCleanup(guard.stop)
             serving = threading.Thread(target=daemon.serve, args=(home,), daemon=True)
@@ -665,7 +665,7 @@ class HarnessTrialTests(unittest.TestCase):
                 gateway = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Gateway)
                 threading.Thread(target=gateway.serve_forever, daemon=True).start()
                 script = root / 'scripted_worker.py'
-                script.write_text(WORKER.replace('PACKAGE_PARENT', repr(str(Path(generative_driver.__file__).resolve().parents[1])))
+                script.write_text(WORKER.replace('PACKAGE_PARENTS', repr(package_folders()))
                                   .replace('FIXTURE_PARENT', repr(str(Path(__file__).parent)))
                                   .replace('SERVICE_URL', repr('http://127.0.0.1:' + str(gateway.server_port))))
                 (home / 'config.json').write_text(json.dumps({'executors': {'codex': {'command': [sys.executable, str(script)]}}}))

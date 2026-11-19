@@ -21,7 +21,7 @@ from suite_fixtures import (shutdown_owner, harness_devices, options, scripted_m
 def invoke_cli(root, *args, cwd=None):
     """The finished process of `firmware-bench --home <root> suite <args>`. It inherits this test's bench harness
     fixture, which the harness it launches loads to provide the case's devices."""
-    return subprocess.run([sys.executable, '-m', 'generative_driver.benchmark', '--home', str(root),
+    return subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', '--home', str(root),
         'suite', *args], cwd=cwd, env={**os.environ, **package_env()}, capture_output=True, text=True, timeout=30)
 
 
@@ -38,8 +38,8 @@ class SuiteCliTests(unittest.TestCase):
             path.write_text(json.dumps(manifest), encoding='utf-8')
             code = """import sys
 from pathlib import Path
-import generative_driver.benchmark as benchmark
-import generative_driver.benchmark_support.case_assets as case_assets
+import firmware_bench.benchmark as benchmark
+import firmware_bench.benchmark_support.case_assets as case_assets
 resources = Path(sys.argv.pop(1))
 benchmark.case_root = lambda: resources
 case_assets.case_root = lambda: resources
@@ -152,11 +152,11 @@ raise SystemExit(benchmark.main())
                 self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
                 suite = json.loads(first.stdout)
                 wait_suite(call, suite['suite_id'], root, lambda state: state['status'] == 'blocked')
-                code = """from generative_driver.benchmark_support import registry
+                code = """from firmware_bench.benchmark_support import registry
 def unavailable(*args, **kwargs):
     raise ValueError('Current registry assets unavailable')
 registry.pin_case = unavailable
-from generative_driver.benchmark import main
+from firmware_bench.benchmark import main
 raise SystemExit(main())
 """
                 done = subprocess.run([sys.executable, '-c', code, '--home', str(root),

@@ -21,7 +21,7 @@ class DecisionTests(unittest.TestCase):
     def test_a_stopped_child_never_advances_whatever_its_category(self):
         # Catches the gated protocol's rule that a recorded model failure advances: every child is graded once after
         # its run, so a stopped one blocks, and an unsettled one waits.
-        from generative_driver.benchmark_support.suites import child_disposition
+        from firmware_bench.benchmark_support.suites import child_disposition
         stopped = {'status':'blocked','stopping':False,'uncertain_effect':False,
                    'outcome_category':'model','reason':'Arbitrary localized message'}
         for category in ('model','host','operator','unknown','cancelled','safety','integrity'):
@@ -40,7 +40,7 @@ class DecisionTests(unittest.TestCase):
     def test_a_child_graded_after_its_run_advances_only_with_a_graded_or_no_driver_record(self):
         # Catches a suite that counts an emulated child before its grade is recorded: an unscored or pending grade,
         # or any stop, including a model failure, blocks the suite.
-        from generative_driver.benchmark_support.suites import child_disposition
+        from firmware_bench.benchmark_support.suites import child_disposition
         completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed'}
         for record in ({'status':'graded','equivalent':True}, {'status':'graded','equivalent':False},
                        {'status':'no-driver','equivalent':False}):
@@ -58,7 +58,7 @@ class DecisionTests(unittest.TestCase):
     def test_an_unknown_grade_settles_its_slot(self):
         # Catches a suite that blocks on a child whose grade has no failed step and one the evaluator could not decide:
         # an unknown grade is a result, so its slot settles and the suite moves on, while a stop still blocks it.
-        from generative_driver.benchmark_support.suites import child_disposition
+        from firmware_bench.benchmark_support.suites import child_disposition
         self.assertEqual(child_disposition({'stopping': False, 'uncertain_effect': False, 'status': 'completed',
                                             'outcome_category': 'completed', 'equivalence': {'status': 'unknown'}}), 'advance')
         completed = {'status':'completed','stopping':False,'uncertain_effect':False,'outcome_category':'completed'}
@@ -101,7 +101,7 @@ class ServiceTests(unittest.TestCase):
     def test_a_child_graded_after_its_run_finishes_a_measurement_and_starts_the_next_slot(self):
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import start_suite
+        from firmware_bench.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite scripted ') as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -129,7 +129,7 @@ class ServiceTests(unittest.TestCase):
         # repeat that refusal after its cause was fixed, although no suite was ever frozen under it.
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import start_suite
+        from firmware_bench.benchmark_support.suites import start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory(prefix='suite retry ') as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -151,7 +151,7 @@ class ServiceTests(unittest.TestCase):
     def test_missing_runtime_blockage_preserves_the_child_and_frozen_configuration(self):
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import resume_suite, start_suite
+        from firmware_bench.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -179,7 +179,7 @@ class ServiceTests(unittest.TestCase):
     def test_cancellation_drains_active_child_without_dispatching_another(self):
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import start_suite
+        from firmware_bench.benchmark_support.suites import start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -204,7 +204,7 @@ class BudgetTests(unittest.TestCase):
     def test_expired_suite_cancels_child_and_extension_is_absolute_and_idempotent(self):
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import resume_suite, start_suite
+        from firmware_bench.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -217,7 +217,7 @@ class BudgetTests(unittest.TestCase):
                 # Spend both frozen budgets only after a child exists. A subsecond
                 # startup allowance raced Windows imports and expired before dispatch.
                 from suite_fixtures import sqlite_context
-                from generative_driver.benchmark_support.trial_store import suite_store_path
+                from firmware_bench.benchmark_support.trial_store import suite_store_path
                 elapsed=time.time()-121
                 # The suite is in the suite book's store under the bench home, its child in the configurator's.
                 with sqlite_context(suite_store_path(home))() as db:
@@ -288,7 +288,7 @@ class RecoveryTests(unittest.TestCase):
     def test_resume_verifies_the_snapshot_of_the_stopped_child_before_any_new_assignment(self):
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import resume_suite, start_suite
+        from firmware_bench.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import write_scripted_case_worker, wait_suite
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -310,7 +310,7 @@ class RecoveryTests(unittest.TestCase):
                                  and 'stopped driving' in (s.get('reason') or ''))
                 # The configurator is told which trial failed; the harness's own record says why.
                 import re
-                from generative_driver.benchmark_support.trial_store import bench_home
+                from firmware_bench.benchmark_support.trial_store import bench_home
                 folder=re.search(r'suites[/\\]([^/\\]+)[/\\]suite\.json',again['reason']).group(1)
                 # The harness tells the configurator first and writes its own record after: wait for that record.
                 until=time.monotonic()+30
@@ -329,7 +329,7 @@ class RecoveryTests(unittest.TestCase):
         from generative_driver.client import _wait_for_exit
         from suite_fixtures import client_call as call
         from generative_driver.setup import configure
-        from generative_driver.benchmark_support.suites import resume_suite, start_suite
+        from firmware_bench.benchmark_support.suites import resume_suite, start_suite
         from suite_fixtures import wait_suite
         with tempfile.TemporaryDirectory() as temporary:
             home=owner_home(temporary);secrets=harness_devices(self,Path(temporary)/'fixture')
@@ -477,7 +477,7 @@ class CleanupFailureTests(unittest.TestCase):
                 self.assertEqual(status['status'],'blocked')
                 self.assertTrue(status['uncertain_effect'])
                 self.assertFalse(status['stopping'])
-                from generative_driver.benchmark_support.suites import child_disposition
+                from firmware_bench.benchmark_support.suites import child_disposition
                 self.assertEqual(child_disposition(status),'block')
             finally:close_owner(owner)
 

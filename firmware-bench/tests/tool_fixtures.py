@@ -18,19 +18,30 @@ import threading
 import time
 import unittest
 
+import firmware_bench
 import generative_driver
 
-PACKAGE_ROOT = str(Path(generative_driver.__file__).resolve().parents[1])
+# The folders that hold the two packages under test, the benchmark's first (12-B4 of Feature 12 of this Run).
+PACKAGE_ROOTS = (str(Path(firmware_bench.__file__).resolve().parents[1]),
+                 str(Path(generative_driver.__file__).resolve().parents[1]))
+
+
+def package_folders():
+    """Both package folders as a list, once where they are the same folder: what the script of a child puts on its
+    search path."""
+    return list(dict.fromkeys(PACKAGE_ROOTS))
 WORKFLOW_TIMEOUT = 120
 BINDING = {'host': '127.0.0.1', 'port': 1}
 _PIDS = itertools.count(70001)
 
 
 def package_env(**values):
-    """The environment of a Python child that must import the package under test: an MCP stdio child inherits only
-    a short list of variables, so `PYTHONPATH` is lost and it would run whatever its interpreter finds first."""
+    """The environment of a Python child that must import the packages under test: an MCP stdio child inherits only
+    a short list of variables, so `PYTHONPATH` is lost and it would run whatever its interpreter finds first. It
+    gives both package folders, once where they are the same folder, and then the inherited value."""
     inherited = os.environ.get('PYTHONPATH')
-    return {'PYTHONPATH': PACKAGE_ROOT + (os.pathsep + inherited if inherited else ''), **values}
+    folders = package_folders() + ([inherited] if inherited else [])
+    return {'PYTHONPATH': os.pathsep.join(folders), **values}
 
 
 def service_pid(controller):

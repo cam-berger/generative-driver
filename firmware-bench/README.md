@@ -1,41 +1,49 @@
-This folder holds firmware bench while it is adapted into a package of its own. Its code does not run from here yet.
+# Firmware bench
 
-# Benchmark
+Firmware bench measures how well [Generative Driver](https://github.com/cam-berger/generative-driver) recovers a working driver from a device's firmware. It supplies a device, a firmware image and a mission to the tool through the tool's client interface, and grades the frozen driver once, after the run. The tool holds nothing of the benchmark.
 
-> **This is the legacy copy of the benchmark.** The benchmark is moving to a repository of its own. This copy will be deleted once the move is complete. The [deletion list](../docs/benchmark-deletion-list.md) says what goes.
+| To | Read |
+|---|---|
+| Hold the answer keys and qualify the graders | [Evaluator's guide](docs/evaluator.md) |
+| Add a case | [Case authoring](docs/case-authoring.md) · [Upstream corpus](docs/corpus.md) · [Generated-device interface](docs/generated-device-interface.md) |
+| Accept a model lane | [Codex acceptance](docs/codex-acceptance.md) |
+| Look up a term | [Glossary](CONTEXT.md) |
+| Follow a decision | [Decision records](docs/adr/) |
 
-The [native Modbus pilot](../docs/benchmark-case-authoring.md#native-zephyr-execution) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
+The [native Modbus pilot](docs/case-authoring.md#native-zephyr-execution) uses the same registry, provider, six-stage runner and reports with an explicitly pinned native executable.
 
 Recover a device interface, emit a portable driver, and have a fresh agent use it. Judge outputs/effects, not source-code similarity.
 
-Current `assistive/1` runs follow acquire → interpret → probe → ground → emit → reuse. Stages hand off artifacts/notes; device differences drive repair; only safety, integrity, operator and host faults stop runs. One equivalence verdict follows completion. This is a new series, never compared with earlier gated results, including the 2/3 trial. See [design](../docs/design.md#assistive-protocol-amendment--2026-10-07).
+Current `assistive/1` runs follow acquire → interpret → probe → ground → emit → reuse. Stages hand off artifacts/notes; device differences drive repair; only safety, integrity, operator and host faults stop runs. See [design](https://github.com/cam-berger/generative-driver/blob/main/docs/design.md#assistive-protocol-amendment--2026-10-07).
 
 ## Profiles
 
 | Case | Purpose |
 |---|---|
 | `setup-smoke` | Scripted installation/package replay, no inference |
-| `tq9` | Legacy Renode temperature/timer/disarm and fresh reuse |
 | `tq9-v2` | Calibrated evaluation, device-driven repair and sealed final behavior |
+| `tq9-v3` | Registered with its public mission. Its firmware and answer key are not in this repository yet, so it lists as `pending` |
 | `sampled-sensor-v1` | Signed/scaled readings, acquisition and sequence counters |
 | `parameter-store-v1` | Banks, pending/committed values, generation, commit and abort |
 | `zephyr-modbus-v1` | Upstream Zephyr RTU sample: register/coil effects, unrelated-state preservation and recovery |
-| `bme280` | Physical FTDI/I2C sensor and independent operator references |
+| `generated` | A device of a generated set. No set is registered, so it lists as `pending` |
 
-[Installed assets](../src/generative_driver/resources/bench/) pin stable original images, encrypted truth and evaluator versions. A listed or publicly `available` case has not authenticated admission for the installed implementation. The three-family core plans nine default trials and requires fresh native qualification before execution. The [catalog and execution gaps](../docs/benchmark-corpus.md#catalog-and-execution-gaps) describe future admissions separately from [measured results](../docs/verification.md).
+Only `setup-smoke` runs with nothing but the two packages. It checks an installation: it validates a model, emits a package and replays a recorded reply. It starts no service, worker or grader. Every other case needs its evaluator password, the emulator, a qualification under the current grader, and a model or a saved candidate.
 
-The [upstream corpus](../docs/benchmark-corpus.md) adds seven lineages: one upstream case with published native qualification evidence and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `firmware-bench corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](../docs/benchmark-case-authoring.md) to add or retire cases and the [architecture decision](../docs/adr/0001-benchmark-registration-and-selection.md) for the static registration boundary.
+[Installed assets](src/firmware_bench/resources/bench/) pin stable original images, encrypted truth and evaluator versions. A listed or publicly `available` case has not authenticated admission for the installed implementation. The three-family core plans nine default trials and requires fresh native qualification before execution. The [catalog and execution gaps](docs/corpus.md#catalog-and-execution-gaps) describe future admissions.
+
+The [upstream corpus](docs/corpus.md) adds seven lineages: one upstream case and six blocked lineages. Freeze all lineages for a pilot or select a debug subset; immutable plans retain excluded slots and reasons. Authenticate selected ready cases with `firmware-bench corpus check`, run them through the existing suite lifecycle and report measured success, selected coverage and full-catalog demonstrated coverage separately. See [case authoring](docs/case-authoring.md) to add cases and the [architecture decision](docs/adr/0001-benchmark-registration-and-selection.md) for the static registration boundary.
 
 ## Install and check
 
-Use Python 3.11+ in one environment. Follow [setup](../docs/setup.md). To use Codex as a client, follow the [connection guide](../docs/codex.md).
-
 ```sh
-python -m pip install -e ".[dev]"
-python -m generative_driver doctor
+python -m pip install "generative-driver @ git+https://github.com/cam-berger/generative-driver"
+python -m pip install -e .
+firmware-bench cases
 firmware-bench run --case setup-smoke --output "smoke output"
-python -m unittest discover -s firmware-bench/tests -v
 ```
+
+While this folder lies in the tool's repository, install the tool from the checkout instead: `python -m pip install -e ..`. Set up the tool's service and Codex as its [setup](https://github.com/cam-berger/generative-driver/blob/main/docs/setup.md) and [Codex](https://github.com/cam-berger/generative-driver/blob/main/docs/codex.md) guides say. Run the tests with `python -m unittest discover -s tests`. A graded run also needs Renode, at the release this page pins, and for building firmware an Arm compiler.
 
 Use a new output directory. Expect `scripted-replay`, `model_benchmark: false`, `verdict: passed`. No account, hardware, native tools or password is needed. In `relocated package`, run `python -m driver replay`.
 
@@ -51,7 +59,7 @@ firmware-bench --home /operator/state/benchmark run --case tq9-v2 --scenario ori
 
 Replace placeholder paths with your own absolute paths. Quote paths containing spaces. Keep the same absolute global `--home` through configure, start, status, resume and report. Emulator approval covers assigned emulator tools only. Use `original` for V2 families. The `case_seed` controls evaluator episodes.
 
-A detached bench harness receives password-file/Renode paths on stdin, pins the case, authenticates admission and starts the device. It freezes the case's inputs in its trial folder and supplies the device descriptor, the frozen firmware and the mission to the configurator, which knows no case. The configurator never receives the password or its path. Legacy TQ9 uses its legacy recipe through the same harness.
+A detached bench harness receives password-file/Renode paths on stdin, pins the case, authenticates admission and starts the device. It freezes the case's inputs in its trial folder and supplies the device descriptor, the frozen firmware and the mission to the configurator, which knows no case. The configurator never receives the password or its path.
 
 Save `trial_id` and `run_id`. `--wait` follows device shutdown and post-run grading/sealing. Records live at `<state>-bench/trials/<trial_id>`. Repeating `--request-id` follows the same trial without another device. To finish an unscored/unposted evaluation, or grade a formerly stopped trial whose run later completed:
 
@@ -89,7 +97,7 @@ Owned-emulator recovery requires trusted completed model-failure evidence for ev
 
 Store update discards pending edits, changes only the requested committed cell, preserves others, advances generation once and ends idle. Final grading covers idle/same-bank/different-bank pending updates, commit, abort and complete rejection, with full state checks. The diagnostic contract runs only during native calibration. Rejection needs a private complete-response witness matching captured bytes; candidate framing is insufficient, equivalent requests remain valid.
 
-Admission pins each case's grader identity: the hashes of the grading core and of its family's closure, its own entry in [`cases.json`](../src/generative_driver/resources/registrations/cases.json) and the `cryptography` version. A change to any of them, editing the case's entry included, voids that case's qualification and blocks comparison with its earlier runs; adding a case, editing another family's own modules, and runtime, package template, toolkit, skills and report changes do not. The core still holds some families' code, so editing that code voids every case's qualification ([grader identity](../docs/benchmark-case-authoring.md#grader-identity)). Recorded emulated calibrations predate this protocol and were stale at `52eb018`: obtain fresh native calibration before trials or the nine-trial test via [groundtruth setup](groundtruth/README.md).
+Admission pins each case's grader identity: the hashes of the grading core and of its family's closure, its own entry in [`cases.json`](src/firmware_bench/resources/registrations/cases.json) and the `cryptography` version. A change to any of them, editing the case's entry included, voids that case's qualification and blocks comparison with its earlier runs; adding a case, editing another family's own modules, and runtime, package template, toolkit, skills and report changes do not. The core still holds some families' code, so editing that code voids every case's qualification ([grader identity](docs/case-authoring.md#grader-identity)).
 
 Keep password files outside checkout/candidate inputs. Workers are not read-isolated: same-user workers could read control endpoints and act outside recorded calls. Endpoints expose no truth. Answer-key separation is password-based, not a sandbox.
 
@@ -103,9 +111,9 @@ firmware-bench --home /operator/state/benchmark score reports/trial.json --evide
 firmware-bench --home /operator/state/benchmark compare reports/before.json reports/after.json
 ```
 
-`benchmark-report/3` records the final `equivalent` verdict, and a pass is that verdict: the evaluator's graded equivalence of the frozen driver. The fresh mission is reported beside it and does not change it; corpus success no longer requires it or the six accepted handoffs. Score with the trial's `run-evidence.enc` (`benchmark-run-evidence/2`): verify run/snapshot/case, accepted package and single final, then regrade its records offline. Sidecars seal artifact/note hashes, final/mission checks, public verdict and recovery receipts/journal hash. Pending, stopped or unscored runs score `unscored`.
+`benchmark-report/3` records the final `equivalent` verdict, and a pass is that verdict: the evaluator's graded equivalence of the frozen driver. The fresh mission is reported beside it and does not change it. Score with the trial's `run-evidence.enc` (`benchmark-run-evidence/2`): verify run/snapshot/case, accepted package and single final, then regrade its records offline. Sidecars seal artifact/note hashes, final/mission checks, public verdict and recovery receipts/journal hash. Pending, stopped or unscored runs score `unscored`.
 
-Preserve accepted artifacts. Regrade earlier evidence only from its preserved checkout; another evaluator implementation is refused. Earlier `/2` reports and evidence `/1` keep gated semantics. Compare refuses different protocols, except suite reports on a shared scoring set, which `suite compare` pairs device by device.
+Preserve accepted artifacts. Compare refuses different protocols, except suite reports on a shared scoring set, which `suite compare` pairs device by device.
 
 ## Replay a saved candidate
 
@@ -123,20 +131,20 @@ For suites, add `"replay_candidates":{"tq9-v2":"/private/candidates/tq9-v2",...}
 
 ## What fresh reuse must establish
 
-Fresh reuse gets only the package/objective and permitted operating data, calls its public interface and leaves the required state. For V2 families, equivalence comes from sealed final episodes on a fresh emulator after the run; mission is a separate check. Legacy TQ9 and BME280 use `recorded-reuse`, with no evaluator device contact: TQ9 temperature/output/disarm against its sealed goal, BME280 measurement against reference age/uncertainty limits. Host/operator failures before the goal or stale references leave results unscored.
+Fresh reuse gets only the package/objective and permitted operating data, calls its public interface and leaves the required state. For V2 families, equivalence comes from sealed final episodes on a fresh emulator after the run; mission is a separate check.
 
 A final grade never triggers repair. Retain uncertainty and reject incompatible saved workflows. Provided emulators run only during live calls, probe included, and are paused between calls. Pinned `time_policy.probe` text still says continuous time; that describes the case, not this provider. This is not real-time control. See Renode [time](https://renode.readthedocs.io/en/latest/advanced/time_framework.html) and [pause/start](https://renode.readthedocs.io/en/latest/basic/control.html).
 
 ## Run a repeated suite
 
-The [Codex acceptance gate](../docs/codex-acceptance.md) requires `equivalent_and_mission` for every planned trial; absent mission evidence is not success. Separate equivalence/mission counts remain available.
+The [Codex acceptance gate](docs/codex-acceptance.md) requires `equivalent_and_mission` for every planned trial; absent mission evidence is not success. Separate equivalence/mission counts remain available.
 
 Default: three families × three repetitions, sequentially; 10,800 seconds per child, 108,000 per suite. Set copied `repetitions` to `1` for three trials. Select settings/budgets before inference.
 
 ```sh
 generative-driver --home /operator/state/suite configure --executor codex --command /absolute/path/to/codex --model YOUR_MODEL
 generative-driver --home /operator/state/suite service start
-python -c "from pathlib import Path; from generative_driver.benchmark import case_root; Path('pilot.json').write_text((case_root() / 'suites/development-pilot.json').read_text(encoding='utf-8'), encoding='utf-8')"
+python -c "from pathlib import Path; from firmware_bench.benchmark import case_root; Path('pilot.json').write_text((case_root() / 'suites/development-pilot.json').read_text(encoding='utf-8'), encoding='utf-8')"
 ```
 
 Create `/operator/private/suite-options.json` outside the checkout and worker directories. Its `home` must match the absolute global `--home`. Password/Renode paths go only to the detached harness on stdin, never suite tables or children:
@@ -165,7 +173,7 @@ firmware-bench --home /operator/state/suite suite report SUITE_ID --output repor
 firmware-bench --home /operator/state/suite suite compare reports/before/suite.json reports/pilot-approved-1/suite.json
 ```
 
-Save `suite_id`; identical request IDs reconnect. The harness provides devices, grades after runs and settles slots from the status/verdict the configurator recorded. Unscored/pending grades or stops block the suite; an unknown grade (no failed step, an undecided one) settles its slot. `/3` exports store each trial's `scored` outcome (pass, failure, unknown, fault, flagged, running or not_run) and lead with a pass line such as `7/9 pass, 1 unknown, 2 faults, 12 planned` (flagged, running and not-run trials add `, N flagged`, `, N running` and `, N not run` after it, each when there are some); `/2` exports keep their old counts (equivalent/planned, not-equivalent, unscored, stopped-by-category and unrun). Rows include scrubbed reason, stopped stage and repairs. Markdown adds frequent failing check IDs; status/events explain stops. `--audit-path PATH` (repeat for each path) reads the worker transcripts in the configurator home: a trial whose worker ran a command naming a forbidden path is flagged and not graded: the evaluator's equivalent count (`equivalence`) still holds its driver, and the Markdown says so, but it is no `equivalent_and_mission` success, as earlier studies counted a stopped trial. A saved `/3` report is read back only if each label is the outcome its row shows. A path loses surrounding spaces and trailing `/` or `\`, so the tab-completed `/Volumes/Answer Vault/` finds a command that names the directory bare; a path that is then empty is refused. Results are paginated; preserve every slot. Physical and gated results stay separate.
+Save `suite_id`; identical request IDs reconnect. The harness provides devices, grades after runs and settles slots from the status/verdict the configurator recorded. Unscored/pending grades or stops block the suite; an unknown grade (no failed step, an undecided one) settles its slot. `/3` exports store each trial's `scored` outcome (pass, failure, unknown, fault, flagged, running or not_run) and lead with a pass line such as `7/9 pass, 1 unknown, 2 faults, 12 planned` (flagged, running and not-run trials add `, N flagged`, `, N running` and `, N not run` after it, each when there are some). Rows include scrubbed reason, stopped stage and repairs. Markdown adds frequent failing check IDs; status/events explain stops. `--audit-path PATH` (repeat for each path) reads the worker transcripts in the configurator home: a trial whose worker ran a command naming a forbidden path is flagged and not graded: the evaluator's equivalent count (`equivalence`) still holds its driver, and the Markdown says so, but it is no `equivalent_and_mission` success. A saved `/3` report is read back only if each label is the outcome its row shows. A path loses surrounding spaces and trailing `/` or `\`, so the tab-completed `/Volumes/Answer Vault/` finds a command that names the directory bare; a path that is then empty is refused. Results are paginated; preserve every slot.
 
 Use the same owner for cancel and resume:
 
@@ -174,7 +182,7 @@ firmware-bench --home /operator/state/suite suite cancel SUITE_ID
 firmware-bench --home /operator/state/suite suite resume SUITE_ID --options /operator/private/suite-options.json
 ```
 
-After correction, the harness reattaches a stopped child or grades an unscored one once. Resume reads the password/Renode handles for the harness. Pre-harness suites are read-only.
+After correction, the harness reattaches a stopped child or grades an unscored one once. Resume reads the password/Renode handles for the harness.
 
 Stopped time counts toward both budgets. Extend suite total with `--suite-budget-seconds`/`--budget-reason`, child total with `--child-budget-seconds`/`--child-budget-reason`; neither extends the other. Preserve prior attempts/costs.
 
@@ -189,13 +197,13 @@ firmware-bench --home /operator/state/suite suite compare reports/before/suite.j
 
 `scorecard` makes the export that `suite report` makes in a temporary folder and writes only `scorecard.json` and `scorecard.md` to `--output`.
 
-The two files say what they measure. `scorecard.json` holds the `suite_id`; whether the suite is `provisional` (still under way, or stopped before its slots settled), its `status` and its `reason`; the `system` (the protocol and the runtime, version, model, reasoning effort and revisions the suite froze) and the `conditions` (scoring set, evaluator revision, execution, evidence track, scope, child budget and its number of overrides, repair limit, tool approval and qualification). A scoring suite's reason names a trial and why it stopped, so its card has none. The Markdown names the system (with its execution and evidence track) and any scoring set under its pass line and gives the joint verdict of earlier studies (an equivalent driver and a successful fresh mission; `joint_verdict` in the JSON, beside each trial's own flag where trials are listed).
+The two files say what they measure. `scorecard.json` holds the `suite_id`; whether the suite is `provisional` (still under way, or stopped before its slots settled), its `status` and its `reason`; the `system` (the protocol and the runtime, version, model, reasoning effort and revisions the suite froze) and the `conditions` (scoring set, evaluator revision, execution, evidence track, scope, child budget and its number of overrides, repair limit, tool approval and qualification). A scoring suite's reason names a trial and why it stopped, so its card has none. The Markdown names the system (with its execution and evidence track) and any scoring set under its pass line and gives the joint verdict (an equivalent driver and a successful fresh mission; `joint_verdict` in the JSON, beside each trial's own flag where trials are listed).
 
 The card's `execution` and `conditions.execution` are two fields. A replay suite has both: the top level says how its trials were run (`replay-emulation`, because no model ran them), and `conditions.execution` is what the frozen experiment declared (`actual-agent-emulation`), which a comparison matches on. The Markdown's system line names the first when there is one.
 
 The Markdown opens with the pass line, which names the trials still running and not run after the planned count (`7/9 pass, 1 unknown, 2 faults, 12 planned, 1 running, 1 not run`), each only when there are some. A provisional suite says `Provisional: suite <status>` (and its reason) on the second line; a replay suite then has a line saying no model ran. Below the identity it gives the pass line of each group (`family`, and `level` and `framing` where the rows carry them), the repairs and fresh-reuse claims, and for each stage the attempts, wall and worker seconds, tokens, worker actions, managed calls and device use, summed over the trials, with medians for times and tokens. A sum that only some trials could measure shows how many (`n/N`); `unknown` means none could. A suite that ran a scoring set, a fixed sealed set of generated devices that every compared system runs, gets aggregates only and names no trial, case or run; any other suite adds a row of key, outcome and metrics per trial to `scorecard.json`. No scorecard quotes an audit finding.
 
-`compare` pairs two reports of one scoring set device by device, whatever their protocols; `--leak-check` takes the after system's saved report on a fresh batch of devices (see [leak check](../CONTEXT.md)). Other reports compare as whole suites within one protocol.
+`compare` pairs two reports of one scoring set device by device, whatever their protocols; `--leak-check` takes the after system's saved report on a fresh batch of devices (see [leak check](CONTEXT.md)). Other reports compare as whole suites within one protocol.
 
 Limits:
 
@@ -205,35 +213,11 @@ Limits:
 - Worker actions are read only from Codex transcripts.
 - Device exchanges are counted once, where the device made them: a replay (`probe_diff`, `emit_check`) is skipped, and an `emit_test_live` is counted in the live record its result names, found inside the run's folder.
 - A stage's `exchanges` read `unknown` (None), not a lower bound, when it may have missed some: the live record is missing or unreadable; one of its calls left no result to count (the package printed no JSON object, its process timed out or the host failed around the call); or a call to a device tool started and never finished. A call whose process never started counts zero.
-- On the bme280 case a `package_execute` call returns a measurement with no transcript, so its exchanges are not counted and the stage's figure is a lower bound; on the provided emulator it is counted where its result holds a transcript.
 - Replies a live test saw the device reject are not counted as refusals.
 - Reading the configurator database leaves a `-shm` and an empty `-wal` file beside it in a quiescent home.
-
-## Optional physical trial
-
-Install `.[hardware,docs]`, USB support and the FTDI adapter from [setup](../docs/setup.md). Use explicit URL and vendor wiring. Acquire fetches the official [Bosch datasheet](https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bme280-ds002.pdf).
-
-```sh
-firmware-bench --home /operator/state/physical run --case bme280 --executor codex --password-file /private/evaluator/bme280.password --binding-json '{"url":"ftdi://SELECTED_ADAPTER/1"}' --approve-bound-device-tools
-```
-
-Ground uses operator observations when supplied. Reuse waits for an independent reference: temperature Celsius, humidity % RH, pressure pascals, uncertainties, `observed_at`, evidence path. Supply via `driver_respond` or `respond RUN_ID --observation reference.json`, then resume promptly. Instruments share a stable environment; stale references leave the trial unscored. Agreement within uncertainty is not absolute calibration.
-
-The harness authenticates before starting, never touches the board and grades recorded reuse after completion, extending its wait with run budgets. If it stopped following first, `firmware-bench trial-resume TRIAL_DIRECTORY --password-file FILE` grades the completed run once.
-
-Assistive physical scoring uses its `run-evidence.enc`, sealing reference/measurement and evidence hash; the evidence file remains accepted. Earlier physical reports instead use saved `benchmark/reference-reuse-<attempt>.*` with matching digest/time window:
-
-```bash
-firmware-bench --home /operator/state/physical score reports/physical.json --evidence /private/evaluator/saved-reference.txt --password-file /private/evaluator/bme280.password
-```
 
 ## Metrics and comparisons
 
 Reports retain stage attempts/acceptance, final verdict and package/mapping hashes, budgets, runtime/provider/model/settings, toolchain/skill/case/evaluator identities, environment, time, managed calls, usage and interventions. Artifact and notes hashes are sealed in the trial's run evidence; `driver_result` returns the notes. Tool time overlaps worker time; managed counts exclude arbitrary shell calls. Missing usage stays unknown, failed attempts consume resources.
 
-Current assistive run reports record equivalence, and a pass is the evaluator's graded equivalence verdict; the fresh mission is reported beside it and does not change it, so corpus success needs neither it nor the six accepted handoffs. Earlier gated results retain their original acceptance rules and remain a separate series. Preserve failures, exclusions, blocked and unrun slots. Corpus measured success uses only graded passes/failures; selected coverage retains all selected slots and demonstrated coverage retains the entire catalog. Match versions, inputs, modes, seeds, time policies and budgets; label multi-dimension changes as system comparisons. Report repetitions, uncertainty and time/usage coverage. [Verification](../docs/verification.md) records the completed three-trials-per-profile baseline and multiline-repair comparison, with model results separate from software/reference evidence.
-
-
-## Verification evidence
-
-[docs/verification.md](../docs/verification.md) is the single narrative record for measured plugin results, methods and limits. Frozen JSON indices live in [bench/evidence/](evidence/): baseline and multiline comparison, native Modbus, corpus/lifecycle validation and historical qualification. The source distribution includes these indices. They retain their original bytes, hashes and historical path fields; relocating an index does not revise its experiment. Raw captures, evaluator material, source/build trees and private archives remain outside the repository. Superseded research notes and implementation checklists remain recoverable from Git history.
+Current assistive run reports record equivalence, and a pass is the evaluator's graded equivalence verdict; the fresh mission is reported beside it and does not change it, so corpus success needs neither it nor the six accepted handoffs. Preserve failures, exclusions, blocked and unrun slots. Corpus measured success uses only graded passes/failures; selected coverage retains all selected slots and demonstrated coverage retains the entire catalog. Match versions, inputs, modes, seeds, time policies and budgets; label multi-dimension changes as system comparisons. Report repetitions, uncertainty and time/usage coverage.

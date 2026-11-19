@@ -1,0 +1,46 @@
+name: Firmware bench
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  installed:
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        python: ['3.11', '3.13']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build both distributions
+        run: |
+          python -m pip install build
+          python -m build
+          python -m build firmware-bench
+      - name: Install both wheels
+        shell: python
+        run: |
+          import glob, subprocess, sys
+          tool, = glob.glob('dist/*.whl')
+          bench, = glob.glob('firmware-bench/dist/*.whl')
+          subprocess.run([sys.executable, '-m', 'pip', 'install', tool, bench], check=True)
+      - name: Test on a copy outside the checkout
+        shell: python
+        run: |
+          from pathlib import Path
+          import glob, os, shutil, subprocess, sys, tempfile
+          repo = Path.cwd()
+          with tempfile.TemporaryDirectory(prefix='firmware bench ') as work:
+              copy = Path(work) / 'firmware-bench'
+              shutil.copytree(repo / 'firmware-bench', copy, ignore=shutil.ignore_patterns('src', 'dist', 'build', '*.egg-info', '__pycache__'))
+              env = dict(os.environ)
+              env.pop('PYTHONPATH', None)
+              env['FB_TEST_WHEEL'] = str(Path(glob.glob('firmware-bench/dist/*.whl')[0]).resolve())
+              subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(copy / 'tests'), '-v'], cwd=work, env=env, check=True)
+              subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', 'run', '--case', 'setup-smoke', '--output', str(Path(work) / 'smoke output')], cwd=work, env=env, check=True)

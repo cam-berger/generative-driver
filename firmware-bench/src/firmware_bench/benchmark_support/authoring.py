@@ -6,15 +6,22 @@ import subprocess
 from pathlib import Path
 
 
+def installed_roots():
+    """The folders evaluator files stay out of because code is installed there: the folder that holds this package,
+    the folder that holds the tool's package, and each checkout that holds one of the two (Feature 12 of the untangle
+    Run, docs/features/untangle/12-firmware-bench.md, 12-B2)."""
+    from . import tool_install
+    holders = [Path(__file__).resolve().parents[2], tool_install.tool_folder().resolve().parent]
+    checkouts = [next((p for p in (holder, *holder.parents) if (p / '.git').exists()), None) for holder in holders]
+    return list(dict.fromkeys(holders + [checkout for checkout in checkouts if checkout]))
+
+
 def evaluator_directory(value):
     """Exclude known worker roots; this is placement validation, not OS isolation."""
-    from ..client import default_home
+    from generative_driver.client import default_home
     path = Path(value).expanduser().resolve()
-    package = Path(__file__).resolve().parents[1]
-    checkout = next((p for p in package.parents if (p / '.git').exists()), None)
-    forbidden = [package, Path(default_home()).expanduser().resolve() / 'runs', Path(default_home()).resolve() / 'runs']
-    if checkout:
-        forbidden.append(checkout)
+    forbidden = [*installed_roots(), Path(default_home()).expanduser().resolve() / 'runs',
+                 Path(default_home()).resolve() / 'runs']
     parents = (path, *path.parents)
     if (any(path.is_relative_to(root) for root in forbidden)
             or any((p / '_report_schema.json').exists() for p in parents)

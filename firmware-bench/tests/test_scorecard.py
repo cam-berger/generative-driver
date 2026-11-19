@@ -21,9 +21,9 @@ from tool_fixtures import (gateway_identity, scripted_stages, thermometer_model,
 from test_evaluation import FAIL, PASS
 from test_suite_harness import manifest
 from interface_runtime.package import package_files
-from generative_driver.benchmark_support.outcomes import pass_rate
-from generative_driver.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
-from generative_driver.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support.outcomes import pass_rate
+from firmware_bench.benchmark_support.scorecard import scorecard_markdown, suite_scorecard, trial_metrics
+from firmware_bench.benchmark_support.snapshots import canonical_digest
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 BINDING = {'host': '127.0.0.1', 'port': 45681}
@@ -914,7 +914,7 @@ class TrialMetricsTests(unittest.TestCase):
 
     def test_the_database_is_opened_read_only(self):
         home, run, result = self.scripted()
-        with patch('generative_driver.benchmark_support.scorecard.sqlite3.connect', wraps=sqlite3.connect) as connect:
+        with patch('firmware_bench.benchmark_support.scorecard.sqlite3.connect', wraps=sqlite3.connect) as connect:
             trial_metrics(home, run)
         [call] = connect.call_args_list
         self.assertTrue(call.args[0].startswith('file:') and call.args[0].endswith('runs.sqlite3?mode=ro'), call)
@@ -1136,15 +1136,15 @@ def scoring_read():
     @contextlib.contextmanager
     def opened(*_args, **_kwargs):
         yield Path('no-such-opened-copy')
-    with patch('generative_driver.benchmark_support.trial_store.opened', opened), \
-            patch('generative_driver.benchmark_support.scorecard._set_design', return_value={}), \
-            patch('generative_driver.benchmark_support.suites.refuse_unsettled_scoring'):
+    with patch('firmware_bench.benchmark_support.trial_store.opened', opened), \
+            patch('firmware_bench.benchmark_support.scorecard._set_design', return_value={}), \
+            patch('firmware_bench.benchmark_support.suites.refuse_unsettled_scoring'):
         yield {'password': object(), 'set_root': 'no-such-set'}
 
 
 def scorecard_of(report, metrics, **arguments):
     """The scorecard of `report`, with `trial_metrics` answering from `metrics` by run id (so no home is opened)."""
-    with patch('generative_driver.benchmark_support.scorecard.trial_metrics',
+    with patch('firmware_bench.benchmark_support.scorecard.trial_metrics',
                side_effect=lambda home, run_id, **_: metrics[run_id]), scoring_read() as reading:
         return suite_scorecard(report, home=Path('no-such-home'), **reading, **arguments)
 
@@ -1268,7 +1268,7 @@ class SuiteScorecardTests(unittest.TestCase):
         # report labels replay-emulation since no model ran them, and `conditions.execution` is what the frozen experiment
         # declared, the field a comparison matches on. The system line of the Markdown names the first.
         from test_assistive_reports import assistive_fixture
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         experiment['dimensions'] = {'runtime': 'replay', 'replay_candidates': {entry['case']: 'e' * 64 for entry in suite['entries']}}
         report = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
@@ -1325,7 +1325,7 @@ class SuiteScorecardTests(unittest.TestCase):
         # report's count and each trial's own flag, built here by the aggregate itself, so a flagged trial is a non-success
         # in both, as earlier studies counted an integrity stop, and out of the pass line.
         from test_assistive_reports import assistive_fixture
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         def scorecard(flagged):
             suite, trials, reports, experiment = assistive_fixture()
             if flagged:
@@ -1351,7 +1351,7 @@ class SuiteScorecardTests(unittest.TestCase):
         for row, level in zip(report['trials'], (1, 1, 1, 2)):
             row['level'] = level
         metrics, asked = {'r0': probed('r0', 10), 'r1': probed('r1', 20), 'r2': probed('r2', 1000)}, []
-        with patch('generative_driver.benchmark_support.scorecard.trial_metrics',
+        with patch('firmware_bench.benchmark_support.scorecard.trial_metrics',
                    side_effect=lambda home, run_id, **_: asked.append(run_id) or metrics[run_id]):
             card = suite_scorecard(report, home=self.home)
         self.assertEqual(asked, ['r0', 'r1'])
@@ -1423,7 +1423,7 @@ class SuiteScorecardTests(unittest.TestCase):
         def measure(home, run_id, **arguments):
             asked.append((home, run_id, arguments.get('trial_dir')))
             return blank_metrics(run_id)
-        with patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure):
+        with patch('firmware_bench.benchmark_support.scorecard.trial_metrics', side_effect=measure):
             suite_scorecard(scoring_report({'d0': 'pass', 'd1': 'failure'}, scoring=False), home=self.home,
                             trial_dirs={'entry-001-repeat-000': Path('trial-one'), 'entry-009-repeat-000': Path('nobody')})
         self.assertEqual(asked, [(self.home, 'r0', None), (self.home, 'r1', Path('trial-one'))])
@@ -1658,7 +1658,7 @@ class BenchTrialDirectoryTests(unittest.TestCase):
         # The bench home is a sibling of the configurator home. A suite resumed by a new harness has a suite directory of
         # its own, and a trial found there is still the trial of its run; a trial that never learnt of a run, one whose
         # record cannot be read and a run with no directory at all are left out of the map.
-        from generative_driver.benchmark_support.scorecard import bench_trial_dirs
+        from firmware_bench.benchmark_support.scorecard import bench_trial_dirs
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()  # the bench home is found from the resolved home
             home = root / 'state'
@@ -1683,16 +1683,16 @@ class ScorecardCommandTests(unittest.TestCase):
         --home` sets it, with the export returning `report` and `trial_metrics` answering from `metrics` (by run id, or
         a function of the home and run id): (exit code, the JSON it printed, the call the export got, the home each
         `trial_metrics` call got)."""
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         asked, output = [], io.StringIO()
         def measure(home, run_id, **_):
             asked.append(home)
             return metrics(home, run_id) if callable(metrics) else metrics[run_id]
         with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(home)}), \
-                patch('generative_driver.benchmark_support.suite_reporting._export_suite',
+                patch('firmware_bench.benchmark_support.suite_reporting._export_suite',
                       return_value=report) as export, \
-                patch('generative_driver.benchmark_support.scorecard.trial_metrics', side_effect=measure), \
-                patch('generative_driver.benchmark._read_password', return_value=object()), scoring_read(), \
+                patch('firmware_bench.benchmark_support.scorecard.trial_metrics', side_effect=measure), \
+                patch('firmware_bench.benchmark._read_password', return_value=object()), scoring_read(), \
                 contextlib.redirect_stdout(output):
             code = main(['suite', 'scorecard', *arguments, '--password-file', 'handle', '--set-root', 'no-such-set'])
         return code, json.loads(output.getvalue()), export.call_args, asked
@@ -1760,11 +1760,11 @@ class RealSuiteTests(AssistiveFixture):
         # Catches a lookup of trial directories that assumes a layout the harness does not keep, a scorecard that leaves
         # out a flagged trial's metrics, one that quotes the command that flagged it, and a home or export that differs
         # between the report and the measurement.
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         sid, rows = self.suite()
         out, output = self.root / 'scorecard', io.StringIO()
         with self.owner(), patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.home)}), \
-                patch('generative_driver.benchmark_support.scorecard.trial_metrics', wraps=trial_metrics) as measured, \
+                patch('firmware_bench.benchmark_support.scorecard.trial_metrics', wraps=trial_metrics) as measured, \
                 contextlib.redirect_stdout(output):
             code = main(['suite', 'scorecard', sid, '--output', str(out), '--audit-path', self.VAULT])
         card = json.loads(output.getvalue())
@@ -1795,14 +1795,14 @@ class RealSuiteTests(AssistiveFixture):
 
     def test_a_real_reports_scorecard_names_no_trial_when_its_suite_ran_a_scoring_set(self):
         # Catches a field of a real report's rows (its keys, runs, cases, reasons and findings) reaching the aggregate.
-        from generative_driver.benchmark_support.scorecard import bench_trial_dirs
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.scorecard import bench_trial_dirs
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         sid, rows = self.suite()
         with self.owner():
             report = report_suite(sid, home=self.home, output=self.root / 'export', audit_paths=(self.VAULT,))
         report['experiment']['comparison_identity']['scoring_set'] = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
         with scoring_read() as reading, patch(
-                'generative_driver.benchmark_support.scorecard._scoring_metrics',
+                'firmware_bench.benchmark_support.scorecard._scoring_metrics',
                 side_effect=lambda home, _suite, row, *_: trial_metrics(home, row['run_id'])):
             card = suite_scorecard(report, home=self.home, **reading)
         self.assertNotIn('trials', card)

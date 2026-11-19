@@ -8,7 +8,7 @@ TOKEN = 'a1' * 32
 
 class ManifestTests(unittest.TestCase):
     def test_repeat_slots_preserve_three_entries_and_three_families(self):
-        from generative_driver.benchmark_support.suites import normalize_manifest, expand_trials
+        from firmware_bench.benchmark_support.suites import normalize_manifest, expand_trials
         manifest = normalize_manifest(pilot_manifest())
         slots = expand_trials(manifest)
         self.assertEqual(len(slots), 9)
@@ -23,7 +23,7 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(len(expand_trials(changed)), 3)
 
     def test_normalization_rejects_incomplete_unknown_and_blank_fields(self):
-        from generative_driver.benchmark_support.suites import normalize_manifest
+        from firmware_bench.benchmark_support.suites import normalize_manifest
         mutations = [lambda m: m.update(unrecognized=True), lambda m: m.pop('id'),
                      lambda m: m.update(schema='benchmark-suite/2'), lambda m: m.update(id='  '),
                      lambda m: m.update(version=1), lambda m: m.update(entries=[]),
@@ -41,7 +41,7 @@ class ManifestTests(unittest.TestCase):
                 normalize_manifest(value)
 
     def test_normalization_rejects_invalid_numbers_and_duplicate_entries(self):
-        from generative_driver.benchmark_support.suites import normalize_manifest
+        from firmware_bench.benchmark_support.suites import normalize_manifest
         mutations = [lambda m: m['entries'][0].update(case_seed=True),
                      lambda m: m['entries'][0].update(case_seed=float('nan')),
                      lambda m: m['entries'][0].update(case_seed=0.0),
@@ -62,7 +62,7 @@ class ManifestTests(unittest.TestCase):
                 normalize_manifest(manifest)
 
     def test_defensive_copies_preserve_submitted_order_and_legal_limits(self):
-        from generative_driver.benchmark_support.suites import normalize_manifest, expand_trials
+        from firmware_bench.benchmark_support.suites import normalize_manifest, expand_trials
         original = pilot_manifest()
         original['entries'].reverse()
         original['entries'][0]['case_seed'] = -1
@@ -78,8 +78,8 @@ class ManifestTests(unittest.TestCase):
 
     def test_distributed_pilot_expands_without_tools_or_credentials(self):
         import json
-        from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.suites import expand_trials
+        from firmware_bench.benchmark import case_root
+        from firmware_bench.benchmark_support.suites import expand_trials
         manifest = json.loads((case_root() / 'suites/development-pilot.json').read_text())
         self.assertEqual(manifest, pilot_manifest())
         slots = expand_trials(manifest)
@@ -97,8 +97,8 @@ class FreezeTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from suite_fixtures import scripted_manifest
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.registry import pin_case
         manifest = scripted_manifest()
         config = {'command': ['C:/Program Files/toy/runtime.exe'], 'model': 'toy-model', 'env': {'TOKEN': 'private-toy'}}
         options = {'ghidra_home': 'C:/Tools/Ghidra', 'scoped_tool_approval': 'emulator'}
@@ -129,7 +129,7 @@ class FreezeTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suites import freeze_suite
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / 'not-created'
             with patch.dict('os.environ', {'GENERATIVE_DRIVER_HOME': str(home)}):
@@ -142,7 +142,7 @@ class FreezeTests(unittest.TestCase):
 
     def test_unknown_options_invalid_commands_and_unselected_handles_are_refused(self):
         from suite_fixtures import scripted_manifest
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suites import freeze_suite
         for config in ({}, {'command': []}, {'command': ''}, {'command': ['']}, {'command': [None]}, None):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 freeze_suite(scripted_manifest(), 'codex', config, {}, {}, harness_token_sha256=TOKEN)
@@ -171,14 +171,14 @@ class FreezeTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from suite_fixtures import public_case_fixture
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suites import freeze_suite
         for changes in ({'calibration': {'status': 'pending'}}, {'calibration': {'status': 'legacy-not-required'}},
                         {'calibration': {}}, {'scope': 'stage-local'}, {'approval_scope': None}):
             with self.subTest(changes=changes), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); public_case_fixture(root, **changes)
                 manifest = pilot_manifest(); manifest['entries'] = manifest['entries'][:1]
-                with patch('generative_driver.benchmark.case_root', return_value=root), \
-                        patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
+                with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                        patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root), \
                         self.assertRaises(ValueError):
                     freeze_suite(manifest, 'codex', {'command': ['toy']}, {'scoped_tool_approval': 'emulator'}, {},
                                  harness_token_sha256=TOKEN)
@@ -188,14 +188,14 @@ class FreezeTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from suite_fixtures import public_case_fixture
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suites import freeze_suite
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             public_case_fixture(root)
             public_case_fixture(root, 'sampled-sensor-v1', evidence_track='other-track')
             manifest = pilot_manifest(); manifest['entries'] = [manifest['entries'][0], manifest['entries'][2]]
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root), \
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root), \
                     self.assertRaises(ValueError):
                 freeze_suite(manifest, 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
 
@@ -204,7 +204,7 @@ class FreezeTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from suite_fixtures import public_case_fixture
-        from generative_driver.benchmark_support.suites import freeze_suite, child_request
+        from firmware_bench.benchmark_support.suites import freeze_suite, child_request
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             public_case_fixture(root)
@@ -213,8 +213,8 @@ class FreezeTests(unittest.TestCase):
             manifest['entries'][1]['case_seed'] = 73
             config = {'command': ['scripted-contract-fixture'], 'model': 'toy-model'}
             options = {'ghidra_home': 'C:/Tools/Ghidra', 'java_home': 'C:/Tools/Java', 'scoped_tool_approval': 'emulator'}
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 frozen = freeze_suite(manifest, 'codex', config, options, {'skills_revision': 'toy'}, harness_token_sha256=TOKEN)
                 trial = dict(frozen['trials'][3], child_request_id='suite-toy-entry-001-repeat-001')
                 child = child_request(frozen, trial)
@@ -241,7 +241,7 @@ class FreezeTests(unittest.TestCase):
 
     def test_child_projection_refuses_changed_or_unreserved_slot_identity(self):
         from suite_fixtures import scripted_manifest
-        from generative_driver.benchmark_support.suites import freeze_suite, child_request
+        from firmware_bench.benchmark_support.suites import freeze_suite, child_request
         frozen = freeze_suite(scripted_manifest(), 'codex', {'command': ['toy']}, {}, {}, harness_token_sha256=TOKEN)
         original = dict(frozen['trials'][0], child_request_id='suite-child-toy')
         mutations = [lambda t: t.update(case='sampled-sensor-v1'), lambda t: t.update(scenario='semantic'),

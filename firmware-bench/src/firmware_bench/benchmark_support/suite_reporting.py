@@ -189,7 +189,7 @@ def _report_success(report):
 def _report_equivalent(report,protocol=None):
     """An assistive report's success: its one recorded verdict, a well-formed evaluator grade of a completed run, holds
     the frozen driver equivalent. The report and its grade name `protocol`, by default this installation's."""
-    from ..client_interface import PROTOCOL,verdict_errors
+    from generative_driver.client_interface import PROTOCOL,verdict_errors
     protocol=protocol or PROTOCOL
     equivalence=report.get('equivalence')
     return (report.get('schema')=='benchmark-report/3' and report.get('protocol')==protocol
@@ -599,7 +599,7 @@ def _recorded_equivalence(owner,events,report):
     """Trust the configured owner's own record of an assistive run, not the report's claim: a completed, settled run of
     the protocol whose one final verdict the configurator recorded (one run.finalized event) is the report's, and grades
     the run's accepted emitted driver: the first artifact of its latest emit handoff that handed one on."""
-    from ..client_interface import PROTOCOL
+    from generative_driver.client_interface import PROTOCOL
     progress=owner.get('progress') or {};equivalence=owner.get('equivalence')
     if (owner.get('status')!='completed' or owner.get('outcome_category')!='completed'
             or owner.get('stopping') is not False or owner.get('uncertain_effect') is not False
@@ -697,7 +697,7 @@ def report_suite(suite_id,home=None,output=None,*,evidence_files=None,password_f
     leave."""
     if output is None or not str(output).strip():raise ValueError('Suite export requires an explicit output directory')
     from pathlib import Path
-    from ..client import default_home
+    from generative_driver.client import default_home
     root=Path(home or default_home()).resolve()
     # One path, so that the folder the check approves is the one the export writes.
     output=Path(output).expanduser().resolve()
@@ -712,6 +712,21 @@ def _audited(root,suite_id,run_id,audit_paths,password,vault):
     from .trial_store import opened
     with opened(root,suite_id,run_id,password,vault=vault) as held:
         return audit_commands(held/'run',audit_paths)
+
+def _exporter():
+    """What an export says of the code that made it: the tree hash of the folder `benchmark_support`, and a toolchain
+    revision that joins the tree hashes of the tool's package folder and of this package's, which were one folder
+    before the benchmark became a package of its own (Feature 12 of the untangle Run,
+    docs/features/untangle/12-firmware-bench.md, 12-B2). ValueError for a folder that does not exist."""
+    from pathlib import Path
+    from . import tool_install
+    from .integrity import revision_folder
+    from .run_reporting import _tree_hash
+    support = Path(__file__).resolve().parent
+    return {'benchmark_support_tree_sha256': _tree_hash(revision_folder(support)),
+            'toolchain_revision': hashlib.sha256((_tree_hash(revision_folder(tool_install.tool_folder()))
+                                                  + _tree_hash(revision_folder(support.parent))).encode()).hexdigest()}
+
 
 def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None,audit_paths=(),password=None,
                   vault=None,check=None):
@@ -728,7 +743,7 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
     audit_paths=forbidden_paths(audit_paths)
     from pathlib import Path
     from tempfile import TemporaryDirectory
-    from ..client import call
+    from generative_driver.client import call
     from .run_reporting import report_run,_public,_tree_hash
     from .evidence import regrade_v2,regrade_v3
     from .suite_book import suite_call
@@ -832,7 +847,7 @@ def _export_suite(suite_id,*,home,output,evidence_files=None,password_files=None
         result=aggregate_suite(manifest,trials,reports,qualification,experiment=experiment)
         result.update(suite_id=suite_id,status=first['status'],reason=_public(first.get('reason'),root),
             suite_wall_seconds=max(0,first['updated']-first['created']),
-            exporter={'benchmark_support_tree_sha256':_tree_hash(Path(__file__).parent),'toolchain_revision':_tree_hash(Path(__file__).parents[1])},
+            exporter=_exporter(),
             qualification_meaning='Trusted configured owner records; not cryptographic authentication.' if not regrading else 'Authenticated sidecars; run association comes from the configured owner.')
         destination.mkdir(parents=True,exist_ok=True)
         for trial in result['trials']:

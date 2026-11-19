@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from benchmark_case_stages import prepare_stage, observe_stage
-from generative_driver import benchmark
-from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
+from firmware_bench import benchmark
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, read_password
 from generative_driver.supplied import stages
 
 GRADES = {'passed', 'expected', 'checks', 'verdict', 'grade', 'absolute_tolerance', 'evaluator'}
@@ -88,8 +88,8 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_action_records_keep_measured_units_and_pause_on_error(self):
         # Catches filling observed units from expected units and running during observation.
-        from generative_driver.benchmark_support.emulated_actions import execute_plan
-        from generative_driver.benchmark_support.behavior import validate_records
+        from firmware_bench.benchmark_support.emulated_actions import execute_plan
+        from firmware_bench.benchmark_support.behavior import validate_records
         class Session:
             running = False
             def set_running(self, value): self.running = value
@@ -119,8 +119,8 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_family_contract_scores_varying_temperature_and_state_effects(self):
         # Catches constant readings and requested duty substituted for observed duty.
-        from generative_driver.benchmark_support import tq9_v2
-        from generative_driver.benchmark_support.behavior import validate_records
+        from firmware_bench.benchmark_support import tq9_v2
+        from firmware_bench.benchmark_support.behavior import validate_records
         truth = {'artifact_sha256': 'b'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'fraction'},
             'scenarios': {'original': {'temperature_vectors': [
                 {'stimulus': -7, 'expected': -7, 'absolute_tolerance': .1},
@@ -146,8 +146,8 @@ class TQ9V2Tests(unittest.TestCase):
         self.assertEqual(observed['duty'], 0)
 
     def test_phase_inventories_are_disjoint_and_reject_constant_diagnostics(self):
-        from generative_driver.benchmark_support import tq9_v2
-        from generative_driver.benchmark_support.behavior import validate_records
+        from firmware_bench.benchmark_support import tq9_v2
+        from firmware_bench.benchmark_support.behavior import validate_records
         phases = {}
         for phase, temperatures, duties in (('diagnostic', (-8, 0, 31), (0, 450, 1000)),
                                             ('final', (-9, 1, 32), (1, 451, 999))):
@@ -168,7 +168,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_tq9_monitor_measurement_uses_permille(self):
         # Catches fraction/permille confusion at the actual family boundary.
-        from generative_driver.benchmark_support.tq9_v2 import observations
+        from firmware_bench.benchmark_support.tq9_v2 import observations
         measured = observations({'values': {'compare': 400, 'reload': 999}}, {'outputs': {}}, {})
         self.assertEqual(measured['duty'], 400)
         self.assertEqual(observations.monitor_units['duty'], 'permille')
@@ -189,8 +189,8 @@ class TQ9V2Tests(unittest.TestCase):
                      (handoff('unfinished', '{unfinished'), 'cannot be wired to the emulator'),
                      (handoff('unwired', json.dumps(unwired)), 'cannot be wired to the emulator')]
             # The stage adapter starts no device at all; neither a provider nor a native session may start here.
-            with patch('generative_driver.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')), \
-                    patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=AssertionError('emulator started')):
+            with patch('firmware_bench.benchmark_support.device_provider.DeviceProvider.start', side_effect=AssertionError('emulator started')), \
+                    patch('firmware_bench.benchmark_support.native.NativeSession.start', side_effect=AssertionError('emulator started')):
                 for accepted, reason in cases:
                     with self.subTest(reason=reason, accepted=accepted):
                         prepared = prepare_stage('tq9-v2', 'probe', root/'run', root/'worker', accepted)
@@ -214,8 +214,8 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_cleanup_refuses_lost_native_ownership(self):
         # Catches PID-only termination or silently treating an attached process as owned.
-        from generative_driver.benchmark import cleanup
-        from generative_driver.benchmark_support.harness import finish
+        from firmware_bench.benchmark import cleanup
+        from firmware_bench.benchmark_support.harness import finish
         from test_emulator_recovery import Owner, provider
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -238,7 +238,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_final_plan_requires_permission_refusal_without_effect(self):
         # Catches omitting denied-effect checks or accepting a refusal after I/O.
-        from generative_driver.benchmark_support import tq9_v2
+        from firmware_bench.benchmark_support import tq9_v2
         truth = {'artifact_sha256': 'b'*64, 'contracts': {'units': {'temperature': 'degC', 'duty': 'permille'},
             'scenarios': {'original': {'temperature_vectors': [{'stimulus': 20, 'expected': 20, 'absolute_tolerance': .1}]}},
             'effect_vectors': [{'task': 'arm', 'inputs': {}}, {'task': 'set_duty', 'inputs': {'duty': 400}}, {'task': 'disarm', 'inputs': {}}]}}
@@ -254,7 +254,7 @@ class TQ9V2Tests(unittest.TestCase):
     def test_diagnostic_scalar_observation_is_measured_and_strict(self):
         # Catches coercing missing/nonfinite property readings into valid references.
         from test_benchmark_native import MonitorFixture
-        from generative_driver.benchmark_support.native import NativeSession
+        from firmware_bench.benchmark_support.native import NativeSession
         for value, good in ((12.5, True), (float('nan'), False), (float('inf'), False)):
             with self.subTest(value=value), MonitorFixture() as peer:
                 peer.value = value
@@ -267,7 +267,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_original_scenario_can_be_pinned_without_evaluator_password(self):
         # Catches omitting the unchanged-firmware environmental control from discovery.
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support.registry import pin_case
         pin = pin_case('tq9-v2', 'original', 0)
         self.assertEqual(pin['scenario_id'], 'original')
         self.assertNotIn('evaluator_password_file', pin)
@@ -275,7 +275,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_passed_manifest_label_cannot_bypass_calibration_admission(self):
         # Catches trusting a mutable public 'passed' label without authenticated evidence.
-        from generative_driver.benchmark_support.registry import require_calibration, pin_case
+        from firmware_bench.benchmark_support.registry import require_calibration, pin_case
         pin = pin_case('tq9-v2','original',0)
         pin['calibration'] = {'status':'passed','evidence_sha256':'a'*64}
         with self.assertRaises(ValueError):
@@ -283,7 +283,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_case_seed_reorders_only_independent_final_episodes(self):
         # Catches pinned seeds being ignored or dropping final coverage during variation.
-        from generative_driver.benchmark_support import tq9_v2
+        from firmware_bench.benchmark_support import tq9_v2
         truth = {'artifact_sha256':'a'*64,'contracts':{'units':{'temperature':'degC','duty':'permille'},
             'scenarios':{'original':{'temperature_vectors':[
                 {'stimulus':-7,'expected':-7,'absolute_tolerance':0},
@@ -372,8 +372,8 @@ class TQ9V2Tests(unittest.TestCase):
         # Real TCP peer, external worker processes and emitted package; no inference/native qualification.
         import http.server, sys, threading, time
         from unittest.mock import patch
-        import generative_driver
-        from generative_driver.benchmark_support import harness
+        from tool_fixtures import package_folders
+        from firmware_bench.benchmark_support import harness
         from generative_driver import configurator, device_client
         from generative_driver.configurator import Controller
         from tq9_workflow_fixture import Silicon, WORKER
@@ -425,7 +425,7 @@ class TQ9V2Tests(unittest.TestCase):
                 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
                 threading.Thread(target=server.serve_forever,daemon=True).start()
                 script=root/'scripted_worker.py'
-                source=WORKER.replace('PACKAGE_PARENT',repr(str(Path(generative_driver.__file__).resolve().parents[1])))\
+                source=WORKER.replace('PACKAGE_PARENTS',repr(package_folders()))\
                     .replace('FIXTURE_PARENT',repr(str(Path(__file__).parent))).replace('SERVICE_URL',repr('http://127.0.0.1:'+str(server.server_port)))
                 if mode == 'generated-identity-only':
                     source = source.replace("sequence=[('measure',{}),('arm',{}),('set_duty',{'duty':370}),('disarm',{})]", "sequence=[('identify',{})]")
@@ -673,7 +673,7 @@ class TQ9V2Tests(unittest.TestCase):
                 # Only the harness unlocks the truth, at admission, before the run: for the device recipe and for the
                 # grade after it. The configurator never does, and no stage runs the evaluator.
                 import inspect
-                from generative_driver.benchmark_support import emulator as emulator_module, evaluator, registry
+                from firmware_bench.benchmark_support import emulator as emulator_module, evaluator, registry
                 real_truth=emulator_module.truth_for_case;truth_callers=[]
                 def ended():
                     observed=controller.call('status',run)
@@ -703,15 +703,15 @@ class TQ9V2Tests(unittest.TestCase):
                     return real_reference(*args,**kwargs)
                 endpoint=provider=None;graders=[]
                 try:
-                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('generative_driver.benchmark.case_root',return_value=resources),\
-                         patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources),\
+                    with patch.object(toolkit,'call_tool',side_effect=runtime_boundary),patch.object(device_client.DeviceClient,'replace',replace),patch.object(controller,'_accept',side_effect=accept),patch('firmware_bench.benchmark.case_root',return_value=resources),\
+                         patch('firmware_bench.benchmark_support.case_assets.case_root',return_value=resources),\
                          patch.object(controller,'_check',side_effect=check),patch.object(configurator,'_verify_firmware',side_effect=verify_firmware),\
-                         patch('generative_driver.benchmark_support.registry.admitted_truth',
+                         patch('firmware_bench.benchmark_support.registry.admitted_truth',
                                side_effect=lambda pin,secret:(registry.case_truth(pin['case_id'],root/'no-run',secret),{'ok':True,'evidence_sha256':evidence})),\
                          patch.object(emulator_module,'truth_for_case',side_effect=truth_for_case),\
                          patch.object(evaluator,'reference_execute',side_effect=reference),\
                          patch.object(evaluate_module,'adapt_model',side_effect=adapt),\
-                         patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=native_start):
+                         patch('firmware_bench.benchmark_support.native.NativeSession.start',side_effect=native_start):
                         if mode in ('recover-initial-stop-raise','recover-initial-stop-live'):
                             # The emulator's startup reading fails and so does its stop. The harness keeps the live
                             # emulator owned and names it for manual reconciliation; no run starts on an unverified device.
@@ -1266,12 +1266,12 @@ class TQ9V2Tests(unittest.TestCase):
                         sealed=read_password(password).unlock(trial/'run-evidence.enc', equivalence['evidence_sha256'])
                         if mode in ('generated-mcp', 'forged-mcp', 'reordered-mcp', 'mcp-reconnect'):
                             import copy
-                            from generative_driver.benchmark_support.mcp_reuse import verified
+                            from firmware_bench.benchmark_support.mcp_reuse import verified
                             proof = sealed['mcp_reuse']; frozen = equivalence['frozen_artifact_sha256']
                             self.assertEqual(proof['package_schema'], 'interface-package/2')
                             self.assertTrue(verified(proof, frozen))
                             self.assertTrue(sealed['final']['generated_reuse_verified'])
-                            from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
+                            from firmware_bench.benchmark_support.evidence import seal_run_evidence_v2
                             omitted = copy.deepcopy(sealed); omitted.pop('mcp_reuse')
                             with self.assertRaisesRegex(ValueError, 'generated|MCP|proof'):
                                 seal_run_evidence_v2(omitted, trial/'missing-proof.enc', read_password(password))
@@ -1312,14 +1312,14 @@ class TQ9V2Tests(unittest.TestCase):
                         self.assertTrue(all(Path(a['path']).resolve().is_relative_to((run_dir/'accepted').resolve())
                                             for a in sealed['accepted_artifacts']))
                         self.assertNotIn('maintenance',sealed)
-                        from generative_driver.benchmark_support.run_reporting import report_run
-                        from generative_driver.benchmark_support.suite_reporting import _recorded_success
+                        from firmware_bench.benchmark_support.run_reporting import report_run
+                        from firmware_bench.benchmark_support.suite_reporting import _recorded_success
                         with patch('generative_driver.client.call',side_effect=lambda method,params,**kw:controller.call(method,params)):
                             report=report_run(run['run_id'],home=root/'home')
                         if mode in ('generated-mcp','generated-identity-only','missing-mission'):
                             import copy
-                            from generative_driver.benchmark_support.evidence import regrade_v3
-                            from generative_driver.benchmark_support.mcp_reuse import verified
+                            from firmware_bench.benchmark_support.evidence import regrade_v3
+                            from firmware_bench.benchmark_support.mcp_reuse import verified
                             self.assertTrue(verified(sealed['mcp_reuse'], equivalence['frozen_artifact_sha256']))
                             # The offline regrade reports the verdict and the reuse as the live grade did.
                             regraded = regrade_v3(report, trial/'run-evidence.enc', read_password(password))['equivalence']
@@ -1355,7 +1355,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_measured_calibration_checks_code_and_complete_reference_mutant_coverage(self):
         from test_benchmark_family_calibration import AdmissionTests
-        from generative_driver.benchmark_support.reference_calibration import validate_record
+        from firmware_bench.benchmark_support.reference_calibration import validate_record
         import copy
         manifest,record=AdmissionTests().fixture('tq9-v2')
         manifest.update(family='tq9')
@@ -1387,9 +1387,9 @@ class TQ9V2Tests(unittest.TestCase):
     def tq9_admission_fixture(self):
         from test_benchmark_family_calibration import AdmissionTests
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
-        from generative_driver.benchmark_support.reference_calibration import input_hashes, tq9_execution_inputs, CORE_MUTANTS
-        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.registry import require_calibration
+        from firmware_bench.benchmark_support.reference_calibration import input_hashes, tq9_execution_inputs, CORE_MUTANTS
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
         import copy
         manifest,record=AdmissionTests().fixture('tq9-v2')
         manifest.update(family='tq9',schema='benchmark-case/2')
@@ -1420,7 +1420,7 @@ class TQ9V2Tests(unittest.TestCase):
         for run in record['runs']:run.update(record['execution_inputs'][run['id']])
         for ref in record['references']:ref['execution_inputs']={name:copy.deepcopy(record['execution_inputs'][name]) for name in ref['runs']}
         for row in record['mutants']:row['execution_input']=copy.deepcopy(record['execution_inputs'][row['run']])
-        from generative_driver.benchmark_support.tq9_v2 import contract
+        from firmware_bench.benchmark_support.tq9_v2 import contract
         phases={phase:{'temperature_vectors':[{'stimulus':value,'expected':value,'absolute_tolerance':0}],
             'effect_vectors':[{'task':'arm','inputs':{}},{'task':'set_duty','inputs':{'duty':200}},
                               {'task':'disarm','inputs':{}}]} for phase,value in [('diagnostic',-7),('final',29)]}
@@ -1447,12 +1447,12 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_tq9_admission_binds_every_executed_input_to_authenticated_definitions(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
-        from generative_driver.benchmark_support.snapshots import canonical_digest
-        from generative_driver.benchmark_support.tq9_v2 import contract
+        from firmware_bench.benchmark_support.registry import require_calibration
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.tq9_v2 import contract
         manifest,record,truth,pin=self.tq9_admission_fixture()
-        with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
-             'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+        with patch('firmware_bench.benchmark_support.registry.pin_case',return_value=pin),patch(
+             'firmware_bench.benchmark_support.emulator.truth_for_case',return_value=truth):
             self.assertTrue(require_calibration(pin,{})['ok'])
             for run in record['runs']:
                 for field in ('model_sha256','capabilities_sha256'):
@@ -1477,13 +1477,13 @@ class TQ9V2Tests(unittest.TestCase):
     def test_tq9_admission_binds_check_coverage_to_authenticated_phase_contracts(self):
         import copy
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
-        from generative_driver.benchmark_support.snapshots import canonical_digest
-        from generative_driver.benchmark_support.tq9_v2 import contract
+        from firmware_bench.benchmark_support.registry import require_calibration
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.tq9_v2 import contract
         for defect in ('inventory','contract','order','intended-failure'):
             manifest,record,truth,pin=self.tq9_admission_fixture()
-            with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
-                 'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth):
+            with patch('firmware_bench.benchmark_support.registry.pin_case',return_value=pin),patch(
+                 'firmware_bench.benchmark_support.emulator.truth_for_case',return_value=truth):
                 self.assertTrue(require_calibration(pin,{})['ok'])
                 indices=range(len(record['runs'])) if defect in ('contract','order') else (0,1,2,3) if defect=='inventory' else (4,)
                 for index in indices:
@@ -1511,7 +1511,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_reference_gate_refuses_structurally_invalid_mutant_before_native_start(self):
         # Catches recording a malformed model as a measured behavioral rejection.
-        from generative_driver.benchmark_support.reference_calibration import run_reference
+        from firmware_bench.benchmark_support.reference_calibration import run_reference
         with tempfile.TemporaryDirectory() as temp:
             with self.assertRaisesRegex(ValueError,'structurally valid'):
                 run_reference({'scenario_id':'original'}, {}, {'schema':'invalid'}, {}, renode='/absent',image='/absent',
@@ -1519,7 +1519,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_action_host_failure_cannot_be_a_behavioral_rejection(self):
         # Synthetic runtime fault: an unavailable channel cannot reject a mutant.
-        from generative_driver.benchmark_support.emulated_actions import execute_plan
+        from firmware_bench.benchmark_support.emulated_actions import execute_plan
         class Session:
             running = False
             def set_running(self, value): self.running = value
@@ -1540,8 +1540,8 @@ class TQ9V2Tests(unittest.TestCase):
         # answers its monitor and accepts a connection on the driver's channel, is the driver's failure and is graded.
         # Calibration never reclassifies: an outage there must not pass for a mutant's rejection.
         import socket
-        from generative_driver.benchmark_support.emulated_actions import execute_plan
-        from generative_driver.benchmark_support.behavior import validate_records
+        from firmware_bench.benchmark_support.emulated_actions import execute_plan
+        from firmware_bench.benchmark_support.behavior import validate_records
         channel = socket.socket(); channel.bind(('127.0.0.1', 0)); channel.listen(4); self.addCleanup(channel.close)
         class Session:
             running = False
@@ -1586,7 +1586,7 @@ class TQ9V2Tests(unittest.TestCase):
         import socket
         import subprocess
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import package_invoker, execute_plan, PACKAGE_CALL_SECONDS
+        from firmware_bench.benchmark_support.emulated_actions import package_invoker, execute_plan, PACKAGE_CALL_SECONDS
         self.assertGreaterEqual(PACKAGE_CALL_SECONDS, 2 * 120 + 5)
         call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, ['write'])
         outcomes = {}
@@ -1623,7 +1623,7 @@ class TQ9V2Tests(unittest.TestCase):
         # and its SHA-256.
         import subprocess
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import package_invoker
+        from firmware_bench.benchmark_support.emulated_actions import package_invoker
         call = package_invoker('/frozen/package', {'host': '127.0.0.1', 'port': 1}, [])
         for text in ('NaN', 'Infinity', '-Infinity', '1e999', '-1e999'):
             printed = '{"ok": true, "outputs": {"temperature": %s, "sequence": 2.5}, "units": {}}' % text
@@ -1638,7 +1638,7 @@ class TQ9V2Tests(unittest.TestCase):
     def test_fresh_reuse_acknowledgements_do_not_substitute_for_a_reading(self):
         # Actuator ACK outputs alone do not finish the mission. The reuse stage records the calls and judges nothing,
         # never a stop; the grader's judge gives the answer from the same mapping and the same recorded calls.
-        from generative_driver.benchmark_support.case_assets import reuse_mission, write_json as _write
+        from firmware_bench.benchmark_support.case_assets import reuse_mission, write_json as _write
         from tq9_workflow_fixture import capabilities
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
@@ -1663,7 +1663,7 @@ class TQ9V2Tests(unittest.TestCase):
 
     def test_reuse_failed_calls_need_trusted_attribution_before_model_blame(self):
         # The grader's judge attributes failed package calls; untyped or mixed evidence blames nobody.
-        from generative_driver.benchmark_support.case_assets import reuse_mission
+        from firmware_bench.benchmark_support.case_assets import reuse_mission
         from tq9_workflow_fixture import capabilities
         untyped={'ok':False,'error':{'code':'package_error','message':'Toy package filesystem read failed'}}
         modeled={'ok':False,'error':{'fault':'model'}}
@@ -1695,8 +1695,8 @@ class TQ9V2Tests(unittest.TestCase):
     def test_unavailable_native_tools_leave_a_pending_calibration_release(self):
         # Synthetic encrypted authoring input, not a native qualification claim.
         from unittest.mock import patch
-        from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.authoring import calibrate
+        from firmware_bench.benchmark import case_root
+        from firmware_bench.benchmark_support.authoring import calibrate
         import shutil
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);resources=root/'resources';case=resources/'cases/tq9-v2'
@@ -1707,8 +1707,8 @@ class TQ9V2Tests(unittest.TestCase):
             password=root/'password';password.write_text('synthetic calibration fixture')
             manifest['truth']['sha256']=read_password(password).seal(truth, resources/manifest['truth']['path'])
             (case/'case.json').write_text(json.dumps(manifest))
-            with patch('generative_driver.benchmark.case_root',return_value=resources), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root',return_value=resources):
+            with patch('firmware_bench.benchmark.case_root',return_value=resources), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root',return_value=resources):
                 result=calibrate('tq9-v2',{'evaluator_password':read_password(password),'output':str(root/'output'),
                     'compiler':'/absent','renode':None,'ghidra_home':None,'java_home':None})
             self.assertFalse(result['ok'])
@@ -1717,13 +1717,13 @@ class TQ9V2Tests(unittest.TestCase):
             self.assertFalse(record['runs'])
             self.assertFalse(record['mutants'])
             # The record is measured under the case's own grader identity, which its admission compares with.
-            from generative_driver.benchmark_support.grader_identity import grader_identity
+            from firmware_bench.benchmark_support.grader_identity import grader_identity
             self.assertEqual(record['evaluator_identity'],grader_identity(case_id='tq9-v2'))
 
     def test_grader_identity_names_modules_never_case_assets_or_analysis_tooling(self):
         # Case ciphertext and the static analysis wrappers calibration runs are inputs, not grading code: the identity
         # names the modules the grader imports, and no asset path enters it.
-        from generative_driver.benchmark_support.grader_identity import grader_identity
+        from firmware_bench.benchmark_support.grader_identity import grader_identity
         modules=grader_identity()['modules']
         self.assertTrue(modules)
         self.assertTrue(all(part.isidentifier() for name in modules for part in name.split('.')), modules)
@@ -1731,7 +1731,7 @@ class TQ9V2Tests(unittest.TestCase):
     def test_grader_identity_pins_the_grading_modules_not_the_candidate_kit(self):
         # A change to the candidate-side kit (stage tools, skills, dashboard) must not void a qualification, so a new kit
         # is measured against the same qualified evaluator. Grading modules and the identity's own computation are pinned.
-        from generative_driver.benchmark_support.grader_identity import grader_identity
+        from firmware_bench.benchmark_support.grader_identity import grader_identity
         identity = grader_identity()
         modules = set(identity['modules'])
         self.assertLessEqual({'benchmark_support.evaluator', 'benchmark_support.evidence', 'benchmark_support.calibration',
@@ -1761,8 +1761,8 @@ class TQ9V2Tests(unittest.TestCase):
         # starts. A stub admission avoids opening private truth.
         import sys
         from unittest.mock import Mock, patch
-        from generative_driver.benchmark_support import harness
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support import harness
+        from firmware_bench.benchmark_support.registry import pin_case
         from generative_driver.configurator import Controller
         pin=pin_case('tq9-v2','original',0)
         admission={'calibration_evidence_sha256':pin['calibration']['evidence_sha256']}
@@ -1779,7 +1779,7 @@ class TQ9V2Tests(unittest.TestCase):
                 try:
                     with patch.object(harness,'admit',return_value=(provider,admission,None,pin)), \
                          patch('generative_driver.client.call',side_effect=reached), \
-                         patch('generative_driver.benchmark_support.native.NativeSession.start') as native:
+                         patch('firmware_bench.benchmark_support.native.NativeSession.start') as native:
                         record=harness.run_trial(root/'trial',request)
                         self.assertEqual((record['status'],record['run_id'],record['no_run']),('failed',None,'admit-refused'))
                         self.assertRegex(record['reason'],'effect grants')
@@ -1853,7 +1853,7 @@ class ObservationTests(unittest.TestCase):
 
     def test_probe_hands_on_mapping_model_and_journal_and_notes_mapping_errors(self):
         # Structural notes only: the mapping, the adapted model's integrity and the live journal; no diagnostic.
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from generative_driver.supplied.evaluate import adapt_model
         from generative_driver.configurator import IntegrityError
         from unittest.mock import patch
@@ -1865,7 +1865,7 @@ class ObservationTests(unittest.TestCase):
             _write(run/'supplied/state.json',{'adapted_model_dir':str(ws/'model'),'adaptation':adaptation,'revision':0})
             journal=run/'supplied/live-observations-0.jsonl';journal.write_text('{"operation":"measure"}\n')
             def observed():
-                with patch('generative_driver.benchmark_support.evaluator.reference_execute',side_effect=AssertionError('diagnostic')):
+                with patch('firmware_bench.benchmark_support.evaluator.reference_execute',side_effect=AssertionError('diagnostic')):
                     return observe_stage('tq9-v2','probe',run,ws,{'status':'completed'},[],{'observed_records':[]})
             mapping=capabilities();mapping['tasks'].pop('temperature')
             (ws/'capabilities.json').write_text(json.dumps(mapping))
@@ -1886,7 +1886,7 @@ class ObservationTests(unittest.TestCase):
     def test_a_mapping_against_a_wired_model_that_fails_validation_is_a_note_never_an_exception(self):
         # Catches the mapping check assuming a valid model: an interpreted model that fails validation still reaches
         # probe when the emulator can carry it, and the worker's mapping of it must stay a note, not a host stop.
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from generative_driver.supplied.evaluate import adapt_model
         from generative_driver.toolkit import call_tool
         from tq9_workflow_fixture import model, capabilities
@@ -1911,7 +1911,7 @@ class ObservationTests(unittest.TestCase):
     def test_an_instrument_reading_after_a_refused_invalid_model_never_raises(self):
         # The runtime refuses a model that fails validation with a plain error string before opening the device; the
         # reading taken after that call is still device evidence and must not turn the refusal into a gateway error.
-        from generative_driver.benchmark_support import tq9_v2
+        from firmware_bench.benchmark_support import tq9_v2
         raw={'values':{'compare':0,'reload':999}}
         refused={'ok':False,'error':"ValueError: invalid model: [{'where': 'operations.measure'}]",'transport_open_attempted':False}
         self.assertEqual(tq9_v2.observations(raw,refused,{}),{'refused_without_io':False,'duty':0})
@@ -1931,7 +1931,7 @@ class ObservationTests(unittest.TestCase):
             package=root/'emitted/package';package.mkdir(parents=True);(package/'manifest.json').write_text('{}')
             accepted=[{'stage':'interpret','artifacts':[{'path':str(source/'0-model.json'),'sha256':digest(source/'0-model.json')}]},
                       {'stage':'emit','artifacts':[{'path':str(package),'sha256':digest(package)}]}]
-            from generative_driver.benchmark_support.case_assets import write_json as _write
+            from firmware_bench.benchmark_support.case_assets import write_json as _write
             _write(root/'run/supplied/state.json',{'package_sha256':digest(package)})
             device={'device':{'session_id':'provided','binding':{'host':'127.0.0.1','port':1}}}
             probe=prepare_stage('tq9-v2','probe',root/'run',root/'probe',accepted,device)

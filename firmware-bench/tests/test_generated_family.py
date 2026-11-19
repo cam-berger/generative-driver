@@ -13,13 +13,13 @@ from unittest.mock import patch
 
 from generated_fixtures import (BOUNDED, FIXTURE_ANSWER_KEY, MODE_ADDRESS, MODE_UNIT, MUTANT_ERR_AS_VALUE, REFERENCE_A,
                                 REFERENCE_B, STEP, FixtureDevice, fixture_mission, fixture_start)
-from generative_driver.benchmark_support import generated, generated_device
-from generative_driver.benchmark_support.behavior import validate_records
-from generative_driver.benchmark_support.emulated_actions import OutputMeter
-from generative_driver.benchmark_support.evaluator import reference_execute
-from generative_driver.benchmark_support.generated import classify_answer
-from generative_driver.benchmark_support.integrity import digest
-from generative_driver.benchmark_support.reference_calibration import run_reference
+from firmware_bench.benchmark_support import generated, generated_device
+from firmware_bench.benchmark_support.behavior import validate_records
+from firmware_bench.benchmark_support.emulated_actions import OutputMeter
+from firmware_bench.benchmark_support.evaluator import reference_execute
+from firmware_bench.benchmark_support.generated import classify_answer
+from firmware_bench.benchmark_support.integrity import digest
+from firmware_bench.benchmark_support.reference_calibration import run_reference
 
 PIN = {'case_id': 'generated', 'scenario_id': 'original', 'case_seed': 0, 'revision': 0}
 
@@ -42,8 +42,8 @@ def call_package(candidate, task, inputs, grants, *, preconditions=None, before=
     """One call of `candidate`'s package, as the evaluator's invoker returns it. The package is emitted by the toolkit
     against a fresh fixture device as `run_reference` emits one, with `preconditions` ({operation: [condition]}) added
     to its authored driver contract, and called on that device, running, once `before(device)` has run."""
-    from generative_driver.benchmark_support.calibration import reference_model_bytes
-    from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+    from firmware_bench.benchmark_support.calibration import reference_model_bytes
+    from firmware_bench.benchmark_support.emulated_actions import canonical_package_invoker
     from generative_driver.toolkit import call_tool
     from interface_runtime.contracts import from_model
     device = FixtureDevice()
@@ -110,7 +110,7 @@ class StepGradingTests(unittest.TestCase):
         package between the two. The evaluator's raw evidence is kept in self.raw."""
         key, start = FIXTURE_ANSWER_KEY, fixture_start(**device)
         with tempfile.TemporaryDirectory() as temp, \
-                patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start):
+                patch('firmware_bench.benchmark_support.native.NativeSession.start', side_effect=start):
             root = Path(temp)
             emitted = run_reference(PIN, key, candidate['model'], candidate['capabilities'], renode=Path('/toy'),
                                     image=Path('/toy'), output_dir=root/'emission', phase='final',
@@ -213,7 +213,7 @@ class StepGradingTests(unittest.TestCase):
         # not start, and one whose malformed result made the grader raise, or left its evidence unwritable, instead of
         # grading it. The evidence keeps the first 4096 characters of the print, its length and its SHA-256, however
         # long the print.
-        from generative_driver.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
+        from firmware_bench.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
         # One level beyond the cap: the result is the first level, its outputs the second, and arrays fill the rest.
         too_deep = []
         for _ in range(MAX_RESULT_DEPTH - 2):
@@ -413,7 +413,7 @@ class AnswerTests(unittest.TestCase):
         self.assertEqual(fault('host fault')[1], 'host')
 
     def test_each_answer_is_classified_from_what_the_runtime_returned(self):
-        from generative_driver.benchmark_support.emulated_actions import graded_result
+        from firmware_bench.benchmark_support.emulated_actions import graded_result
         real = self.real
         forged = lambda name, **changes: {**real[name], **changes}
         failed_read = [{**observation, 'result': {**observation['result'], 'ok': False}}
@@ -525,11 +525,11 @@ class AnswerKeyTests(unittest.TestCase):
 
 class RegistrationTests(unittest.TestCase):
     def test_the_generated_family_is_registered_unavailable_in_listings_and_shows_workers_no_instrument(self):
-        from generative_driver.benchmark_support.families import family_for
-        from generative_driver.benchmark_support.instruments import public_observation
-        from generative_driver.benchmark_support.missions import validate_mission
-        from generative_driver.benchmark_support.registrations import CaseRegistration, registration_for
-        from generative_driver.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
+        from firmware_bench.benchmark_support.families import family_for
+        from firmware_bench.benchmark_support.instruments import public_observation
+        from firmware_bench.benchmark_support.missions import validate_mission
+        from firmware_bench.benchmark_support.registrations import CaseRegistration, registration_for
+        from firmware_bench.benchmark_support.registry import CURRENT_VERSIONS, case_descriptors
         # The fixture's public mission is one the mission validator accepts, with the unit of its one output.
         self.assertEqual(validate_mission(fixture_mission('0000d001'), 'generated'), fixture_mission('0000d001'))
         self.assertEqual(registration_for('generated'),
@@ -549,7 +549,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertIsNone(generated.reuse_passed([], {}))
 
     def test_the_generated_identity_covers_the_core_and_the_generated_family(self):
-        from generative_driver.benchmark_support.grader_identity import grader_closure, grader_identity
+        from firmware_bench.benchmark_support.grader_identity import grader_closure, grader_identity
         core = {name for name in grader_closure(families=()) if not name.startswith('interface_runtime')}
         identity = grader_identity(case_id='generated')
         self.assertEqual(identity['scope'], 'generated')

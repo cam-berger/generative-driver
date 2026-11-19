@@ -87,21 +87,28 @@ def snapshot_case(run_dir: Path, pin: dict, provenance: dict, *, public_inputs=N
     return require_snapshot(run_dir, pin)
 
 
-def execution_provenance(config: dict, *, case_ids, reuse_profile=None) -> dict:
+def execution_provenance(config: dict, *, case_ids, reuse_profile=None, tool, runtime) -> dict:
     """Capture implementation identity and nonsecret runtime settings before launch, for a run or suite of `case_ids`.
     The toolchain and skills revisions hash the system under test; the evaluator revisions are the grading code alone:
     `evaluator_revisions` the grader identity of each case, `evaluator_revision` the one they combine into. The
     toolchain revision leaves out the set registrations, which change when any set is added, so that registering one
-    neither moves a comparison dimension nor blocks a suite's resume; a suite's own set is held by `current_pin`."""
+    neither moves a comparison dimension nor blocks a suite's resume; a suite's own set is held by `current_pin`.
+
+    `tool` and `runtime` are the folders of the tool's package and of its runtime. The caller finds them
+    (`tool_install`): this module is grading code and imports nothing of the tool. The toolchain revision is the
+    SHA-256 of three tree hashes joined, of `tool`, of `runtime` and of the benchmark's own package folder, and the
+    skills revision is the tree hash of the tool's `resources/toolchain/skills`. ValueError for a folder that does
+    not exist (Feature 12 of the untangle Run, docs/features/untangle/12-firmware-bench.md, 12-B2)."""
     import platform
     from .grader_identity import case_revisions  # which imports this module, so not at module level
-    from .integrity import tree_hash
-    package = Path(__file__).resolve().parents[1]
+    from .integrity import revision_folder, tree_hash
+    package, tool = Path(__file__).resolve().parents[1], Path(tool)
     return {**({'reuse_profile': reuse_profile} if reuse_profile else {}),
             'toolchain_revision': hashlib.sha256(
-                (tree_hash(package, exclude=('resources/registrations/sets.json',))
-                 + tree_hash(package.parent / 'interface_runtime')).encode()).hexdigest(),
-            'skills_revision': tree_hash(package / 'resources/toolchain/skills'),
+                (tree_hash(revision_folder(tool)) + tree_hash(revision_folder(runtime))
+                 + tree_hash(revision_folder(package), exclude=('resources/registrations/sets.json',))
+                 ).encode()).hexdigest(),
+            'skills_revision': tree_hash(revision_folder(tool / 'resources' / 'toolchain' / 'skills')),
             **case_revisions(case_ids),
             'runtime_configuration': public_configuration(config),
             'environment': {'system': platform.system(), 'release': platform.release(),

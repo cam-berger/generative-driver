@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 from suite_fixtures import book, drive_suite, harness_keys, outside_start, owner_call, suite_call
 from tool_fixtures import scripted_stages
 from test_evaluation import CASE_TRUTH, FAIL, PASS, PendingRunFixture, files, reference
@@ -71,7 +71,7 @@ class HarnessSuiteFixture(PendingRunFixture):
 
     def harness(self, *outcomes, runtime=None):
         from contextlib import ExitStack
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         stack = ExitStack()
         stack.enter_context(scripted_stages(self.controller, check=self.check(), runtime=runtime))
         stack.enter_context(patch.object(harness, 'admit', side_effect=self.admit))
@@ -205,7 +205,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # Catches a resumed suite that starts a second child for the slot, resumes the child on the device the previous
         # harness stopped, or never grades it; and a trial record that still reads the earlier device stop as confirmed
         # while the device provided anew runs, so a harness lost then would leave that emulator forgotten.
-        from generative_driver.benchmark_support.harness import read_trial
+        from firmware_bench.benchmark_support.harness import read_trial
         runtime = self.stopping_probe()
         with self.harness(runtime=runtime):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
@@ -283,7 +283,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         admit = self.admit
         def unavailable(*args, **kwargs):
             raise ValueError('emulator executable not found: ' + EMULATOR)
-        with self.harness(PASS), patch('generative_driver.benchmark_support.harness.admit', side_effect=unavailable):
+        with self.harness(PASS), patch('firmware_bench.benchmark_support.harness.admit', side_effect=unavailable):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         self.assertEqual(record['status'], 'failed')
         self.assertIn('emulator executable not found', record['reason'])
@@ -354,7 +354,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # settled its slot and let go: a client that waits for the suite to stop stopping would then read the count
         # from before that settlement.
         from generative_driver.client import process_lock_held
-        from generative_driver.benchmark_support.suite_book import SuiteBook
+        from firmware_bench.benchmark_support.suite_book import SuiteBook
         release, settling, polling = threading.Event(), threading.Event(), threading.Event()
         def runtime(request):
             if request.stage == 'acquire':
@@ -571,7 +571,7 @@ class HarnessSuiteTests(HarnessSuiteFixture):
         # harness serves the call now: what it asks of the configurator meanwhile is sent again, the first request
         # here. No such suite is stored, so the book refuses the call once the configurator answered.
         from generative_driver import client
-        from generative_driver.benchmark_support.harness import _configurator
+        from firmware_bench.benchmark_support.harness import _configurator
         # The home names a configurator of this code, and the stand-in answers `ping` as one does.
         (self.home / 'service.json').write_text(json.dumps({'code': client.code_identity()}), encoding='utf-8')
         sent = []
@@ -633,7 +633,7 @@ class ChildStartReplyTests(HarnessSuiteFixture):
         return runtime, entered, release, observed
 
     def trials(self):
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         return [harness.read_trial(path.parent) for path in (self.root / 'home-bench/suites').glob('*/trials/*/trial.json')]
 
     def test_a_harness_whose_child_start_got_no_reply_sends_it_again_and_follows_the_child(self):
@@ -734,7 +734,7 @@ class ChildStartReplyTests(HarnessSuiteFixture):
     def test_a_trial_whose_child_start_never_got_a_reply_is_found_by_its_request_and_completed_on_resume(self):
         # Catches a slot whose child exists but whose trial names no run, because the configurator never answered its
         # start: a resume finds no trial for the child and fails for good, its sealed evaluation token unused.
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
         def delayed_worker(request):
@@ -981,7 +981,7 @@ class ReservationTests(HarnessSuiteFixture):
     def test_a_run_under_a_slot_the_suite_has_not_reserved_is_never_attached(self):
         # Catches an attach that takes the run found under a pending slot's request: that slot would run beside the
         # active one, out of order and past the suite's one active child.
-        from generative_driver.benchmark_support.suites import child_request
+        from firmware_bench.benchmark_support.suites import child_request
         from test_harness import Device
         calls = []
         with self.harness(runtime=self.stopping_probe()):
@@ -1067,7 +1067,7 @@ class SuiteStartTests(HarnessSuiteFixture):
         import subprocess
         import sys
         from types import SimpleNamespace
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         ended = subprocess.Popen([sys.executable, '-c', 'pass'])
         ended.wait()
         frozen, spawned = [], []
@@ -1123,7 +1123,7 @@ class SuiteStartTests(HarnessSuiteFixture):
         # process (as the system reuses ids), and every later start with that request_id waited on it until it timed out.
         import os
         from types import SimpleNamespace
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         frozen, spawned = [], []
         def configurator(method, params=None):
             if method == 'ping':
@@ -1170,13 +1170,13 @@ class SuiteStartTests(HarnessSuiteFixture):
         # following the suite, or one sent again under its request_id) would take the harness for ended.
         # The bench harness holds its lock with the benchmark's own helper (08-B13 of
         # docs/features/untangle/08-reports.md).
-        from generative_driver.benchmark_support import process_lock
+        from firmware_bench.benchmark_support import process_lock
         real, named = process_lock.hold_process_lock, []
         def hold(path):
             directory = Path(path).parent
             named.append((directory.name, (directory / 'suite.json').exists() or (directory / 'trial.json').exists()))
             return real(path)
-        with self.harness(PASS), patch('generative_driver.benchmark_support.process_lock.hold_process_lock',
+        with self.harness(PASS), patch('firmware_bench.benchmark_support.process_lock.hold_process_lock',
                                        side_effect=hold):
             record = self.drive(manifest=manifest(1), executor='codex', options={})
         self.assertEqual(record['status'], 'finished', record)
@@ -1187,10 +1187,12 @@ class SuiteStartTests(HarnessSuiteFixture):
     def test_a_suite_frozen_before_the_harness_drove_suites_is_read_only(self):
         # Catches resuming a suite whose frozen options hold evaluator password files, or that no harness drives: its
         # children would carry the password through the configurator.
-        from generative_driver.benchmark_support.snapshots import execution_provenance
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support import tool_install
+        from firmware_bench.benchmark_support.snapshots import execution_provenance
+        from firmware_bench.benchmark_support.suites import freeze_suite
         config = {'command': ['scripted-runtime'], 'runtime': 'codex'}
-        frozen = freeze_suite(manifest(), 'codex', config, {}, execution_provenance(config, case_ids=('tq9-v2',)),
+        frozen = freeze_suite(manifest(), 'codex', config, {},
+                              execution_provenance(config, case_ids=('tq9-v2',), **tool_install.folders()),
                               harness_token_sha256=hashlib.sha256(b'old harness').hexdigest())
         old = {key: value for key, value in frozen.items() if key not in ('scheduler', 'harness_token_sha256')}
         handles = {**old, 'options': {'evaluator_password_files': {'tq9-v2': 'old-private-handle'}, 'renode': 'old-renode'}}

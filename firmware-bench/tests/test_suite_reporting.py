@@ -4,7 +4,7 @@ import hashlib
 import json
 import unittest
 
-from generative_driver.benchmark_support.truth import read_password
+from firmware_bench.benchmark_support.truth import read_password
 # The stand-in for the service answers the suite calls too, which a reader asks of the suite book.
 from suite_fixtures import standing_in
 
@@ -52,7 +52,7 @@ def fixture():
 
 class AggregateTests(unittest.TestCase):
     def test_rejects_incomplete_misidentified_and_invalid_measurements(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         def changes():
             yield lambda m,t,r,e:t.pop()
             yield lambda m,t,r,e:t[1].update(ordinal=0)
@@ -76,8 +76,8 @@ class AggregateTests(unittest.TestCase):
     def test_per_case_revisions_are_read_only_beside_the_revision_they_combine_into(self):
         # Catches per-case revisions that miss one of the suite's cases or are not those its comparison identity names:
         # trials would be checked against revisions the suite is not compared by. A suite without them is read as before.
-        from generative_driver.benchmark_support.snapshots import canonical_digest
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         manifest,trials,reports,experiment=fixture()
         revisions={entry['case']:str(index+1)*64 for index,entry in enumerate(manifest['entries'])}
         experiment['comparison_identity']['evaluator_revision']=canonical_digest(revisions)
@@ -93,7 +93,7 @@ class AggregateTests(unittest.TestCase):
                 aggregate_suite(manifest,trials,reports,'recorded-controller-verdicts',experiment=changed)
 
     def test_stale_case_versions_are_rejected_even_when_report_and_experiment_agree(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         m,t,r,e=fixture()
         e['comparison_identity']['entry_pins'][0]['case_version']='2'
         r['r1']['case_pin']['case_version']='2'
@@ -101,14 +101,14 @@ class AggregateTests(unittest.TestCase):
             aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
 
     def test_missing_report_preserves_known_time_without_inventing_total(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         m,t,r,e=fixture();r.pop('r2')
         result=aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
         self.assertIsNone(result['worker_seconds']);self.assertEqual(result['observed_worker_seconds'],4)
         self.assertIsNone(result['usage']['total_tokens'])
 
     def test_public_descriptive_metrics_exclude_unknown_payloads(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         m,t,r,e=fixture()
         r['r1']['surprise']='/private/answer';r['r1']['stages']['probe']['unknown']={'secret':'PRIVATE'}
         r['r1']['stages']['probe']['attempts'][0]['novel']='PRIVATE'
@@ -143,7 +143,7 @@ class ComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);saved=root/'suite.json';saved.write_text(json.dumps(comparison_fixture()),encoding='utf-8')
             home=root/'unused owner'
-            program='import json,sys; from generative_driver.benchmark_support.suite_reporting import compare_suites; print(json.dumps(compare_suites(sys.argv[1],sys.argv[1])))'
+            program='import json,sys; from firmware_bench.benchmark_support.suite_reporting import compare_suites; print(json.dumps(compare_suites(sys.argv[1],sys.argv[1])))'
             result=subprocess.run([sys.executable,'-c',program,str(saved)],env={**os.environ,'GENERATIVE_DRIVER_HOME':str(home)},capture_output=True,text=True,check=True)
             self.assertTrue(json.loads(result.stdout)['compatible']);self.assertFalse(home.exists())
 
@@ -152,7 +152,7 @@ class ExportTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         calls=[]
         def owner(method,params,**kwargs):
             calls.append((method,kwargs.get('autostart')))
@@ -165,7 +165,7 @@ class ExportTests(unittest.TestCase):
 
     def test_explicit_output_is_required_before_contacting_owner(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with standing_in(side_effect=AssertionError('owner contacted')):
             for output in (None,'',' '):
                 with self.subTest(output=output),self.assertRaisesRegex(ValueError,'output'):report_suite('suite',output=output)
@@ -174,7 +174,7 @@ class ExportTests(unittest.TestCase):
         # Catches an audit path that is empty (an unset shell variable, say) that audits nothing, or flags every command
         # of every run, once the owner has been asked; a path to audit is never accepted blank.
         from unittest.mock import patch
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with standing_in(side_effect=AssertionError('owner contacted')):
             for paths in (('',),('/vault',' ')):
                 with self.subTest(paths=paths),self.assertRaisesRegex(ValueError,'audit path'):report_suite('suite',output='out',audit_paths=paths)
@@ -187,9 +187,9 @@ def export_fixture(root,per_case=True,one_case=False):
     child is stamped with its one revision. With `one_case`, both trials are of one case, under one password file."""
     from pathlib import Path
     from test_benchmark_v2_evidence import SealedEvidenceFixture
-    from generative_driver.benchmark_support.evidence import seal_run_evidence,public_pin,public_v2_report
-    from generative_driver.benchmark_support.grader_identity import case_revisions
-    from generative_driver.benchmark_support.snapshots import canonical_digest
+    from firmware_bench.benchmark_support.evidence import seal_run_evidence,public_pin,public_v2_report
+    from firmware_bench.benchmark_support.grader_identity import case_revisions
+    from firmware_bench.benchmark_support.snapshots import canonical_digest
     manifest,trials,_,experiment=fixture()
     manifest['entries']=manifest['entries'][:2]
     manifest['entries'][0]['scenario']='original'
@@ -266,8 +266,8 @@ class ExportIntegrationTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.snapshots import canonical_digest
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
             with standing_in(side_effect=call):
@@ -290,7 +290,7 @@ class ExportIntegrationTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
             with standing_in(side_effect=call):
@@ -304,20 +304,27 @@ class ExportIntegrationTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support import suite_reporting
-        from generative_driver.benchmark_support.integrity import tree_hash
+        import hashlib
+        from firmware_bench.benchmark_support import suite_reporting, tool_install
+        from firmware_bench.benchmark_support.integrity import tree_hash
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);call,_,_,_,_=export_fixture(root)
             with standing_in(side_effect=call):
                 result=suite_reporting.report_suite('suite-toy',home=root,output=root/'export')
             self.assertEqual(set(result['exporter']),{'benchmark_support_tree_sha256','toolchain_revision'})
             self.assertEqual(result['exporter']['benchmark_support_tree_sha256'],tree_hash(Path(suite_reporting.__file__).parent))
+            # The exporter's toolchain revision joins the tool's package folder and the benchmark's, which were one
+            # folder before the benchmark became a package of its own (12-B2 of Feature 12 of the untangle Run).
+            package=Path(suite_reporting.__file__).resolve().parents[1]
+            self.assertEqual(result['exporter']['toolchain_revision'],
+                             hashlib.sha256((tree_hash(tool_install.tool_folder())+tree_hash(package)).encode()).hexdigest())
+            self.assertNotEqual(result['exporter']['toolchain_revision'],tree_hash(package))
             saved=json.loads((root/'export/suite.json').read_text(encoding='utf-8'))
             self.assertEqual(saved['exporter'],result['exporter'])
 
 class PublicBoundaryFixTests(unittest.TestCase):
     def test_nested_experiment_values_cannot_retain_private_payloads(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         private={'unfamiliar':'/private/PRIVATE_POLICY'}
         changes=[lambda e:e['comparison_identity']['intervention_policy'].update(scoped_tool_approval=private),
             lambda e:e['comparison_identity']['intervention_policy'].update(max_model_repairs=private),
@@ -345,7 +352,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
         self.assertNotIn('PRIVATE',json.dumps(result))
 
     def test_every_exported_usage_counter_is_validated_at_each_level(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         fields=('input_tokens','cached_input_tokens','output_tokens','reasoning_output_tokens','total_tokens','observed_total_tokens','reported_attempts','attempts')
         for level in ('report','stage','attempt'):
             for field in fields:
@@ -370,7 +377,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
         self.assertEqual(attempt['usage']['coverage'],.5);self.assertNotIn('PRIVATE',json.dumps(result))
 
     def test_all_projected_duration_fields_reject_negative_nonfinite_and_boolean_values(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         groups={'report':('elapsed_seconds','worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds','repair_seconds','original_budget_seconds','effective_budget_seconds'),
             'stage':('worker_seconds','tool_seconds','worker_tool_seconds','evaluator_tool_seconds'),'attempt':('elapsed_seconds',)}
         for level,fields in groups.items():
@@ -381,7 +388,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
                     record[field]=invalid
                     with self.subTest(level=level,field=field,invalid=invalid),self.assertRaises(ValueError):aggregate_suite(m,t,r,'recorded-controller-verdicts',experiment=e)
 
-        from generative_driver.benchmark_support.suite_reporting import _public_report
+        from firmware_bench.benchmark_support.suite_reporting import _public_report
         for value in (None,0,1.5):
             m,t,r,e=fixture()
             r['r1'].update(original_budget_seconds=value,effective_budget_seconds=value)
@@ -395,7 +402,7 @@ class PublicBoundaryFixTests(unittest.TestCase):
         self.assertNotIn('effective_budget_seconds',_public_report(r['r1']))
 
     def test_published_intervention_durations_are_validated(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         for source in ('trial','report'):
             for field in ('extension_seconds','old_budget_seconds','new_budget_seconds'):
                 for invalid in (-1,True,float('inf')):

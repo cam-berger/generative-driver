@@ -3,9 +3,9 @@ from copy import deepcopy
 import tempfile
 from pathlib import Path
 
-from generative_driver.benchmark_support import parameter_store
-from generative_driver.benchmark_support.behavior import validate_records
-from generative_driver.benchmark_support.emulated_actions import execute_plan
+from firmware_bench.benchmark_support import parameter_store
+from firmware_bench.benchmark_support.behavior import validate_records
+from firmware_bench.benchmark_support.emulated_actions import execute_plan
 from interface_runtime.engine import execute, validate_model
 from benchmark_family_fixtures import FourCellStoreDevice, records_for, toy_store_model_four_cell, toy_store_phase
 
@@ -234,7 +234,7 @@ class ParameterStoreOracleTests(unittest.TestCase):
         import json
         import subprocess
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        from firmware_bench.benchmark_support.emulated_actions import canonical_package_invoker
         pin, truth = toy_store_phase()
         contract = parameter_store.contract(pin, truth, 'diagnostic')
         contract['checks'] = [c for c in contract['checks'] if c['scenario'] == 'rejection']

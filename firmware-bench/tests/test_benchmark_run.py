@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark import run
+from firmware_bench.benchmark import run
 
 
 class SetupBenchmarkTests(unittest.TestCase):
@@ -24,5 +24,5 @@ if __name__ == '__main__':
 class ApprovalScopeTests(unittest.TestCase):
     def test_emulator_tool_approval_cannot_be_applied_to_a_different_profile(self):
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaisesRegex(ValueError,'tq9'):
+            with self.assertRaisesRegex(ValueError,'^Scoped approval requires a case with that approval scope$'):
                 run('setup-smoke',directory,options={'scoped_tool_approval':'emulator'})

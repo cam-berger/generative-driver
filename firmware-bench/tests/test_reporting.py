@@ -8,7 +8,7 @@ from pathlib import Path
 
 class ReportTests(unittest.TestCase):
     def test_worker_and_evaluator_tool_time_are_reported_separately(self):
-        from generative_driver.benchmark_support.run_reporting import summarize
+        from firmware_bench.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "blocked", "created": 0, "updated": 8,
                   "worker_reports": [{"assignment_id": "p", "stage": "probe", "status": "completed",
                                       "elapsed_seconds": 2}], "accepted_handoffs": []}
@@ -24,7 +24,7 @@ class ReportTests(unittest.TestCase):
 
     def test_saved_report_distinguishes_a_blocked_run_from_a_model_score(self):
         from generative_driver.client import call
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         with tempfile.TemporaryDirectory(prefix="reported run ") as temp:
             try:
                 run = call("start", {"goal": "Report an unavailable runtime", "budget_seconds": 120, "executor_config": {
@@ -47,7 +47,7 @@ class ReportTests(unittest.TestCase):
                 call("shutdown", {}, home=temp)
 
     def test_generic_report_counts_self_evidence_equivalence_apart_from_the_independent_verdict(self):
-        from generative_driver.benchmark_support.run_reporting import summarize, markdown
+        from firmware_bench.benchmark_support.run_reporting import summarize, markdown
         equivalence = {"equivalent": True, "basis": "self-evidence", "diff": [],
                        "checks": [{"id": "emitted_package_replay", "passed": True},
                                   {"id": "fresh_reuse_live_operations", "passed": True}]}
@@ -70,7 +70,7 @@ class ReportTests(unittest.TestCase):
         self.assertNotIn("Equivalence", markdown(earlier))
 
     def test_report_keeps_missing_usage_and_unrun_stages_visible(self):
-        from generative_driver.benchmark_support.run_reporting import summarize
+        from firmware_bench.benchmark_support.run_reporting import summarize
         result = {"run_id": "example", "status": "blocked", "stage": "interpret",
                   "reason": "analysis unavailable", "created": 10, "updated": 25,
                   "worker_reports": [
@@ -97,7 +97,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(report["verdict"], "blocked")
 
     def test_interventions_preserve_budget_history_without_exposing_operator_messages(self):
-        from generative_driver.benchmark_support.run_reporting import summarize
+        from firmware_bench.benchmark_support.run_reporting import summarize
         result={"run_id":"example","status":"cancelled","created":10,"updated":600,
                 "worker_reports":[],"accepted_handoffs":[]}
         events=[
@@ -126,9 +126,9 @@ class ReportTests(unittest.TestCase):
     def test_export_uses_execution_snapshot_when_installed_manifest_and_exporter_drift(self):
         import shutil
         from unittest.mock import patch
-        from generative_driver.benchmark import case_root
+        from firmware_bench.benchmark import case_root
         from generative_driver.configurator import Controller
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         from suite_fixtures import supplied_start
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -137,8 +137,8 @@ class ReportTests(unittest.TestCase):
             def scripted(request, config, cancel):
                 return {'runtime': 'codex', 'status': 'blocked', 'reason': 'scripted fixture',
                         'elapsed_seconds': 0, 'usage': None, 'report': None}
-            with patch('generative_driver.benchmark.case_root', return_value=installed), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=installed), \
+            with patch('firmware_bench.benchmark.case_root', return_value=installed), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=installed), \
                     patch('generative_driver.configurator.execute', scripted):
                 controller = Controller(root / 'home')
                 try:
@@ -161,9 +161,9 @@ class ReportTests(unittest.TestCase):
                     # The exporting installation's own revisions are poisoned, wherever they are bound: a report takes
                     # them from the snapshot.
                     with patch('generative_driver.client.call', side_effect=lambda method, params, **kwargs: controller.call(method, params)), \
-                            patch('generative_driver.benchmark_support.integrity.tree_hash', return_value='exporter-new'), \
-                            patch('generative_driver.benchmark_support.run_reporting._tree_hash', return_value='exporter-new'), \
-                            patch('generative_driver.benchmark_support.grader_identity.grader_identity',
+                            patch('firmware_bench.benchmark_support.integrity.tree_hash', return_value='exporter-new'), \
+                            patch('firmware_bench.benchmark_support.run_reporting._tree_hash', return_value='exporter-new'), \
+                            patch('firmware_bench.benchmark_support.grader_identity.grader_identity',
                                   return_value={'sha256': 'exporter-new'}):
                         report = report_run(run['run_id'], home=root / 'home')
                     self.assertEqual(report['case_version'], '5')
@@ -173,7 +173,7 @@ class ReportTests(unittest.TestCase):
                     self.assertEqual(report['toolchain_revision'], saved['executed']['toolchain_revision'])
                     self.assertEqual(report['evaluator_revision'], saved['executed']['evaluator_revision'])
                     # An assistive run's report is benchmark-report/3: its pin is the snapshot's, public fields only.
-                    from generative_driver.benchmark_support.evidence import public_pin
+                    from firmware_bench.benchmark_support.evidence import public_pin
                     self.assertEqual((report['schema'], report['protocol']), ('benchmark-report/3', 'assistive/1'))
                     self.assertEqual(report['case_pin'], public_pin(saved['case_pin']))
                     self.assertEqual(report['scenario_id'], 'original')
@@ -192,7 +192,7 @@ class FreshReuseReportTests(unittest.TestCase):
 
     def test_historical_completed_report_cannot_pass_as_six_gate_workflow(self):
         # Catches silently recasting historical measured successes or a partial gate list.
-        from generative_driver.benchmark_support.run_reporting import summarize
+        from firmware_bench.benchmark_support.run_reporting import summarize
         six = ['acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse']
         for stages in (six + ['maintain'], six[:-1]):
             with self.subTest(stages=stages):

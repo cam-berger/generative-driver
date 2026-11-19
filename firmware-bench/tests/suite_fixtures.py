@@ -1,5 +1,13 @@
 """Public suite data and scripted contract helpers; never native tools or inference."""
 import json
+from pathlib import Path
+
+
+def installed_bench():
+    """The benchmark's own resource folder as installed: what `case_root()` gives where no test has replaced it and
+    no variable redirects it. A test may do either before it calls a fixture here."""
+    from firmware_bench.benchmark_support import case_assets
+    return Path(case_assets.__file__).resolve().parents[1] / 'resources' / 'bench'
 
 
 def service(owner):
@@ -22,7 +30,7 @@ def book(owner):
     """The suite book of the in-process configurator `owner`: the book of its home, whose requests go to `owner`. Its
     `store` is the book's `SuiteStore`, and `store.open_db()` its database (Feature 07 of the untangle Run,
     docs/features/untangle/07-suites.md)."""
-    from generative_driver.benchmark_support.suite_book import SuiteBook
+    from firmware_bench.benchmark_support.suite_book import SuiteBook
     return SuiteBook(owner.home, service(owner))
 
 
@@ -50,7 +58,7 @@ def client_call(method, params=None, home=None, **options):
     """`generative_driver.client.call` for a test of a configurator process, with a suite call sent to the suite book
     of the same home in this process, as a command of the benchmark sends it."""
     from generative_driver import client
-    from generative_driver.benchmark_support.suite_book import suite_call as asked
+    from firmware_bench.benchmark_support.suite_book import suite_call as asked
     return (asked if method.startswith('suite_') else client.call)(method, params, home, **options)
 
 
@@ -65,7 +73,7 @@ def standing_in(call=None, **mock):
     @contextmanager
     def replaced():
         with patch('generative_driver.client.call', stand_in), \
-                patch('generative_driver.benchmark_support.suite_book.suite_call', stand_in):
+                patch('firmware_bench.benchmark_support.suite_book.suite_call', stand_in):
             yield stand_in
     return replaced()
 
@@ -104,12 +112,11 @@ def public_case_fixture(root, case_id='tq9-v2', *, calibration=None, **changes):
     """Local registry inputs for pure freeze tests; never native qualification."""
     import hashlib
     import shutil
-    from generative_driver.toolkit import resources_root
-    from generative_driver.benchmark_support.registrations import registration_for
+    from firmware_bench.benchmark_support.registrations import registration_for
     registration = registration_for(case_id)
     # Public missions are data resources now, just like images and manifests.
     # Keep fixture asset trees complete without bringing evaluator answers in.
-    shutil.copytree(resources_root() / 'bench/missions', root / 'missions', dirs_exist_ok=True)
+    shutil.copytree(installed_bench() / 'missions', root / 'missions', dirs_exist_ok=True)
     case = root / 'cases' / case_id
     case.mkdir(parents=True)
     image = case / 'firmware.bin'; image.write_bytes(b'public suite contract image')
@@ -167,13 +174,11 @@ def write_scripted_case_worker(directory, *, hold_on_repair=False):
     stage blocked, with nothing to hand on. `hold_on_repair` makes the first interpretation one the emulator binding
     cannot carry, so probe skips and the configurator's model diff starts a repair, which it then holds."""
     import sys
-    from pathlib import Path
-    import generative_driver
+    from tool_fixtures import package_folders
     path = Path(directory)/'scripted_suite_worker.py'
     source = '''import sys,json,pathlib,hashlib,shutil,time
-sys.path.insert(0,PACKAGE_PARENT)
+sys.path[:0]=PACKAGE_PARENTS
 from generative_driver.client import call
-from generative_driver.toolkit import resources_root
 prompt=sys.stdin.read()
 if prompt.startswith('Execute exactly'):
     task=json.loads(prompt.split('\\n',1)[1])
@@ -189,15 +194,17 @@ if prompt.startswith('Execute exactly'):
     print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':json.dumps(report)}}))
 else:
     # An intentionally unrelated, unqualified model; the real stage observation notes it.
-    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')
+    shutil.copy2(SMOKE_MODEL,'model.json')
 '''
     if hold_on_repair:
-        source = source.replace("    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')\n",
+        source = source.replace("    shutil.copy2(SMOKE_MODEL,'model.json')\n",
             "    if pathlib.Path('DEFECTS.json').exists(): time.sleep(20)\n"
-            "    model=json.loads((resources_root()/'bench/cases/setup-smoke/model.json').read_text())\n"
+            "    model=json.loads(pathlib.Path(SMOKE_MODEL).read_text())\n"
             "    model['channel']={'type':'usb'}\n"
             "    pathlib.Path('model.json').write_text(json.dumps(model))\n", 1)
-    source = source.replace('PACKAGE_PARENT', repr(str(Path(generative_driver.__file__).resolve().parents[1])))
+    source = source.replace('PACKAGE_PARENTS', repr(package_folders()))
+    # The worker is the tool's child and imports nothing of the benchmark: it gets the smoke case's model by its path.
+    source = source.replace('SMOKE_MODEL', repr(str(installed_bench() / 'cases' / 'setup-smoke' / 'model.json')))
     path.write_text(source, encoding='utf-8')
     return [sys.executable, str(path)]
 
@@ -222,8 +229,8 @@ def device_patches(private):
     from unittest.mock import patch
     from test_device_provider import RECIPE
     from tq9_workflow_fixture import Silicon
-    from generative_driver.benchmark_support import registry
-    from generative_driver.benchmark_support.truth import UnlockedTruth
+    from firmware_bench.benchmark_support import registry
+    from firmware_bench.benchmark_support.truth import UnlockedTruth
     real, peers = registry.admitted_truth, []
     def start(**kwargs):
         peer = Silicon(kwargs['image']); peers.append(peer)
@@ -239,8 +246,8 @@ def device_patches(private):
             return (UnlockedTruth({'recipe': RECIPE}, pin['truth_sha256']),
                     {'ok': True, 'evidence_sha256': pin['calibration']['evidence_sha256']})
         return real(pin, password)
-    return ([patch('generative_driver.benchmark_support.registry.admitted_truth', side_effect=admitted_truth),
-             patch('generative_driver.benchmark_support.native.NativeSession.start', side_effect=start)], peers)
+    return ([patch('firmware_bench.benchmark_support.registry.admitted_truth', side_effect=admitted_truth),
+             patch('firmware_bench.benchmark_support.native.NativeSession.start', side_effect=start)], peers)
 
 
 def harness_devices(test, root):
@@ -276,7 +283,7 @@ def device_descriptor(test, root, image=None):
     `HARNESS_TOKEN`, before it resumes the run."""
     from pathlib import Path
     from test_harness import Device
-    from generative_driver.benchmark_support.registry import resolve_case
+    from firmware_bench.benchmark_support.registry import resolve_case
     root = Path(root); root.mkdir(parents=True, exist_ok=True)
     device = Device(test, image or resolve_case('tq9-v2').root / 'firmware.bin',
                     root / ('device-' + str(len(list(root.glob('device-*'))))))
@@ -292,7 +299,7 @@ class SuppliedStart(dict):
         """Copy the snapshot into the folder of `run` under the configurator `home`, as the harness does once `start`
         has answered; returns `run`. The grader and the reports look for it there."""
         from pathlib import Path
-        from generative_driver.benchmark_support.harness import keep_snapshot
+        from firmware_bench.benchmark_support.harness import keep_snapshot
         keep_snapshot(self.trial_dir, Path(home) / 'runs' / (run['run_id'] if isinstance(run, dict) else run))
         return run
 
@@ -308,8 +315,8 @@ def supplied_start(test, root, *, case='tq9-v2', descriptor=None, home=None, cas
     `executor_config`, `budget_seconds`, `request_id` and `scoped_tool_approval`. `case_options` holds the scenario,
     the seed and the analysis tools."""
     from pathlib import Path
-    from generative_driver.benchmark_support import harness
-    from generative_driver.benchmark_support.registry import pin_case
+    from firmware_bench.benchmark_support import harness
+    from firmware_bench.benchmark_support.registry import pin_case
     options = dict(case_options or {})
     pin = pin or pin_case(case, options.get('scenario_id'), options.get('case_seed', 0))
     executor, config = harness.settled_executor(home or Path(root) / 'no-home', request)
@@ -330,7 +337,7 @@ def harness_keys(test, root, pin, config, *, descriptor=None, case_options=None,
     `descriptor` gives one."""
     import hashlib
     from pathlib import Path
-    from generative_driver.benchmark_support import harness
+    from firmware_bench.benchmark_support import harness
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     if trial_dir is None:
@@ -408,8 +415,8 @@ def drive_suite(owner, bench, request, *, wait=True, calls=None, stop=None, inte
     import threading
     import uuid
     from pathlib import Path
-    from generative_driver.benchmark_support import harness
-    from generative_driver.benchmark_support.suite_book import answered
+    from firmware_bench.benchmark_support import harness
+    from firmware_bench.benchmark_support.suite_book import answered
     asked, kept = service(owner), book(owner)
     def forward(method, params=None):
         if method.startswith('suite_'):
@@ -466,7 +473,7 @@ def shutdown_owner(home):
     only process exit releases harness.log and prevents a late post restarting the owner.
     """
     from generative_driver.client import call
-    from generative_driver.benchmark_support.harness import bench_home, read_suite
+    from firmware_bench.benchmark_support.harness import bench_home, read_suite
     bench = bench_home(home)
     for path in (bench / 'suites').glob('*/suite.json'):
         record = read_suite(path.parent) or {}
@@ -483,7 +490,7 @@ def shutdown_owner(home):
 def wait_harnesses(home):
     """Await process exit, including the final log handles after scheduling detaches."""
     from generative_driver.client import _wait_for_exit
-    from generative_driver.benchmark_support.harness import bench_home, read_suite, read_trial
+    from firmware_bench.benchmark_support.harness import bench_home, read_suite, read_trial
     bench = bench_home(home)
     for pattern, read in (('suites/*/suite.json',read_suite), ('trials/*/trial.json',read_trial)):
         for path in bench.glob(pattern):

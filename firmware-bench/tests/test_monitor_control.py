@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 
-from generative_driver.benchmark_support.native import NativeSession
+from firmware_bench.benchmark_support.native import NativeSession
 
 
 class ScriptedMonitor:

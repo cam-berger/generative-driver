@@ -11,15 +11,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support.families import family_for
-from generative_driver.benchmark_support.truth import UnlockedTruth
+from firmware_bench import benchmark_support
+from firmware_bench.benchmark_support.families import family_for
+from firmware_bench.benchmark_support.truth import UnlockedTruth
 
 RECIPE = {'observations': {'compare': {'command': 'compare', 'width': 32, 'count': 1},
                            'reload': {'command': 'reload', 'width': 32, 'count': 1},
                            'temperature': {'kind': 'scalar', 'command': 'temperature', 'unit': 'degC'}}}
 MONITOR = {'reads', 'command', 'commands', 'response', 'responses', 'monitor_port', 'private_dir', 'argv', 'pid',
            'compare', 'reload', 'temperature', 'controls'}
-SOURCE = Path(__file__).resolve().parents[2]/'src/generative_driver/benchmark_support'
+SOURCE = Path(benchmark_support.__file__).resolve().parent
 # Modules that decrypt a truth or lead to one: the device provider must load none of them.
 DECRYPTING_MODULES = {'truth', 'emulator', 'calibration', 'reference_calibration', 'evidence', 'emulated_evidence',
                       'evaluator', 'emulated', 'emulated_recovery', 'registry', 'cases', 'configurator'}
@@ -80,14 +81,14 @@ class ProviderFixture(unittest.TestCase):
             return session
         self.start = start
         # The provider takes the recipe only: no stage of its life may unlock the case truth.
-        for target in ('generative_driver.benchmark_support.emulator.truth_for_case',
-                       'generative_driver.benchmark_support.truth.EvaluatorPassword.unlock',
-                       'generative_driver.benchmark_support.calibration.hydrate_truth'):
+        for target in ('firmware_bench.benchmark_support.emulator.truth_for_case',
+                       'firmware_bench.benchmark_support.truth.EvaluatorPassword.unlock',
+                       'firmware_bench.benchmark_support.calibration.hydrate_truth'):
             guard = patch(target, side_effect=AssertionError('truth unlocked by the device provider'))
             guard.start(); self.addCleanup(guard.stop)
 
     def provider(self, case_id='tq9-v2', recipe=RECIPE, start=None, **options):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
         return DeviceProvider(case_id, self.image, recipe, None, self.root/'device', image_sha256=self.sha,
                               start=start or self.start, **options)
 
@@ -191,7 +192,7 @@ class DeviceProviderTests(ProviderFixture):
         self.assertEqual(provider.stop(), {'stopped': True, 'confirmed': True})
 
     def test_every_family_reading_is_projected_with_units_and_nothing_else(self):
-        from generative_driver.benchmark_support import instruments
+        from firmware_bench.benchmark_support import instruments
         families = {'sampled-sensor-v1': ({'latched_q4': {'command': 'latched', 'width': 16, 'count': 1},
                                            'acquisition_counter': {'command': 'counter', 'width': 32, 'count': 1}},
                                           {'latched_q4': 65456, 'acquisition_counter': 3},
@@ -229,7 +230,7 @@ class DeviceProviderTests(ProviderFixture):
                                'units': {'duty': 'permille', 'temperature_reference': 'degC'}})
 
     def test_constructed_from_the_recipe_alone_and_only_for_the_pinned_image(self):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
         parameters = set(inspect.signature(DeviceProvider).parameters)
         self.assertEqual(parameters, {'case_id', 'image', 'recipe', 'renode', 'private_dir', 'image_sha256', 'start'})
         # A truth object or anything carrying a password is refused, whatever else it holds.
@@ -400,8 +401,9 @@ class DeviceProviderTests(ProviderFixture):
             with self.subTest(module=name):
                 self.assertFalse(imported & forbidden, imported)
         loaded = subprocess.run([sys.executable, '-c', 'import sys,json\n'
-            'import generative_driver.benchmark_support.device_provider\n'
-            'print(json.dumps(sorted(m for m in sys.modules if m.startswith("generative_driver"))))'],
+            'import firmware_bench.benchmark_support.device_provider\n'
+            'print(json.dumps(sorted(m for m in sys.modules\n'
+            '                        if m.startswith(("firmware_bench", "generative_driver")))))'],
             capture_output=True, text=True, check=True)
         modules = {m.rsplit('.', 1)[-1] for m in json.loads(loaded.stdout)}
         self.assertFalse(modules & forbidden, modules)
@@ -412,11 +414,11 @@ class HarnessDelegationTests(ProviderFixture):
     reaches it only through its control endpoint: the stage adapter holds, starts and stops no device."""
     def setUp(self):
         super().setUp()
-        from generative_driver.benchmark_support.harness import DeviceServer
+        from firmware_bench.benchmark_support.harness import DeviceServer
         from generative_driver.configurator import Controller
         self.trial, self.home = self.root/'trial', self.root/'home'
         self.truth = {'recipe': RECIPE, 'contracts': {'sentinel': 'EVALUATOR SENTINEL'}, 'private_sentinel': 'EVALUATOR SENTINEL'}
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
         self.device = DeviceProvider('tq9-v2', self.image, RECIPE, None, self.trial/'device', image_sha256=self.sha,
                                      start=self.start)
         self.server_type = DeviceServer
@@ -429,11 +431,11 @@ class HarnessDelegationTests(ProviderFixture):
         return server
 
     def test_the_harness_provides_recovers_and_stops_the_device_from_the_recipe_alone(self):
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         from generative_driver.supplied import stages
         from generative_driver.device_client import DeviceUnavailable, open_device
         from generative_driver.toolkit import call_tool
-        with patch('generative_driver.benchmark_support.registry.case_truth', return_value=UnlockedTruth(self.truth, 'a' * 64)) as unlocked:
+        with patch('firmware_bench.benchmark_support.registry.case_truth', return_value=UnlockedTruth(self.truth, 'a' * 64)) as unlocked:
             self.assertEqual(harness.device_recipe('tq9-v2', unlocked()), RECIPE)
         unlocked.assert_called_once()
         self.assertFalse(hasattr(stages, '_session'))
@@ -487,7 +489,7 @@ class HarnessDelegationTests(ProviderFixture):
         self.assertEqual(self.journal(self.trial)[-1]['kind'], 'stopped')
 
     def test_package_calls_run_in_the_window_and_carry_instrument_readings(self):
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from generative_driver.supplied.stages import package_call
         from generative_driver.configurator import digest
         from generative_driver.device_client import open_device
@@ -516,7 +518,7 @@ class HarnessDelegationTests(ProviderFixture):
 
     def test_a_failed_start_keeps_a_live_owner_and_the_harness_record(self):
         # The harness holds the provider before anything starts, so a start that fails mid-way leaves a live owner.
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         def tweak(peer, session):
             session.observe = lambda: {'values': {}, 'reads': []}
             def stop():raise RuntimeError('stop unavailable')

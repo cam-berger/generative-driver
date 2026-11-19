@@ -18,7 +18,7 @@ from tool_fixtures import scripted_stages
 from test_evaluation import EXPECTED, FAIL, PASS, TOKEN, Undecided, evaluation, files, reference
 from test_harness import EVIDENCE, unstarted_provider
 from test_suite_harness import EMULATOR, HarnessSuiteFixture, manifest
-from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, read_password
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
 GATED = ('accepted_gates', 'evaluations', 'final_evaluation', 'evaluator_verdicts')
@@ -38,7 +38,7 @@ class AssistiveFixture(HarnessSuiteFixture):
     def trial(self, name, outcome=PASS, runtime=None, **options):
         """One trial whose frozen driver is graded with `outcome` (values, or an exception the evaluator meets):
         (trial dir, trial record)."""
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         trial = self.root / 'bench' / name
         def grade(*args, **kwargs):
             if isinstance(outcome, Exception):
@@ -62,12 +62,12 @@ class AssistiveFixture(HarnessSuiteFixture):
         return patch('generative_driver.client.call', side_effect=lambda method, params, **kw: asked(method, params))
 
     def report(self, run_id, name='report'):
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         with self.owner():
             return report_run(run_id, home=self.home, output=self.root / 'reports' / name / 'report.json')
 
     def score(self, report, evidence, password=None):
-        from generative_driver.benchmark import score
+        from firmware_bench.benchmark import score
         return score(copy.deepcopy(report), password or self.password, evidence_path=evidence)
 
 
@@ -128,7 +128,7 @@ class ScoreTests(AssistiveFixture):
     def test_offline_score_regrades_the_sealed_final_of_the_accepted_driver(self):
         # Catches a score that trusts the report's verdict, needs the configurator or a process, or regrades another
         # package than the one the run accepted.
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         for name, outcome, label, code in (('good', PASS, 'equivalent', 0), ('wrong', FAIL, 'not equivalent', 1)):
             with self.subTest(driver=name):
                 trial, record = self.trial(name, outcome)
@@ -194,9 +194,9 @@ class ScoreTests(AssistiveFixture):
             self.score(report, evidence, wrong)
         for missing in ((None, self.password), (evidence, None)):
             with self.subTest(missing=missing), self.assertRaises(ValueError):
-                from generative_driver.benchmark import score
+                from firmware_bench.benchmark import score
                 score(copy.deepcopy(report), missing[1], evidence_path=missing[0])
-        with patch('generative_driver.benchmark_support.evidence.grader_identity', return_value={'sha256': '0' * 64}), \
+        with patch('firmware_bench.benchmark_support.evidence.grader_identity', return_value={'sha256': '0' * 64}), \
                 self.assertRaisesRegex(ValueError, 'evaluator'):
             self.score(report, evidence)
 
@@ -204,7 +204,7 @@ class ScoreTests(AssistiveFixture):
         # Catches a regrade that insists on the configurator's own protocol, so that the same grader could not regrade
         # the run of a system under another protocol, and a report that names another protocol than its evidence was
         # sealed under.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         trial, record = self.trial('good', PASS)
         result = self.controller.call('result', {'run_id': record['run_id']})
         report = self.report(record['run_id'], 'good')
@@ -225,7 +225,7 @@ class ScoreTests(AssistiveFixture):
     def test_a_regrade_trusts_no_sealed_verdict_its_final_does_not_bear_out(self):
         # Catches a regrade that keeps the sealed verdict over the sealed final's records, credits an equivalent verdict
         # sealed without a final, or pairs a final with another mapping than the verdict names.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         trial, record = self.trial('good', PASS)
         result = self.controller.call('result', {'run_id': record['run_id']})
         report = self.report(record['run_id'], 'good')
@@ -254,7 +254,7 @@ class ScoreTests(AssistiveFixture):
         self.assertEqual(self.score(report, trial / 'run-evidence.enc'), report)
         run, _ = self.pending()
         report = self.report(run['run_id'], 'pending')
-        with patch('generative_driver.benchmark_support.truth.EvaluatorPassword.unlock', side_effect=AssertionError('evidence unlocked')):
+        with patch('firmware_bench.benchmark_support.truth.EvaluatorPassword.unlock', side_effect=AssertionError('evidence unlocked')):
             scored = self.score(report, None, None)
         self.assertEqual((scored['verdict'], scored['equivalence'], scored['equivalence_status']), ('unscored', None, 'pending'))
 
@@ -290,7 +290,7 @@ class ScoreTests(AssistiveFixture):
     def test_a_regrade_refuses_a_sealed_status_its_final_does_not_give(self):
         # Catches a regrade that credits an unknown verdict whose sealed final decides every check, a graded verdict whose
         # sealed final leaves one undecided, and a report that claims a graded verdict over sealed unknown evidence.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         def resealed(trial, record, name, change):
             result = self.controller.call('result', {'run_id': record['run_id']})
             report = self.report(record['run_id'], name)
@@ -366,7 +366,7 @@ class ProtocolSeparationTests(unittest.TestCase):
 
     def test_a_run_comparison_across_protocols_is_refused(self):
         # Catches a comparison that sets an assistive result beside a gated or earlier-protocol one.
-        from generative_driver.benchmark import compare
+        from firmware_bench.benchmark import compare
         gated = {'schema': 'benchmark-report/2', 'case': 'tq9-v2', 'case_version': '5', 'evaluator_version': '5',
                  'scenario_id': 'original', 'case_seed': 0, 'execution': 'actual-agent-emulation', 'verdict': 'passed',
                  'progress': {'revision': 0}, 'elapsed_seconds': 4}
@@ -388,14 +388,14 @@ class ProtocolSeparationTests(unittest.TestCase):
 
     def test_a_public_report_carries_the_protocol_of_its_run(self):
         # Catches a public report stamped with the configurator's protocol whatever the run's.
-        from generative_driver.benchmark_support.evidence import public_v3_report
+        from firmware_bench.benchmark_support.evidence import public_v3_report
         for protocol in ('assistive/1', 'learning/1'):
             with self.subTest(protocol=protocol):
                 self.assertEqual(public_v3_report({**self.assistive(), 'protocol': protocol})['protocol'], protocol)
 
     def test_exported_run_comparison_requires_matching_evaluator_and_case_hashes(self):
-        from generative_driver.benchmark import compare
-        from generative_driver.benchmark_support.evidence import public_v3_report
+        from firmware_bench.benchmark import compare
+        from firmware_bench.benchmark_support.evidence import public_v3_report
         before = public_v3_report(self.assistive())
         self.assertTrue(compare(before, copy.deepcopy(before))['compatible'])
         for field in ('evaluator_revision', 'case_pin.manifest_sha256', 'case_pin.truth_sha256', 'case_pin.pin_sha256'):
@@ -413,8 +413,8 @@ class ProtocolSeparationTests(unittest.TestCase):
                         self.assertFalse(compare(after, copy.deepcopy(after))['compatible'])
 
     def test_exported_run_comparison_reports_executed_dimensions_and_budgets(self):
-        from generative_driver.benchmark import compare, main
-        from generative_driver.benchmark_support.evidence import public_v3_report
+        from firmware_bench.benchmark import compare, main
+        from firmware_bench.benchmark_support.evidence import public_v3_report
         payload = {**self.assistive(), 'original_budget_seconds': 60, 'effective_budget_seconds': 60,
                    'toolchain_revision': '1' * 64, 'skills_revision': '2' * 64,
                    'executed': {'runtime_configuration': {'runtime': 'codex', 'model': 'model-a', 'provider': 'openai',
@@ -456,8 +456,8 @@ class ProtocolSeparationTests(unittest.TestCase):
             self.assertEqual(set(result['changed_dimensions']), {'runtime', 'model'})
 
     def test_exported_replay_candidates_are_distinct_and_separate_from_model_runs(self):
-        from generative_driver.benchmark import compare
-        from generative_driver.benchmark_support.evidence import public_v3_report
+        from firmware_bench.benchmark import compare
+        from firmware_bench.benchmark_support.evidence import public_v3_report
         payload = {**self.assistive(), 'execution': 'replay-emulation',
                    'executed': {'runtime_configuration': {'runtime': 'replay', 'candidate_sha256': '1' * 64}}}
         before = public_v3_report(payload)
@@ -471,8 +471,8 @@ class ProtocolSeparationTests(unittest.TestCase):
 
     def test_an_earlier_protocol_report_keeps_its_gate_logic_and_an_assistive_one_is_never_scored_by_it(self):
         # Catches the gated regrade changed for earlier reports, or an assistive run scored as a gated one.
-        from generative_driver.benchmark import score
-        from generative_driver.benchmark_support import evidence
+        from firmware_bench.benchmark import score
+        from firmware_bench.benchmark_support import evidence
         from test_benchmark_v2_evidence import SealedEvidenceFixture
         fixture = SealedEvidenceFixture(); fixture.addCleanup = self.addCleanup; fixture.setUp()
         report, path = fixture.sealed(fixture.payload())
@@ -480,7 +480,7 @@ class ProtocolSeparationTests(unittest.TestCase):
         self.assertEqual((graded['schema'], graded['verdict'], graded['final_evaluation']['verdict']),
                          ('benchmark-report/2', 'passed', 'passed'))
         self.assertNotIn('equivalence', graded)
-        from generative_driver.benchmark_support.run_reporting import markdown, summarize
+        from firmware_bench.benchmark_support.run_reporting import markdown, summarize
         earlier = summarize({'run_id': 'earlier', 'status': 'completed', 'created': 0, 'updated': 1, 'worker_reports': [],
                              'accepted_handoffs': []}, [])
         self.assertIn('| Stage | Workflow | Evaluator |', markdown(earlier))
@@ -494,7 +494,7 @@ def assistive_fixture():
     """Nine assistive trials of three cases: equivalent, not equivalent, no driver, unscored, pending, stopped for the
     operator and the host, cancelled and not run."""
     from test_suite_reporting import fixture
-    from generative_driver.benchmark_support.suites import expand_trials
+    from firmware_bench.benchmark_support.suites import expand_trials
     suite, _, _, experiment = fixture()
     suite['repetitions'] = 3
     identity = experiment['comparison_identity']
@@ -556,7 +556,7 @@ def assistive_owner(report):
 
 class SuiteAggregateTests(unittest.TestCase):
     def test_end_to_end_success_requires_equivalence_and_successful_fresh_reuse(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         for mission in (True, False, None):
             with self.subTest(mission=mission):
                 suite, trials, reports, experiment = assistive_fixture()
@@ -570,7 +570,7 @@ class SuiteAggregateTests(unittest.TestCase):
                 self.assertEqual([row['equivalent_and_mission'] for row in result['trials']], [mission is True] + [False] * 8)
 
     def test_comparison_recounts_joint_success_from_fresh_mission_evidence(self):
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, compare_suites
         suite, trials, reports, experiment = assistive_fixture()
         before = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         reports['r0']['equivalence']['mission']['passed'] = False
@@ -594,7 +594,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_an_assistive_suite_counts_equivalent_drivers_out_of_planned_and_lists_the_unscored(self):
         # Catches an assistive suite counted by the gated success rule, unscored or stopped trials hidden or counted as
         # failed drivers, a denominator that drops a planned slot, and unknown report fields in the export.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         self.assertEqual((result['schema'], result['protocol']), ('benchmark-suite-report/3', 'assistive/1'))
@@ -626,7 +626,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_assistive_suite_reports_the_pass_rate(self):
         # Catches a suite report that leads with the equivalent drivers of all planned slots instead of the pass rate: the
         # passes of the graded trials, with the unknown, fault and planned counts printed beside it.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _summary
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, _summary
         suite, trials, reports, experiment = assistive_fixture()
         result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         self.assertEqual({k: result['pass_rate'][k] for k in ('passes', 'failures', 'unknown', 'faults', 'running', 'not_run', 'planned')},
@@ -636,8 +636,8 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_each_trial_row_stores_the_outcome_the_pass_rate_counts(self):
         # Catches a pass rate that is not the count of the outcomes its rows store, a row that stores none, and an
         # assistive suite exported under the schema that has neither.
-        from generative_driver.benchmark_support.outcomes import pass_rate
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         scored = [row['scored'] for row in result['trials']]
@@ -651,7 +651,7 @@ class SuiteAggregateTests(unittest.TestCase):
         # Catches a flagged trial that is graded anyway (a pass for an equivalent driver, a failure for another), a
         # trial the audit found nothing in that is flagged, a row that drops the findings it was flagged for, one that
         # names an audit nothing ran, and a pass line that hides the flagged count.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _summary
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, _summary
         suite, trials, reports, experiment = assistive_fixture()
         findings = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
         trials[0]['audit'] = findings
@@ -681,8 +681,8 @@ class SuiteAggregateTests(unittest.TestCase):
         # Catches a row that drops what its outcome rested on: with the report's own status and its effective budget
         # exported, the row alone gives the outcome that the slot with the full report gave, for a stop on the operator
         # that ran out of budget and for a stored slot that still says running after its child stopped.
-        from generative_driver.benchmark_support.outcomes import classify
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.outcomes import classify
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         spent = lambda trials, reports: reports['r5'].update(elapsed_seconds=10800, effective_budget_seconds=10800)
         stale = lambda trials, reports: trials[5].update(status='running', outcome_category='model')
         for name, change, expected in (('as recorded', None, 'fault'), ('spent budget', spent, 'failure'),
@@ -704,7 +704,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_each_trial_row_has_the_outcome_of_the_count_it_is_in(self):
         # Catches a trial row whose outcome disagrees with the count that holds it, and a claimed equivalent the suite
         # does not count that does not say why.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         trials[0]['status'] = 'completed'  # An equivalent verdict the configurator did not settle.
         result = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
@@ -720,7 +720,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_a_verdict_is_counted_only_from_a_settled_complete_record(self):
         # Catches an equivalent driver counted from a trial the configurator did not settle, or from a record that is
         # not a complete evaluator grade, and a claimed equivalent that the count refuses but the pass rate counts.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, _report_equivalent
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, _report_equivalent
         mutations = [lambda t, r: t[0].update(status='completed'),
                      lambda t, r: t[0].update(outcome_category='model'),
                      lambda t, r: r['r0']['equivalence'].update(equivalent=False),
@@ -747,7 +747,7 @@ class SuiteAggregateTests(unittest.TestCase):
 
     def test_reports_of_another_protocol_are_never_aggregated_with_a_suites_own(self):
         # Catches a gated report counted in an assistive suite, and an assistive report counted in a gated one.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         from test_suite_reporting import fixture
         suite, trials, reports, experiment = assistive_fixture()
         reports['r1'] = {**reports['r1'], 'schema': 'benchmark-report/2'}
@@ -765,7 +765,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_a_recorded_verdict_qualifies_only_from_the_owners_own_record_of_the_accepted_driver(self):
         # Catches qualification from the report's claim instead of the configurator's record of the run's accepted
         # emitted driver, and from a run that is not settled.
-        from generative_driver.benchmark_support.suite_reporting import _recorded_equivalence
+        from firmware_bench.benchmark_support.suite_reporting import _recorded_equivalence
         _, _, reports, _ = assistive_fixture()
         report = reports['r0']
         owner, events = assistive_owner(report)
@@ -794,8 +794,8 @@ class SuiteAggregateTests(unittest.TestCase):
         # not its trials' verdicts, one whose pass rate is not the count of the outcomes its rows store, and one whose
         # rows store a pass that their own verdict, status and category do not show (or hide one that they do), with
         # the pass rate edited to count it.
-        from generative_driver.benchmark_support.outcomes import pass_rate
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites
+        from firmware_bench.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, compare_suites
         from test_suite_reporting import comparison_fixture
         suite, trials, reports, experiment = assistive_fixture()
         before = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
@@ -858,7 +858,7 @@ class SuiteAggregateTests(unittest.TestCase):
         # Catches an export the audit flagged that cannot be read back: a flagged equivalent driver is still one of the
         # counted equivalent drivers (its row says equivalent), but its label is `flagged`, and the pass rate leaves it
         # out. A file that keeps the flagged driver among the passes has the wrong pass rate for its labels.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
         suite, trials, reports, experiment = assistive_fixture()
         honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         trials[0]['audit'] = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
@@ -878,7 +878,7 @@ class SuiteAggregateTests(unittest.TestCase):
         # an integrity fault and is not graded, and earlier studies counted such a trial a non-success out of all planned
         # trials. The evaluator's own counts keep the driver, the Markdown says so, and a saved file is recounted the same way:
         # one that keeps the flagged driver among its joint successes is refused.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, _summary, aggregate_suite, compare_suites
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, _summary, aggregate_suite, compare_suites
         suite, trials, reports, experiment = assistive_fixture()
         honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         self.assertEqual(honest['equivalent_and_mission'], {'passed': 1, 'denominator': 9, 'rate': 1 / 9})
@@ -912,7 +912,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_a_flagged_trial_that_was_not_an_equivalent_driver_adds_no_note_to_the_equivalent_count(self):
         # Catches a note on the equivalent count for a flagged trial that is not in it: the note is for the flagged trials the
         # count holds, and a flagged trial graded not equivalent, or one that stopped, is another outcome.
-        from generative_driver.benchmark_support.suite_reporting import _summary, aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import _summary, aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         trials[1]['audit'] = [{'transcript': 'work/emit/r1/_agent_events.jsonl', 'command': 'ls /vault'}]
         trials[5]['audit'] = [{'transcript': 'work/emit/r5/_agent_events.jsonl', 'command': 'ls /vault'}]
@@ -927,8 +927,8 @@ class SuiteAggregateTests(unittest.TestCase):
         # fault, unknown or flagged, a fault relabelled failure or running, and a running trial relabelled failure. Each edit
         # keeps the pass rate matching the labels, so only the check of a label against its row can refuse it. The honest
         # report reads back, and its labels are the ones the rows give.
-        from generative_driver.benchmark_support.outcomes import classify, pass_rate
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, aggregate_suite, compare_suites
+        from firmware_bench.benchmark_support.outcomes import classify, pass_rate
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, aggregate_suite, compare_suites
         suite, trials, reports, experiment = assistive_fixture()
         honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         self.assertEqual([row['scored'] for row in honest['trials']],
@@ -949,8 +949,8 @@ class SuiteAggregateTests(unittest.TestCase):
         # Catches a counted equivalent driver (its verdict equivalent, its slot finished and completed) that its own row does
         # not show equivalent, kept by labelling it as the row does show it. The label is then what `classify` gives the row,
         # and the counts are edited to match, so only the check that a counted driver is a pass or a flagged one refuses it.
-        from generative_driver.benchmark_support.outcomes import pass_rate
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, aggregate_suite
+        from firmware_bench.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         honest = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         for label, change in (('no grade', lambda row: row.pop('equivalence')),
@@ -966,8 +966,8 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_a_flagged_label_needs_findings_and_findings_need_the_label(self):
         # Catches a row labelled flagged that holds no finding of the audit, and a row that holds findings but is labelled with
         # its grade: the audit leaves a trial ungraded, and the file has to say so with both.
-        from generative_driver.benchmark_support.outcomes import pass_rate
-        from generative_driver.benchmark_support.suite_reporting import _saved_report, aggregate_suite
+        from firmware_bench.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report, aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         trials[0]['audit'] = [{'transcript': 'work/probe/r0/_agent_events.jsonl', 'command': 'cat /vault/key'}]
         flagged = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
@@ -986,7 +986,7 @@ class SuiteAggregateTests(unittest.TestCase):
     def test_an_earlier_saved_suite_report_stays_readable_without_a_pass_rate(self):
         # Catches a saved benchmark-suite-report/2, which stored no outcomes, refused or given a pass rate it never had,
         # and a saved /3 whose pass rate is taken from the file instead of counted from its rows.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
         suite, trials, reports, experiment = assistive_fixture()
         current = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
         earlier = copy.deepcopy(current)
@@ -1010,7 +1010,7 @@ class SuiteAggregateTests(unittest.TestCase):
         # Catches a saved benchmark-suite-report/2 (or /1), which never stored an outcome, whose rows carry one anyway:
         # a reader that trusts a stored label under any schema, as the corpus does, would count a pass the rows never
         # earned, so the file is refused whatever the label says and whether or not the rows bear it out.
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite, compare_suites, _saved_report
         from test_suite_reporting import comparison_fixture
         suite, trials, reports, experiment = assistive_fixture()
         current = aggregate_suite(suite, trials, reports, 'recorded-controller-verdicts', experiment=experiment)
@@ -1039,7 +1039,7 @@ class SuiteExportTests(AssistiveFixture):
         # Catches an export that drops why a trial stopped or is unscored: each trial row, and the report it names,
         # carries the trial's outcome and how it scored, a reason with no path or expected value, the stage where it
         # stopped and the repairs it used.
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             graded = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='three-children')
@@ -1074,7 +1074,7 @@ class SuiteExportTests(AssistiveFixture):
         # the experiment's dimensions and why the suite stopped, gives each trial's scored outcome and outcome with its
         # reason, stop stage, repairs, time and tokens, and lists the most frequent failing check ids, with no path or
         # expected value.
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='three-children')
@@ -1121,7 +1121,7 @@ class SuiteExportTests(AssistiveFixture):
         # transcripts a run left in the configurator's home are read when the suite is reported), one that flags a
         # trial whose worker did not, an audit that nothing asked for, a forbidden path anywhere in the export but the
         # finding's own command, and a flagged export that cannot be read back.
-        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
+        from firmware_bench.benchmark_support.suite_reporting import compare_suites, report_suite
         sid, rows = self.graded_suite()
         vault = '/Volumes/Answer Vault'
         read = 'cat "' + vault + '/evaluator/x.password"'
@@ -1150,7 +1150,7 @@ class SuiteExportTests(AssistiveFixture):
     def test_every_row_of_an_audited_export_has_findings_even_for_a_slot_that_never_started(self):
         # Catches an audited export whose rows for stopped and never-started slots have no findings to show: a child that
         # stopped before it left a transcript and the slots the stop kept from starting are audited, with none found.
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with self.harness(runtime=self.stopping_probe()):
             stopped = self.drive(manifest=manifest(), executor='codex', options={}, request_id='stopped-child')
         with self.owner():
@@ -1161,7 +1161,7 @@ class SuiteExportTests(AssistiveFixture):
     def test_the_suite_report_command_audits_every_path_it_is_given(self):
         # Catches a `suite report` that cannot be given forbidden paths, one that audits only the last of them, one that
         # audits when nobody asked, and an empty path that audits nothing instead of being refused.
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         sid, rows = self.graded_suite()
         vault, generator = '/Volumes/Answer Vault', 'C:\\GD\\Generator'
         self.worker_commands(rows[0], 'work/probe/a1', 'cat "' + vault + '/x"')
@@ -1188,7 +1188,7 @@ class SuiteExportTests(AssistiveFixture):
         # that child as a pass, a failure, a fault or an unscored trial (its outcome, its count, the report's outcome line and
         # its list of unscored trials), leaves it out of the pass line's unknown count or counts its undecided check as one
         # that failed, and a saved report from before the unknown count that can no longer be read.
-        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
+        from firmware_bench.benchmark_support.suite_reporting import compare_suites, report_suite
         with self.harness(PASS, (EXPECTED, Undecided('unreadable state')), FAIL):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='unknown-child')
@@ -1232,7 +1232,7 @@ class SuiteExportTests(AssistiveFixture):
         # Catches a driver with a failed check and an undecided one whose grade the configurator refuses, so that the harness
         # posts an unscored fault in its place: the trial would count as a fault, leave the pass rate and block its suite. A
         # failed check outweighs the undecided one: graded not equivalent, scored a failure, its suite settles the slot.
-        from generative_driver.benchmark_support.suite_reporting import report_suite
+        from firmware_bench.benchmark_support.suite_reporting import report_suite
         with self.harness(PASS, (0, Undecided('unreadable state')), PASS):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},
                                 request_id='failed-and-undecided-child')
@@ -1259,7 +1259,7 @@ class SuiteExportTests(AssistiveFixture):
         # Catches an exported assistive suite counted by gates, an unscored trial hidden or regraded, evidence that does
         # not cover exactly the graded trials, an export that carries an expected value, and one that does not lead with
         # the pass rate of its graded trials.
-        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
+        from firmware_bench.benchmark_support.suite_reporting import compare_suites, report_suite
         from test_suite_reporting import comparison_fixture
         with self.harness(PASS, FAIL, RuntimeError('evaluator host stopped')):
             record = self.drive(manifest=manifest(), executor='codex', options={'scoped_tool_approval': 'emulator'},

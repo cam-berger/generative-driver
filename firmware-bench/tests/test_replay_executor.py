@@ -13,7 +13,7 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from generative_driver.benchmark_support.truth import read_password
+from firmware_bench.benchmark_support.truth import read_password
 
 EVIDENCE = 'e' * 64
 TIMEOUT = 120
@@ -61,11 +61,11 @@ class ReplayExecutionTests(unittest.TestCase):
         # Built before the case resources are replaced: the fixture model starts from the installed setup-smoke model.
         self.candidate = replay_candidate(self.root / 'candidate')
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
-        for target, value in (('generative_driver.benchmark.case_root', {'return_value': self.root / 'resources'}),
-                              ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': self.root / 'resources'}),
-                              ('generative_driver.benchmark_support.registry.admitted_truth',
+        for target, value in (('firmware_bench.benchmark.case_root', {'return_value': self.root / 'resources'}),
+                              ('firmware_bench.benchmark_support.case_assets.case_root', {'return_value': self.root / 'resources'}),
+                              ('firmware_bench.benchmark_support.registry.admitted_truth',
                                {'side_effect': AssertionError('the configurator admitted the case')}),
-                              ('generative_driver.benchmark_support.emulator.truth_for_case',
+                              ('firmware_bench.benchmark_support.emulator.truth_for_case',
                                {'side_effect': AssertionError('the configurator unlocked the case truth')})):
             guard = patch(target, **value)
             guard.start()
@@ -108,7 +108,7 @@ class ReplayExecutionTests(unittest.TestCase):
             cursor = page['cursor']
 
     def test_a_saved_candidate_runs_every_stage_through_the_stage_gateway_without_a_model(self):
-        from generative_driver.benchmark_support.snapshots import read_snapshot
+        from firmware_bench.benchmark_support.snapshots import read_snapshot
         from generative_driver.configurator import digest
         candidate = self.candidate
         started = self.start(candidate, request_id='replay-trial')
@@ -155,7 +155,7 @@ class ReplayExecutionTests(unittest.TestCase):
                           for e in live}, {('instrument', 'instrument')})
         # The run records fresh reuse and does not judge it. The grader's judge finds the mission done, from the mapping
         # the probe handed on and the calls the run recorded for its one reuse assignment.
-        from generative_driver.benchmark_support.case_assets import reuse_mission
+        from firmware_bench.benchmark_support.case_assets import reuse_mission
         reused = result['accepted_handoffs'][5]
         self.assertEqual(reused['checks'], [])
         mapping = next(Path(a['path']) for a in result['accepted_handoffs'][2]['artifacts']
@@ -295,7 +295,8 @@ class ReplayStartTests(unittest.TestCase):
             ({'executor_config': {'candidate': str(self.candidate), 'candidate_sha256': '0' * 64}}, 'changed since'),
             ({'executor_config': {'candidate': 'candidate'}}, 'absolute directory'),
             ({'executor_config': {'candidate': str(self.root / 'absent')}}, 'absolute directory'),
-            ({'executor_config': {'candidate': str(resources_root() / 'bench/cases/setup-smoke')}}, 'never the installed'),
+            # The tool refuses a candidate inside its own installed resources.
+            ({'executor_config': {'candidate': str(resources_root() / 'smoke')}}, 'never the installed'),
             ({'executor_config': {'candidate': self.variant('unknown-stage', {'final': []})}}, 'stages name only'),
             ({'executor_config': {'candidate': self.variant('escape', {'interpret': [{'write': '../model.json'}]})}},
              'file of the candidate'),
@@ -317,7 +318,7 @@ class ReplayStartTests(unittest.TestCase):
         # The bench home beside the configurator home holds evaluator records, never a candidate. The configurator does
         # not know that folder (08-B5 of docs/features/untangle/08-reports.md): the bench harness refuses the candidate
         # as it launches the trial, before a harness starts.
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         inside = self.variant('home-bench/candidate', {})
         with patch.object(harness, '_spawn', side_effect=AssertionError('a bench harness started')), \
                 self.assertRaisesRegex(ValueError, 'evaluator records'):
@@ -325,6 +326,30 @@ class ReplayStartTests(unittest.TestCase):
                                                                  'replay_candidate': inside})
         with self.controller._db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runs').fetchone()[0], 0)
+
+    def test_12_B2_the_bench_harness_refuses_a_candidate_inside_the_benchmarks_installed_package(self):
+        import firmware_bench
+        from firmware_bench.benchmark_support import harness, trial_store
+        package = Path(firmware_bench.__file__).resolve().parent
+        installed = str(package / 'resources' / 'bench' / 'cases' / 'setup-smoke')
+        refusal = 'A replay candidate is saved worker output, never the installed case sources or groundtruth'
+        # With a bench home and with none: the tool does not know the benchmark's package, so this check is the
+        # only one that keeps a replay off the installed cases.
+        for bench in (self.root / 'home-bench', None):
+            with self.subTest(bench=bench):
+                with self.assertRaises(ValueError) as refused:
+                    trial_store.replay_candidate(installed, bench)
+                self.assertEqual(str(refused.exception), refusal)
+        # A candidate in the bench home is refused for that first.
+        with self.assertRaisesRegex(ValueError, 'evaluator records'):
+            trial_store.replay_candidate(installed, package.parent)
+        with patch.object(harness, '_spawn', side_effect=AssertionError('a bench harness started')), \
+                self.assertRaises(ValueError) as refused:
+            harness.launch('tq9-v2', executor='replay', options={'home': str(self.root / 'home'),
+                                                                 'replay_candidate': installed})
+        self.assertEqual(str(refused.exception), refusal)
+        # A saved candidate elsewhere is taken as before.
+        self.assertEqual(trial_store.replay_candidate(str(self.candidate), None)['runtime'], 'replay')
 
     def test_a_replay_suite_takes_one_checked_candidate_per_case(self):
         from suite_fixtures import book, pilot_manifest, suite_call
@@ -386,11 +411,11 @@ def harnessed(test):
     bench.fixture.write_text(HARNESS_FIXTURE.replace('TESTS', repr(str(Path(__file__).resolve().parent)))
                              .replace('PRIVATE', repr(str(root / 'native'))).replace('RESOURCES', repr(str(resources)))
                              .replace('EVIDENCE', repr(EVIDENCE)))
-    for target, value in (('generative_driver.benchmark.case_root', {'return_value': resources}),
-                          ('generative_driver.benchmark_support.case_assets.case_root', {'return_value': resources}),
-                          ('generative_driver.benchmark_support.registry.admitted_truth',
+    for target, value in (('firmware_bench.benchmark.case_root', {'return_value': resources}),
+                          ('firmware_bench.benchmark_support.case_assets.case_root', {'return_value': resources}),
+                          ('firmware_bench.benchmark_support.registry.admitted_truth',
                            {'side_effect': AssertionError('the configurator admitted the case')}),
-                          ('generative_driver.benchmark_support.emulator.truth_for_case',
+                          ('firmware_bench.benchmark_support.emulator.truth_for_case',
                            {'side_effect': AssertionError('the configurator unlocked the case truth')})):
         guard = patch(target, **value)
         guard.start()
@@ -404,9 +429,9 @@ class ReplayTrialTests(unittest.TestCase):
     device, grades the frozen driver once after the run and seals the evidence, as it does for a model run."""
 
     def test_a_replay_trial_is_graded_labelled_replay_and_never_compared_with_a_model_run(self):
-        from generative_driver.benchmark import compare, run, score
+        from firmware_bench.benchmark import compare, run, score
         from generative_driver.configurator import digest
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         bench = harnessed(self)
         root, candidate, home, password, fixture, call = (bench.root, bench.candidate, bench.home, bench.password,
                                                           bench.fixture, bench.call)
@@ -461,9 +486,9 @@ class ReplaySuiteTests(unittest.TestCase):
         self.fail(call('suite_status', {'suite_id': suite_id}))
 
     def test_a_replay_suite_replays_each_case_candidate_and_is_never_compared_with_a_model_suite(self):
-        from generative_driver.benchmark_support.snapshots import read_snapshot
-        from generative_driver.benchmark_support.suite_reporting import compare_suites, report_suite
-        from generative_driver.benchmark_support.suites import start_suite
+        from firmware_bench.benchmark_support.snapshots import read_snapshot
+        from firmware_bench.benchmark_support.suite_reporting import compare_suites, report_suite
+        from firmware_bench.benchmark_support.suites import start_suite
         from generative_driver.configurator import digest
         bench = harnessed(self)
         sha = digest(bench.candidate)
@@ -579,10 +604,10 @@ class ReplayCommandTests(unittest.TestCase):
     def test_only_the_replay_executor_takes_a_saved_candidate_and_only_for_an_emulated_case(self):
         import contextlib
         import io
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         from tq9_workflow_fixture import replay_candidate
         # A refusal that does not happen fails here instead of starting a real bench harness and configurator.
-        guard = patch('generative_driver.benchmark_support.harness._spawn',
+        guard = patch('firmware_bench.benchmark_support.harness._spawn',
                       side_effect=AssertionError('a bench harness started'))
         guard.start()
         self.addCleanup(guard.stop)

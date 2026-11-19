@@ -13,8 +13,8 @@ TOKEN='a1'*32
 
 class StoreTests(unittest.TestCase):
     def test_created_child_is_reused_after_lost_attachment(self):
-        from generative_driver.benchmark_support.suites import freeze_suite,child_request
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite,child_request
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
@@ -40,13 +40,14 @@ class StoreTests(unittest.TestCase):
             finally:controller.close()
 
     def test_saved_suite_with_an_unsupported_executor_is_readable_but_cannot_resume(self):
-        from generative_driver.benchmark_support.snapshots import execution_provenance
-        from generative_driver.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support import tool_install
+        from firmware_bench.benchmark_support.snapshots import execution_provenance
+        from firmware_bench.benchmark_support.suites import freeze_suite
         with tempfile.TemporaryDirectory() as temporary:
             controller = Controller(Path(temporary))
             try:
                 config = {'command': ['scripted'], 'runtime': 'unknown-runtime'}
-                provenance = execution_provenance(config, case_ids=['tq9-v2'])
+                provenance = execution_provenance(config, case_ids=['tq9-v2'], **tool_install.folders())
                 frozen = freeze_suite(scripted_manifest(), 'codex', config, {}, provenance, harness_token_sha256=TOKEN)
                 frozen['executor'] = frozen['request']['executor'] = 'unknown-runtime'
                 suite_id = book(controller).store.create(frozen)['suite_id']
@@ -63,8 +64,8 @@ class StoreTests(unittest.TestCase):
 
     def test_duplicate_request_returns_original_frozen_inputs_and_conflicts_refuse(self):
         from copy import deepcopy
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
             frozen=freeze_suite(scripted_manifest(2),'codex',{'command':['scripted'],'model':'original'},{},{},harness_token_sha256=TOKEN)
@@ -82,8 +83,8 @@ class StoreTests(unittest.TestCase):
     def test_reservation_is_shared_and_blocking_preserves_active_slot(self):
         from concurrent.futures import ThreadPoolExecutor
         from threading import Barrier
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3')
             first,second=SuiteStore(db),SuiteStore(db)
@@ -108,8 +109,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(first.trials(sid)['trials'][1]['status'],'pending')
 
     def test_public_pages_validate_cursors_and_exclude_private_storage(self):
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
             frozen=freeze_suite(scripted_manifest(3),'codex',{'command':['PRIVATE-COMMAND']},{},{},harness_token_sha256=TOKEN)
@@ -142,8 +143,8 @@ class StoreTests(unittest.TestCase):
             self.assertNotIn('PRIVATE',str(events)+str(rest)+str(page))
 
     def test_settlement_requires_matching_settled_child_and_is_idempotent(self):
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             store=SuiteStore(sqlite_context(Path(temporary)/'runs.sqlite3'))
             sid=store.create(freeze_suite(scripted_manifest(2),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN))['suite_id']
@@ -165,8 +166,8 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(store.reserve(sid)['ordinal'],1)
 
     def test_recovery_blocks_unfinished_suites_without_retry_or_repeated_events(self):
-        from generative_driver.benchmark_support.suites import freeze_suite
-        from generative_driver.benchmark_support.suite_store import SuiteStore
+        from firmware_bench.benchmark_support.suites import freeze_suite
+        from firmware_bench.benchmark_support.suite_store import SuiteStore
         with tempfile.TemporaryDirectory() as temporary:
             db=sqlite_context(Path(temporary)/'runs.sqlite3');store=SuiteStore(db)
             frozen=freeze_suite(scripted_manifest(),'codex',{'command':['scripted']},{},{},harness_token_sha256=TOKEN)
@@ -192,8 +193,8 @@ class StoreTests(unittest.TestCase):
 class ControllerStorageTests(unittest.TestCase):
     def test_expected_pin_refuses_changed_inputs_before_snapshot_or_child(self):
         from copy import deepcopy
-        from generative_driver.benchmark_support import harness
-        from generative_driver.benchmark_support.suites import freeze_suite,child_request
+        from firmware_bench.benchmark_support import harness
+        from firmware_bench.benchmark_support.suites import freeze_suite,child_request
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
@@ -218,9 +219,9 @@ class ControllerStorageTests(unittest.TestCase):
 
     def test_frozen_child_config_does_not_merge_new_home_defaults(self):
         import json
-        from generative_driver.benchmark_support import harness
-        from generative_driver.benchmark_support.suites import freeze_suite,child_request
-        from generative_driver.benchmark_support.snapshots import read_snapshot
+        from firmware_bench.benchmark_support import harness
+        from firmware_bench.benchmark_support.suites import freeze_suite,child_request
+        from firmware_bench.benchmark_support.snapshots import read_snapshot
         with tempfile.TemporaryDirectory() as temporary:
             home=Path(temporary);controller=Controller(home)
             try:
@@ -249,7 +250,7 @@ class ControllerStorageTests(unittest.TestCase):
 
     def test_suite_facade_deduplicates_before_config_and_recovers_without_launch(self):
         import json
-        from generative_driver.benchmark_support.suites import child_request
+        from firmware_bench.benchmark_support.suites import child_request
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             config=home/'config.json'
@@ -292,8 +293,8 @@ class ControllerStorageTests(unittest.TestCase):
 
     def test_experiment_is_complete_allowlisted_frozen_and_snapshot_bound(self):
         import json
-        from generative_driver.benchmark_support.suites import child_request
-        from generative_driver.benchmark_support.evidence import public_pin
+        from firmware_bench.benchmark_support.suites import child_request
+        from firmware_bench.benchmark_support.evidence import public_pin
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             config={'command':['missing-scripted-runtime','PRIVATE-COMMAND'],'model':'frozen-model','provider':'provider',
@@ -380,7 +381,7 @@ class ControllerStorageTests(unittest.TestCase):
     def test_owner_child_budget_extension_changes_comparison_policy_only(self):
         import json
         import time
-        from generative_driver.benchmark_support.suites import child_request
+        from firmware_bench.benchmark_support.suites import child_request
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);home=root/'home';home.mkdir()
             (home/'config.json').write_text(json.dumps({'executors':{'codex':{'command':['missing-scripted-runtime']}}}),encoding='utf-8')

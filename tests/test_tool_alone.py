@@ -7,6 +7,11 @@ benchmark's folder). This is the one tool test file that may hold the benchmark'
 
 The Spec leaves 11-B7 to the Reviewer. It still has a test here, because the Done check asks for one by name.
 
+Feature 12 of the untangle Run (docs/features/untangle/12-firmware-bench.md): 12-B7 (the two lines of the rules that
+run both test folders) and 12-B9 (the benchmark's hosted workflow and those two lines join the places that name the
+folder, and the four tool files of that Feature name neither spelling). `tests/test_tool_documents.py` takes the two
+lines from here.
+
 The files are read from the checkout and from the installed package, and `doctor` is asked in a temporary home.
 Nothing else is started.
 """
@@ -266,12 +271,27 @@ class ReleaseCheckTests(unittest.TestCase):
 # The two spellings of the benchmark's folder and package.
 FOLDER_NAMES = ('firmware-bench', 'firmware_bench')
 # The files outside the parked folder, the Runs' records and the tests that name it, each with the number of its
-# lines that do: the release check's module doc and its watched files, the comment of its workflow, and the one
-# paragraph of the front page.
-NAMED_PLACES = {'.github/scripts/tool_releases.py': 2, '.github/workflows/tool-releases.yml': 1, 'README.md': 1}
+# lines that do: the release check's module doc and its watched files, the comment of its workflow, the one
+# paragraph of the front page, and the two lines of the rules that run both test folders (12-B7 of Feature 12). Six
+# places in all. The benchmark's hosted workflow, `BENCH_WORKFLOW` below, is left out as the folder is.
+NAMED_PLACES = {'.github/scripts/tool_releases.py': 2, '.github/workflows/tool-releases.yml': 1, 'README.md': 1,
+                'STANDARDS.md': 2}
 # The tool test files that name it: the two that forbid the import of the benchmark, and this one, which holds the
 # list.
 NAMING_TESTS = ['tests/test_shared_helpers.py', 'tests/test_tool_alone.py', 'tests/test_tool_boundary.py']
+# The benchmark's hosted workflow (12-B8 of Feature 12): a file of the benchmark's that lies outside its folder.
+BENCH_WORKFLOW = '.github/workflows/firmware-bench.yml'
+# Lines 28 and 30 of the rules as Feature 12 gives them (12-B7): the test command and the test files, each naming
+# both test folders. `tests/test_tool_documents.py` takes them from here.
+TEST_COMMAND = ('Test command: `ls tests/test_*.py firmware-bench/tests/test_*.py 2>/dev/null | '
+                'PYTHONPATH="$PWD/src:$PWD/firmware-bench/src" xargs -P 8 -n 1 sh -c \'out=$(.venv/bin/python -m '
+                'unittest discover -v -s "$(dirname "$0")" -p "$(basename "$0")" 2>&1); s=$?; printf "%s\\n" "$out"; '
+                'exit $s\' && node tests/dashboard-client.test.js`')
+TEST_FILES = 'Test files: `tests/test_*.py`, `firmware-bench/tests/test_*.py`'
+# The tool files Feature 12 changed or added outside the three that may name the benchmark: each names that Feature
+# by its number, since the name of its Spec's file holds the folder's name (12-B9).
+FEATURE_12_FILES = ('supplied_device.py', 'test_supplied_device.py', 'test_tool_commands.py',
+                    'test_tool_documents.py')
 
 
 def naming_lines(text):
@@ -282,12 +302,14 @@ def naming_lines(text):
 class NamedPlacesTests(TrackedFilesCase):
     """Outside the parked folder, only named places speak of it (11-B10)."""
 
-    def test_11_B10_outside_the_parked_folder_the_records_and_the_tests_only_four_places_name_it(self):
+    def test_11_B10_outside_the_parked_folder_the_records_and_the_tests_only_six_places_name_it(self):
         naming = {name: naming_lines(text) for name, text in self.tracked()
-                  if not name.startswith((PARKED, 'docs/features/', 'tests/'))}
+                  if not name.startswith((PARKED, 'docs/features/', 'tests/')) and name != BENCH_WORKFLOW}
         naming = {name: lines for name, lines in naming.items() if lines}
         self.assertEqual({name: len(lines) for name, lines in naming.items()}, NAMED_PLACES)
+        self.assertEqual(sum(NAMED_PLACES.values()), 6)
         self.assertEqual(naming['README.md'], [README_PARAGRAPH])
+        self.assertEqual(naming['STANDARDS.md'], [TEST_COMMAND, TEST_FILES])
         # Each place of the release check names the parked front page, where the emulator's pin is kept.
         for name in ('.github/scripts/tool_releases.py', '.github/workflows/tool-releases.yml'):
             for line in naming[name]:
@@ -302,6 +324,58 @@ class NamedPlacesTests(TrackedFilesCase):
         self.assertEqual(naming_lines(f'A line.\n{README_PARAGRAPH}\nimport firmware_bench.harness\n'),
                          [README_PARAGRAPH, 'import firmware_bench.harness'])
         self.assertEqual(naming_lines('The firmware bench and the bench of a firmware.\n'), [])
+
+
+class BothTestFoldersTests(unittest.TestCase):
+    """The test command runs both test folders (12-B7)."""
+
+    def setUp(self):
+        if not (REPO / 'STANDARDS.md').is_file():
+            self.skipTest(f'The rules are read from a checkout, and {REPO / "STANDARDS.md"} is not there')
+
+    def test_12_B7_lines_28_and_30_of_the_rules_are_the_two_lines_that_run_both_test_folders(self):
+        rules = (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines()
+        self.assertEqual((rules[27], rules[29]), (TEST_COMMAND, TEST_FILES))
+        # No other line of the rules gives a test command or the test files.
+        self.assertEqual([number for number, line in enumerate(rules, 1)
+                          if line.startswith(('Test command:', 'Test files:'))], [28, 30])
+
+    def test_12_B7_each_folder_the_test_command_lists_holds_test_files_and_each_folder_of_its_path_a_package(self):
+        listed = TEST_COMMAND.partition('`ls ')[2].partition(' 2>/dev/null')[0].split()
+        self.assertEqual(listed, ['tests/test_*.py', 'firmware-bench/tests/test_*.py'])
+        self.assertEqual(re.findall(r'`([^`]+)`', TEST_FILES), listed)
+        for pattern in listed:
+            with self.subTest(files=pattern):
+                self.assertGreater(len(list(REPO.glob(pattern))), 20)
+        # A module is run from its own folder, found by the name the listing gave it.
+        self.assertIn('discover -v -s "$(dirname "$0")" -p "$(basename "$0")"', TEST_COMMAND)
+        folders = re.search(r'PYTHONPATH="([^"]+)"', TEST_COMMAND).group(1).split(':')
+        self.assertEqual(folders, ['$PWD/src', '$PWD/firmware-bench/src'])
+        for folder, package in zip(folders, ('generative_driver', 'firmware_bench')):
+            with self.subTest(package=package):
+                self.assertTrue((REPO / folder.removeprefix('$PWD/') / package / '__init__.py').is_file())
+
+
+class BenchmarkPlacesTests(TrackedFilesCase):
+    """Outside its folder the benchmark is its hosted workflow and the named places (12-B9)."""
+
+    def test_12_B9_outside_the_folder_the_records_and_the_tests_only_the_workflow_file_and_the_named_places_name_it(
+            self):
+        naming = sorted(name for name, text in self.tracked()
+                        if not name.startswith((PARKED, 'docs/features/', 'tests/')) and naming_lines(text))
+        self.assertEqual(naming, sorted([BENCH_WORKFLOW, *NAMED_PLACES]))
+        # In the rules the two lines are lines 28 and 30, the ones 12-B7 gives.
+        rules = (REPO / 'STANDARDS.md').read_text(encoding='utf-8').splitlines()
+        self.assertEqual([(number, line) for number, line in enumerate(rules, 1) if naming_lines(line)],
+                         [(28, TEST_COMMAND), (30, TEST_FILES)])
+
+    def test_12_B9_the_tool_files_of_feature_12_name_it_by_its_number_and_hold_neither_spelling(self):
+        self.assertEqual([name for name in FEATURE_12_FILES if 'tests/' + name in NAMING_TESTS], [])
+        for name in FEATURE_12_FILES:
+            with self.subTest(file=name):
+                text = (Path(__file__).resolve().parent / name).read_text(encoding='utf-8')
+                self.assertIn('Feature 12 of the untangle Run', text)
+                self.assertEqual(naming_lines(text), [])
 
 
 if __name__ == '__main__':

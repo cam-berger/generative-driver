@@ -12,7 +12,7 @@ from tool_fixtures import package_env
 
 
 def unavailable_catalog():
-    from generative_driver.benchmark_support.corpus import load_catalog
+    from firmware_bench.benchmark_support.corpus import load_catalog
     catalog = load_catalog()
     for row in catalog['lineages']:
         row['case'] = None
@@ -23,9 +23,9 @@ def measured_fixture(change=None):
     """The plan and its saved suite: one equivalent trial, graded and settled. `change(trial, report)` alters the
     trial's slot or report before the suite is aggregated."""
     from test_assistive_reports import evaluation
-    from generative_driver.benchmark_support.corpus import _plan, _availability, lineage_identity, _digest
-    from generative_driver.benchmark_support.suites import expand_trials
-    from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+    from firmware_bench.benchmark_support.corpus import _plan, _availability, lineage_identity, _digest
+    from firmware_bench.benchmark_support.suites import expand_trials
+    from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
     catalog = unavailable_catalog()
     row = catalog['lineages'][-1]
     row.update(case='zephyr-modbus-v1', blockers=[])
@@ -64,10 +64,10 @@ def measured_fixture(change=None):
 
 class CorpusTests(unittest.TestCase):
     def test_explicit_selection_preserves_the_inventory_and_coverage_denominators(self):
-        from generative_driver.benchmark_support.corpus import _digest, plan_corpus, report_corpus
+        from firmware_bench.benchmark_support.corpus import _digest, plan_corpus, report_corpus
         inventory, suite = measured_fixture()
         names = [row['id'] for row in inventory['catalog']['lineages']]
-        with patch('generative_driver.benchmark_support.corpus._availability',
+        with patch('firmware_bench.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']):
             plan = plan_corpus(inventory['catalog'], repetitions=1, include=[names[0], names[-1]],
                                exclude=[(names[1], 'Outside this experiment objective.')])
@@ -101,7 +101,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(measured['selected_coverage']['rate'], 1/2)
 
     def test_missing_negative_grade_never_becomes_a_measured_model_failure(self):
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture(lambda trial, report: report.update(
             verdict='unscored', equivalence=None, equivalence_status='unscored'))
         report = report_corpus(plan, suite)
@@ -112,7 +112,7 @@ class CorpusTests(unittest.TestCase):
     def test_equivalent_driver_counts_without_fresh_reuse_or_accepted_stages(self):
         # Catches a pass that also asks for a successful fresh mission and six accepted stages: the evaluator's grade of
         # the frozen driver is the pass, and fresh reuse is reported beside it.
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         def change(trial, report):
             report['equivalence']['mission'].update(passed=False)
             report['stages']['reuse']['workflow_status'] = 'pending'
@@ -124,7 +124,7 @@ class CorpusTests(unittest.TestCase):
     def test_a_failed_fresh_mission_is_reported_beside_the_pass_whatever_its_fault(self):
         # Catches a fresh mission failure that moves an equivalent driver out of the pass count, or whose attribution
         # and reason are dropped from the row.
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         for fault in ('model', 'host', 'operator', None, 'mixed'):
             with self.subTest(fault=fault):
                 mission = {'name': 'fresh_worker_mission', 'passed': False,
@@ -140,8 +140,8 @@ class CorpusTests(unittest.TestCase):
                                  (False, fault, mission['reason']))
 
     def test_a_host_stop_before_run_creation_stays_visible_without_a_model_failure(self):
-        from generative_driver.benchmark_support.corpus import report_corpus
-        from generative_driver.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.outcomes import pass_rate
         plan, suite = measured_fixture()
         suite['trials'][0].update(run_id=None, status='blocked', outcome_category='host',
                                  outcome='not_run', scored='not_run', verdict=None, equivalence=None,
@@ -157,7 +157,7 @@ class CorpusTests(unittest.TestCase):
         self.assertFalse(report['model_benchmark'])
 
     def test_selection_errors_are_rejected_before_public_case_preflight(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus
         catalog = unavailable_catalog()
         name = catalog['lineages'][0]['id']
         for options in (
@@ -168,7 +168,7 @@ class CorpusTests(unittest.TestCase):
             {'include': [name], 'exclude': [(name, 'Conflicting selection.')]},
         ):
             with self.subTest(options=options), \
-                    patch('generative_driver.benchmark_support.corpus._availability') as availability:
+                    patch('firmware_bench.benchmark_support.corpus._availability') as availability:
                 with self.assertRaises(ValueError):
                     plan_corpus(catalog, **options)
                 availability.assert_not_called()
@@ -177,7 +177,7 @@ class CorpusTests(unittest.TestCase):
         self.assertTrue(all(row['status'] == 'excluded' for row in plan['slots']))
 
     def test_selected_manifest_is_bound_to_the_complete_frozen_context(self):
-        from generative_driver.benchmark_support.corpus import _plan, report_corpus, validate_plan
+        from firmware_bench.benchmark_support.corpus import _plan, report_corpus, validate_plan
         plan, suite = measured_fixture()
         alternatives = []
         catalog = copy.deepcopy(plan['catalog'])
@@ -201,32 +201,32 @@ class CorpusTests(unittest.TestCase):
             validate_plan(changed)
 
     def test_start_dispatches_only_selected_ready_cases_and_retains_the_frozen_selection(self):
-        from generative_driver.benchmark_support.corpus import plan_corpus, start_corpus
+        from firmware_bench.benchmark_support.corpus import plan_corpus, start_corpus
         inventory, _ = measured_fixture()
         ready = inventory['catalog']['lineages'][-1]['id']
-        with patch('generative_driver.benchmark_support.corpus._availability',
+        with patch('firmware_bench.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']):
             plan = plan_corpus(inventory['catalog'], repetitions=1, include=[ready])
-        with patch('generative_driver.benchmark_support.corpus._availability',
+        with patch('firmware_bench.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']), \
-                patch('generative_driver.benchmark_support.suites.start_suite',
+                patch('firmware_bench.benchmark_support.suites.start_suite',
                       return_value={'ok': True, 'suite_id': 'scripted-owner'}) as start:
             result = start_corpus(plan, executor='codex')
         self.assertEqual(result['corpus_plan_sha256'], plan['plan_sha256'])
         self.assertEqual(start.call_args.args[0], plan['runnable_suite'])
         self.assertEqual([entry['case'] for entry in plan['runnable_suite']['entries']],
                          [inventory['catalog']['lineages'][-1]['case']])
-        with patch('generative_driver.benchmark_support.corpus._availability',
+        with patch('firmware_bench.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']), \
-                patch('generative_driver.benchmark_support.suites.start_suite') as start:
+                patch('firmware_bench.benchmark_support.suites.start_suite') as start:
             with self.assertRaisesRegex(ValueError, 'require Codex'):
                 start_corpus(plan, executor='unknown-runtime')
             start.assert_not_called()
-        with patch('generative_driver.benchmark_support.corpus._availability',
+        with patch('firmware_bench.benchmark_support.corpus._availability',
                    side_effect=inventory['availability']):
             excluded = plan_corpus(inventory['catalog'], repetitions=1,
                                    exclude={ready: 'Intake report only.'})
-        with patch('generative_driver.benchmark_support.suites.start_suite') as start:
+        with patch('firmware_bench.benchmark_support.suites.start_suite') as start:
             with self.assertRaisesRegex(ValueError, 'runnable'):
                 start_corpus(excluded, executor='codex')
             start.assert_not_called()
@@ -235,7 +235,7 @@ class CorpusTests(unittest.TestCase):
         # Catches a corpus that derives passes and failures from row fields again instead of counting the outcome the
         # suite stored: a driver graded not equivalent or absent, a stop the system caused and a spent budget fail; a
         # host stop, a stop within the budget, a missing grade and a grade the slot has not settled are not measured.
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         from test_assistive_reports import evaluation
         negative = evaluation('f'*64, False)
         no_driver = evaluation(None, False, status='no-driver', checks=[], passed=0, total=0,
@@ -279,8 +279,8 @@ class CorpusTests(unittest.TestCase):
     def test_a_saved_pass_that_its_row_does_not_show_is_refused_rather_than_measured(self):
         # Catches a saved suite whose row label and pass rate were edited together to make a driver graded not equivalent
         # a measured pass: the corpus counts the label, so the file has to be refused, not counted.
-        from generative_driver.benchmark_support.corpus import report_corpus
-        from generative_driver.benchmark_support.outcomes import pass_rate
+        from firmware_bench.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.outcomes import pass_rate
         from test_assistive_reports import evaluation
         negative = evaluation('f'*64, False)
         plan, honest = measured_fixture(lambda trial, report: report.update(
@@ -296,7 +296,7 @@ class CorpusTests(unittest.TestCase):
         # Catches a benchmark-suite-report/2, which never stored an outcome, relabelled so that the corpus measures a
         # pass its row never earned: the honest file gives a driver graded not equivalent 0/1, the relabelled one is
         # refused.
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         from test_assistive_reports import evaluation
         negative = evaluation('f'*64, False)
         plan, current = measured_fixture(lambda trial, report: report.update(
@@ -316,7 +316,7 @@ class CorpusTests(unittest.TestCase):
         # Catches a saved suite the audit flagged that the corpus cannot read (the driver is still a counted equivalent
         # one, but its label is `flagged`), and a flagged driver measured as a pass for its grade or a failure for its
         # label: the audit leaves a trial out of both, and the corpus holds it as an unmeasured slot.
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         finding = {'transcript': 'work/probe/a1/_agent_events.jsonl', 'command': 'cat /vault/key'}
         plan, suite = measured_fixture(lambda trial, report: trial.update(audit=[finding]))
         self.assertEqual((suite['trials'][0]['verdict'], suite['trials'][0]['scored']), ('equivalent', 'flagged'))
@@ -328,7 +328,7 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(report['measured_success'], {'passed': 0, 'denominator': 0, 'rate': None})
 
     def test_limitations_say_a_pass_is_the_evaluators_grade_with_fresh_reuse_beside_it(self):
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture()
         limitations = report_corpus(plan, suite)['limitations']
         self.assertIn('Measured success counts a pass when the evaluator grades the frozen driver equivalent; '
@@ -337,7 +337,7 @@ class CorpusTests(unittest.TestCase):
                           or 'mission evidence is unscored' in line])
 
     def test_measured_success_counts_the_graded_trial_of_the_frozen_pins(self):
-        from generative_driver.benchmark_support.corpus import report_corpus
+        from firmware_bench.benchmark_support.corpus import report_corpus
         plan, suite = measured_fixture()
         result = report_corpus(plan, suite)
         self.assertEqual(result['counts']['passed'], 1)
@@ -356,14 +356,14 @@ class CorpusTests(unittest.TestCase):
                 report_corpus(plan, changed)
 
     def test_corpus_start_refuses_an_unrunnable_plan_before_starting_an_owner(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, plan_corpus, start_corpus
-        with patch('generative_driver.benchmark_support.suites.start_suite') as start:
+        from firmware_bench.benchmark_support.corpus import load_catalog, plan_corpus, start_corpus
+        with patch('firmware_bench.benchmark_support.suites.start_suite') as start:
             with self.assertRaisesRegex(ValueError, 'runnable'):
                 start_corpus(plan_corpus(unavailable_catalog()))
             start.assert_not_called()
 
     def test_corpus_report_keeps_unavailable_areas_out_of_model_failures(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, plan_corpus, report_corpus
+        from firmware_bench.benchmark_support.corpus import load_catalog, plan_corpus, report_corpus
         plan = plan_corpus(unavailable_catalog(), repetitions=2)
         report = report_corpus(plan)
         self.assertEqual(report['counts']['planned'], 14)
@@ -375,13 +375,13 @@ class CorpusTests(unittest.TestCase):
         self.assertEqual(len(report['areas']), 7)
 
     def test_saved_suite_cannot_be_attached_to_a_different_frozen_corpus(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, plan_corpus, report_corpus
+        from firmware_bench.benchmark_support.corpus import load_catalog, plan_corpus, report_corpus
         plan = plan_corpus(load_catalog(), repetitions=1)
         with self.assertRaises(ValueError):
             report_corpus(plan, {'schema': 'benchmark-suite-report/2', 'equivalence': {'equivalent': 7}})
 
     def test_seven_areas_are_distinct_upstream_lineages_not_starter_variants(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, validate_catalog
+        from firmware_bench.benchmark_support.corpus import load_catalog, validate_catalog
         catalog = validate_catalog(load_catalog())
         self.assertEqual({r['area'] for r in catalog['lineages']}, {
             'robotic-control', 'iot', 'sensors', 'usb-peripherals', 'instruments',
@@ -395,7 +395,7 @@ class CorpusTests(unittest.TestCase):
             'tq9-v2', 'sampled-sensor-v1', 'parameter-store-v1'})
 
     def test_plan_retains_blocked_slots_and_never_substitutes_a_synthetic_device(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, plan_corpus
+        from firmware_bench.benchmark_support.corpus import load_catalog, plan_corpus
         plan = plan_corpus(load_catalog(), repetitions=3)
         self.assertEqual(len(plan['slots']), 21)
         self.assertEqual(len({r['lineage'] for r in plan['slots']}), 7)
@@ -411,7 +411,7 @@ class CorpusTests(unittest.TestCase):
         self.assertIn('backend', {b['kind'] for b in usb['blockers']})
 
     def test_family_ancestry_and_evidence_requirements_cannot_be_omitted(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, validate_catalog
+        from firmware_bench.benchmark_support.corpus import load_catalog, validate_catalog
         for change in (
             lambda c: c['lineages'][0]['source'].update(commit='main'),
             lambda c: c['lineages'][0].update(origin_group=''),
@@ -427,7 +427,7 @@ class CorpusTests(unittest.TestCase):
                 validate_catalog(data)
 
     def test_plan_is_reproducible_frozen_and_does_not_claim_model_measurements(self):
-        from generative_driver.benchmark_support.corpus import load_catalog, plan_corpus, validate_plan
+        from firmware_bench.benchmark_support.corpus import load_catalog, plan_corpus, validate_plan
         catalog = load_catalog()
         first = plan_corpus(catalog, repetitions=1)
         self.assertEqual(first, plan_corpus(catalog, repetitions=1))
@@ -446,7 +446,7 @@ class CorpusTests(unittest.TestCase):
             validate_plan(changed)
 
     def test_cli_reports_coverage_without_runtime_credentials_or_device_access(self):
-        result = subprocess.run([sys.executable, '-m', 'generative_driver.benchmark',
+        result = subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark',
                                  'corpus', 'plan', '--repetitions', '1'],
                                 env={**os.environ, **package_env()}, capture_output=True, text=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr)

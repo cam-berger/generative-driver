@@ -20,16 +20,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from generative_driver import benchmark
-from generative_driver.benchmark_support import (generated_sets, generated_trials, harness, scorecard, suite_reporting,
+from firmware_bench import benchmark
+from firmware_bench.benchmark_support import (generated_sets, generated_trials, harness, scorecard, suite_reporting,
                                                  suites, trial_store)
-from generative_driver.benchmark_support.suite_book import SuiteBook
-from generative_driver.benchmark_support.suite_store import _json
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.suite_book import SuiteBook
+from firmware_bench.benchmark_support.suite_store import _json
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 from generative_driver.configurator import Controller
 from suite_fixtures import book, standing_in, suite_call
 
-SOURCE = Path(__file__).resolve().parents[2] / 'src' / 'generative_driver'
+SOURCE = Path(benchmark.__file__).resolve().parent
 LAYOUT_WORDS = ('suites', 'trials', '-bench')
 # The export layout of a suite report, which is no part of a bench home.
 EXPORT_LAYOUT = "relative=Path('trials')/trial['trial_key']/'report.json'"
@@ -89,7 +89,7 @@ class OneModuleTests(unittest.TestCase):
         self.assertEqual(sum(EXPORT_LAYOUT in line for line in text.splitlines()), 1)
 
     def test_07_B19_the_harness_alias_is_the_modules_bench_home(self):
-        from generative_driver.benchmark_support import harness, trial_store
+        from firmware_bench.benchmark_support import harness, trial_store
         home = Path('/tmp/some-home')
         self.assertEqual(harness.bench_home(home), trial_store.bench_home(home))
         self.assertEqual(trial_store.suite_dir(home, 'key').parent.name, 'suites')

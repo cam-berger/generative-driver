@@ -41,7 +41,7 @@ class CaseRegistration:
 
 
 def cases_file(package: Path) -> Path:
-    """The registration table of the generative_driver package directory `package`."""
+    """The registration table of the firmware_bench package directory `package`."""
     return Path(package) / 'resources' / 'registrations' / 'cases.json'
 
 

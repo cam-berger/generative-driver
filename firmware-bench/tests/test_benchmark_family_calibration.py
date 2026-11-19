@@ -4,10 +4,10 @@ import contextlib
 import copy
 import hashlib
 import unittest
-from generative_driver.benchmark_support.asset_build import inventory
-from generative_driver.benchmark_support.snapshots import canonical_digest
-from generative_driver.benchmark_support.calibration import decode_inventory
-from generative_driver.benchmark_support.truth import EvaluatorPassword, read_password
+from firmware_bench.benchmark_support.asset_build import inventory
+from firmware_bench.benchmark_support.snapshots import canonical_digest
+from firmware_bench.benchmark_support.calibration import decode_inventory
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, read_password
 
 class InventoryTests(unittest.TestCase):
     def fixture(self):
@@ -44,7 +44,7 @@ class AdmissionTests(unittest.TestCase):
     def fixture(self, case_id='sampled-sensor-v1'):
         """A complete measured record of `case_id`, stamped with that case's grader identity and shaped as a
         sampled-sensor record, and its manifest."""
-        from generative_driver.benchmark_support.grader_identity import grader_identity
+        from firmware_bench.benchmark_support.grader_identity import grader_identity
         h='a'*64
         runs=[]
         refs=[]
@@ -74,7 +74,7 @@ class AdmissionTests(unittest.TestCase):
         return manifest,record
 
     def test_store_qualification_requires_named_scenario_evidence(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         manifest, record = self.fixture('parameter-store-v1')
         manifest['family'] = 'parameter-store'
         names = ['constant','scale','order','wrong-bank','abort','idle-only-update','short-rejection-frame']
@@ -108,12 +108,12 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn('family mutant inventory', rejected['failures'])
 
     def test_complete_measured_record_passes(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         self.assertTrue(validate_calibration(*self.fixture())['ok'])
 
     def test_admission_accepts_grader_identity_with_any_reference_runtime(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
-        from generative_driver.benchmark_support.grader_identity import grader_identity
+        from firmware_bench.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.grader_identity import grader_identity
         manifest, record = self.fixture()
         record['evaluator_identity'] = grader_identity(case_id=manifest['id'])
         for run in record['runs']: run['runtime_sha256'] = 'f' * 64
@@ -122,8 +122,8 @@ class AdmissionTests(unittest.TestCase):
     def test_admission_compares_a_record_with_the_identity_of_its_own_case(self):
         # Catches a record admitted under the whole grader's identity, or another case's: a case is qualified under its
         # own, which covers the shared core, its family's modules and its own registration entry.
-        from generative_driver.benchmark_support.calibration import validate_calibration
-        from generative_driver.benchmark_support.grader_identity import grader_identity
+        from firmware_bench.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.grader_identity import grader_identity
         manifest, record = self.fixture()
         self.assertEqual(validate_calibration(manifest, record)['failures'], [])
         for other in (grader_identity(), grader_identity(case_id='parameter-store-v1')):
@@ -136,21 +136,21 @@ class AdmissionTests(unittest.TestCase):
     def test_a_broken_grader_installation_raises_rather_than_reading_as_malformed_evidence(self):
         # Catches a grader module missing from the installation reported as a defect of the calibration record.
         from unittest.mock import patch
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         manifest, record = self.fixture()
-        with patch('generative_driver.benchmark_support.calibration.grader_identity',
+        with patch('firmware_bench.benchmark_support.calibration.grader_identity',
                    side_effect=ValueError('Grader module missing from /installed: benchmark_support.evaluator')), \
                 self.assertRaisesRegex(ValueError, 'Grader module missing'):
             validate_calibration(manifest, record)
 
     def test_admission_refuses_the_previous_identity_schema(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         manifest, record = self.fixture()
         record['evaluator_identity'] = {'schema': 'benchmark-evaluator-identity/2', 'files': {}, 'dependencies': {}, 'sha256': '0' * 64}
         self.assertEqual(validate_calibration(manifest, record)['failures'], ['identity:evaluator_identity'])
 
     def test_exact_intended_behavioral_failures_are_required(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         manifest,record=self.fixture()
         row=record['mutants'][0];run=next(r for r in record['runs'] if r['id']==row['run'])
         run['check_ids'].append('toy/secondary')
@@ -168,7 +168,7 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(defect=defect):self.assertFalse(validate_calibration(manifest,bad)['ok'])
 
     def test_incomplete_or_self_reported_success_cannot_qualify(self):
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         for defect in ('backend','image','identity','reference','same-model','mutant','both-lists','unchanged',
                        'wrong-failure','run','process','package','analysis','tools','malformed','input-inventory','runtime','scenario-image','tool-type','native-type','ordinary-reason','duplicate-check','duplicate-run','analysis-type','executed-model','executed-capabilities'):
             manifest,record=self.fixture()
@@ -202,13 +202,13 @@ class AdmissionTests(unittest.TestCase):
 
 class MutationTests(unittest.TestCase):
     def test_assessment_patch_cannot_qualify_as_behavior(self):
-        from generative_driver.benchmark_support.calibration import apply_mutation
+        from firmware_bench.benchmark_support.calibration import apply_mutation
         with self.assertRaises(ValueError):
             apply_mutation({'toy':2},{'tasks':{}},{'id':'false-drift','patches':[
                 {'target':'assessment','op':'replace','path':'/maintenance_claim','value':'drift'}]})
 
     def test_model_patch_changes_only_named_value_without_mutating_reference(self):
-        from generative_driver.benchmark_support.calibration import apply_mutation
+        from firmware_bench.benchmark_support.calibration import apply_mutation
         model={'toy':{'value':2}}
         row={'id':'scale','reference':'a','phase':'final','expected_failed_checks':['toy/value'],
              'patches':[{'target':'model','op':'replace','path':'/toy/value','value':7}]}
@@ -219,7 +219,7 @@ class MutationTests(unittest.TestCase):
 
 class DispatchTests(unittest.TestCase):
     def test_family_dispatch_uses_family_phase_and_measured_oracle(self):
-        from generative_driver.benchmark_support.families import family_for
+        from firmware_bench.benchmark_support.families import family_for
         sensor=family_for('sampled-sensor-v1')
         result=sensor.observations({'values':{'latched_q4':65520,'acquisition_counter':8}},
             {'ok':True,'outputs':{'temperature':-1,'sequence':8}}, {})
@@ -229,7 +229,7 @@ class DispatchTests(unittest.TestCase):
 
 class HydrationTests(unittest.TestCase):
     def test_authenticated_inventory_supplies_complete_phases_and_candidate_hash(self):
-        from generative_driver.benchmark_support.calibration import hydrate_truth
+        from firmware_bench.benchmark_support.calibration import hydrate_truth
         from benchmark_family_fixtures import toy_sensor_phase
         pin,truth=toy_sensor_phase();phase=truth['phases']['diagnostic']
         phase['actions']=[{'kind':'reset','values':{},'episode':'toy','step':0},
@@ -292,7 +292,7 @@ class ReferenceExecutionTests(unittest.TestCase):
         from pathlib import Path
         from benchmark_family_fixtures import toy_sample_model
         from generative_driver.toolkit import call_tool
-        from generative_driver.benchmark_support.calibration import reference_model_bytes
+        from firmware_bench.benchmark_support.calibration import reference_model_bytes
         (root/'model').mkdir(parents=True)
         (root/'model/model.json').write_bytes(reference_model_bytes(toy_sample_model()).replace(b'\n',newline))
         probed=call_tool('probe_run',{'run_dir':str(root/'tools'),'model_dir':str(root/'model'),
@@ -317,14 +317,14 @@ class ReferenceExecutionTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sample_model
-        from generative_driver.benchmark_support.evaluator import reference_execute
-        from generative_driver.benchmark_support.reference_calibration import run_reference
+        from firmware_bench.benchmark_support.evaluator import reference_execute
+        from firmware_bench.benchmark_support.reference_calibration import run_reference
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             # The two steps of a final calibration run, here in one directory: the reference's package is emitted, then
             # graded as a frozen one on a fresh emulator.
             emitter,session=Session(),Session()
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=[emitter,session]):
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',side_effect=[emitter,session]):
                 emitted=run_reference(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=Path(temp)/'good',phase='final')
                 result=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),output_dir=Path(temp)/'good',
@@ -338,12 +338,12 @@ class ReferenceExecutionTests(unittest.TestCase):
                 if path.name=='model.json' and path.parent.name=='model' and 'newline' not in kwargs:
                     kwargs['newline']='\r\n'
                 return original_write(path,data,*args,**kwargs)
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()), \
                  patch.object(Path,'write_text',windows_default_write):
                 modeled=run_reference(pin,truth,toy_sample_model(),caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=Path(temp)/'modeled',phase='diagnostic')
             self.assertEqual(modeled['grade']['verdict'],'passed')
-            from generative_driver.benchmark_support.calibration import execution_input_identity
+            from firmware_bench.benchmark_support.calibration import execution_input_identity
             expected=execution_input_identity(toy_sample_model(),caps)
             self.assertEqual(modeled['model_sha256'],expected['model_sha256'])
             self.assertEqual(modeled['capabilities_sha256'],expected['capabilities_sha256'])
@@ -355,7 +355,7 @@ class ReferenceExecutionTests(unittest.TestCase):
             crlf=Path(temp)/'crlf'
             windows=self.emit_toy_package(crlf,Session.binding,b'\r\n')
             self.assertIn(b'\r\n',(windows/'driver/model.json').read_bytes())
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()) as native:
                 graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=crlf/'final',package=windows,expected_package_sha256=digest(windows),private_dir=crlf/'native')
             self.assertEqual(graded['grade']['verdict'],'passed')
@@ -366,7 +366,7 @@ class ReferenceExecutionTests(unittest.TestCase):
             self.assertEqual(digest(package),frozen)
             self.assertEqual(result['contract']['artifact_sha256'],frozen)
             (package/'driver/model.json').write_text('{}')
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Device accessed')):
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Device accessed')):
                 with self.assertRaisesRegex(ValueError,'Frozen package'):
                     reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                         output_dir=Path(temp)/'bad',package=package,expected_package_sha256=frozen)
@@ -374,13 +374,13 @@ class ReferenceExecutionTests(unittest.TestCase):
     def test_package_with_a_different_bundled_runtime_is_graded(self):
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.evaluator import reference_execute
+        from firmware_bench.benchmark_support.evaluator import reference_execute
         from generative_driver.configurator import digest
         with self.toy_sensor() as (temp,Session,pin,truth,caps):
             package=self.emit_toy_package(Path(temp)/'emitted',Session.binding)
             # Another system's package bundles another runtime: only its runtime bytes differ from this checkout's.
             self.edit_bundled(package,'interface_runtime/engine.py',lambda data:data+b'\n# another runtime\n')
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()):
                 graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                     output_dir=Path(temp)/'other-runtime',package=package,expected_package_sha256=digest(package))
             self.assertEqual(graded['grade']['verdict'],'passed')
@@ -395,8 +395,8 @@ class ReferenceExecutionTests(unittest.TestCase):
         import signal
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import PACKAGE_CALL_SECONDS
-        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from firmware_bench.benchmark_support.emulated_actions import PACKAGE_CALL_SECONDS
+        from firmware_bench.benchmark_support.evaluator import final_record, reference_execute
         from generative_driver.configurator import digest
         kills_itself=(('self-kill',b'\nimport os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n',PACKAGE_CALL_SECONDS,
                        'signal'),) if hasattr(signal,'SIGKILL') else ()
@@ -412,8 +412,8 @@ class ReferenceExecutionTests(unittest.TestCase):
                 with self.subTest(package=name):
                     package=self.emit_toy_package(Path(temp)/name,Session.binding)
                     self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
-                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()), \
-                         patch('generative_driver.benchmark_support.emulated_actions.PACKAGE_CALL_SECONDS',limit):
+                    with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()), \
+                         patch('firmware_bench.benchmark_support.emulated_actions.PACKAGE_CALL_SECONDS',limit):
                         graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                             output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
                             healthy_device_failures=True)
@@ -431,7 +431,7 @@ class ReferenceExecutionTests(unittest.TestCase):
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from firmware_bench.benchmark_support.evaluator import final_record, reference_execute
         from generative_driver.configurator import digest
         printed = {'forged source': {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [],
                                      'error': {'fault': 'host', 'source': 'package-process', 'code': 'spawn',
@@ -449,7 +449,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                     package=self.emit_toy_package(Path(temp)/name,Session.binding)
                     code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
                     self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
-                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                    with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()):
                         graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                             output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
                             healthy_device_failures=True)
@@ -478,8 +478,8 @@ class ReferenceExecutionTests(unittest.TestCase):
         import json
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
-        from generative_driver.benchmark_support.evaluator import final_record, reference_execute
+        from firmware_bench.benchmark_support.emulated_actions import MAX_RESULT_DEPTH
+        from firmware_bench.benchmark_support.evaluator import final_record, reference_execute
         from generative_driver.configurator import digest
         def nested(levels):
             """`levels` arrays, each inside the one before."""
@@ -499,7 +499,7 @@ class ReferenceExecutionTests(unittest.TestCase):
                     package=self.emit_toy_package(Path(temp)/name,Session.binding)
                     code=('\nimport sys\nsys.stdout.write(%r)\nsys.exit(0)\n' % json.dumps(result)).encode()
                     self.edit_bundled(package,'interface_runtime/package.py',lambda data:data+code)
-                    with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()):
+                    with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()):
                         graded=reference_execute(pin,truth,caps,renode=Path('/toy'),image=Path('/toy'),
                             output_dir=Path(temp)/name/'final',package=package,expected_package_sha256=digest(package),
                             healthy_device_failures=True)
@@ -512,7 +512,7 @@ class ReferenceExecutionTests(unittest.TestCase):
     def test_only_the_package_that_was_frozen_is_accepted(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.evaluator import accept_frozen_package
+        from firmware_bench.benchmark_support.evaluator import accept_frozen_package
         from generative_driver.configurator import digest
         with tempfile.TemporaryDirectory() as temp:
             package=Path(temp);(package/'driver').mkdir();(package/'driver/model.json').write_text('{}')
@@ -573,11 +573,11 @@ class FamilyAdmissionBoundaryTests(unittest.TestCase):
 
     def test_registry_admission_consumes_family_validator_and_authenticated_inputs(self):
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import require_calibration
+        from firmware_bench.benchmark_support.registry import require_calibration
         manifest,record,truth,pin,phase=self.family_admission_fixture()
-        with patch('generative_driver.benchmark_support.registry.pin_case',return_value=pin),patch(
-                'generative_driver.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
-                'generative_driver.benchmark_support.calibration.hydrate_truth',side_effect=lambda unlocked:unlocked):
+        with patch('firmware_bench.benchmark_support.registry.pin_case',return_value=pin),patch(
+                'firmware_bench.benchmark_support.emulator.truth_for_case',return_value=truth),patch(
+                'firmware_bench.benchmark_support.calibration.hydrate_truth',side_effect=lambda unlocked:unlocked):
             self.assertTrue(require_calibration(pin,{})['ok'])
             for index in (0,2,4,7):
                 measured=record['runs'][index]
@@ -610,7 +610,7 @@ class ReuseBoundaryTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_case_stages import observe_stage
-        from generative_driver.benchmark_support.case_assets import reuse_mission, write_json as _write
+        from firmware_bench.benchmark_support.case_assets import reuse_mission, write_json as _write
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             mapping={'tasks':{'measure':{'operation':'sample','outputs':{
@@ -621,7 +621,7 @@ class ReuseBoundaryTests(unittest.TestCase):
                 return [{'actor':'worker','stage':'reuse','attempt_id':'new','revision':0,'operation':'sample',
                     'result':{'ok':True,'outputs':{'t':-5,'n':n}},'observation':{
                         'reference_temperature':-5,'monitor_sequence':n}} for n in sequence]
-            with patch('generative_driver.benchmark_support.evaluator.grade',side_effect=AssertionError('final in the stage loop')):
+            with patch('firmware_bench.benchmark_support.evaluator.grade',side_effect=AssertionError('final in the stage loop')):
                 for sequence,passed in (([3],False),([3,3],False),([3,4],True)):
                     (root/'supplied/package-events.jsonl').write_text(''.join(json.dumps(e)+'\n' for e in events(sequence)))
                     checked=observe_stage('sampled-sensor-v1','reuse',root,root,{'status':'completed'})
@@ -633,7 +633,7 @@ class ReuseBoundaryTests(unittest.TestCase):
 
 class StoreReuseTests(unittest.TestCase):
     def test_commit_read_and_abort_require_observed_state_and_bank_isolation(self):
-        from generative_driver.benchmark_support import parameter_store
+        from firmware_bench.benchmark_support import parameter_store
         caps={'tasks':{k:{'operation':k,'outputs':{'value':{'output':'v'}} if k=='read' else {}}
                        for k in ('read','update','stage','abort')}}
         before={**{'cell_'+bank+'_'+str(i):0 for bank in ('A','B') for i in range(4)},'generation':0,'pending_active':False}
@@ -653,7 +653,7 @@ class StoreReuseTests(unittest.TestCase):
             with self.subTest(defect=defect):self.assertFalse(parameter_store.reuse_passed(bad,caps))
 
     def test_explicit_commit_and_harmless_reads_satisfy_same_observed_mission(self):
-        from generative_driver.benchmark_support import parameter_store
+        from firmware_bench.benchmark_support import parameter_store
         caps={'tasks':{k:{'operation':'toy_'+k,'outputs':{'value':{'output':'v'}} if k=='read' else {}}
                        for k in ('read','update','stage','commit','abort')}}
         before={**{'cell_'+bank+'_'+str(i):0 for bank in ('A','B') for i in range(4)},
@@ -709,7 +709,7 @@ class StageDispatchTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from benchmark_family_fixtures import toy_sensor_phase,toy_sample_model
-        from generative_driver.benchmark_support.reference_calibration import run_reference
+        from firmware_bench.benchmark_support.reference_calibration import run_reference
         pin,truth=toy_sensor_phase();pin.update(case_id='sampled-sensor-v1',revision=0)
         phase=truth['phases']['diagnostic'];phase['actions']=[{'kind':'reset','values':{}},
             {'kind':'call','task':'measure','inputs':{},'grants':['write']},
@@ -725,8 +725,8 @@ class StageDispatchTests(unittest.TestCase):
                 def stop(self):pass
             def invoke(*args):return {'ok':True,'outputs':{'temperature':-5,'sequence':3},'units':{'temperature':'degC','sequence':'count'}}
             # Calibration's own fresh emulator and truth: neither comes from the stage adapter.
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',return_value=Session()),patch(
-                'generative_driver.benchmark_support.reference_calibration.model_invoker',return_value=invoke):
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',return_value=Session()),patch(
+                'firmware_bench.benchmark_support.reference_calibration.model_invoker',return_value=invoke):
                 result=run_reference(pin,truth,toy_sample_model(),{},renode=Path('/toy'),image=Path('/toy'),
                                      output_dir=root/'diagnostic',phase='diagnostic')
             self.assertEqual(result['grade']['verdict'],'passed')
@@ -736,11 +736,11 @@ class StageDispatchTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.evaluator import reference_execute
+        from firmware_bench.benchmark_support.evaluator import reference_execute
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             package=root/'package';package.mkdir();(package/'model').write_text('changed')
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Native access')):
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',side_effect=AssertionError('Native access')):
                 with self.assertRaisesRegex(ValueError,'Frozen package'):
                     reference_execute({'case_id':'sampled-sensor-v1','scenario_id':'original','revision':0},{'recipe':{}},
                                       {},renode=Path('/toy'),image=Path('/toy'),output_dir=root/'final',
@@ -750,14 +750,14 @@ class TruthBoundaryTests(unittest.TestCase):
     def test_authenticated_but_nonexecutable_family_inventory_is_refused(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import case_truth
+        from firmware_bench.benchmark_support.registry import case_truth
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);password=root/'password';password.write_text('toy')
             digest=EvaluatorPassword('toy').seal(InventoryTests().fixture(), root/'truth.enc')
             manifest={'truth':{'path':'truth.enc','sha256':digest}}
-            with patch('generative_driver.benchmark_support.case_assets.case_inputs',return_value=(root,manifest)),patch(
-                    'generative_driver.benchmark_support.case_assets.case_root',return_value=root):
+            with patch('firmware_bench.benchmark_support.case_assets.case_inputs',return_value=(root,manifest)),patch(
+                    'firmware_bench.benchmark_support.case_assets.case_root',return_value=root):
                 with self.assertRaises((ValueError,KeyError)):
                     case_truth('sampled-sensor-v1',root,read_password(password))
 
@@ -767,8 +767,8 @@ class PublicObservationTests(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         from generative_driver.supplied.stages import package_call
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
-        from generative_driver.benchmark_support.case_assets import write_json as _write
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.case_assets import write_json as _write
         from generative_driver.configurator import Controller, digest
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp).resolve();package=root/'package';package.mkdir();(package/'toy').write_text('toy')
@@ -802,8 +802,8 @@ class WrapperTests(unittest.TestCase):
     def test_missing_native_configuration_fails_before_shared_runner(self):
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.family_calibration import calibrate
-        with patch('generative_driver.benchmark_support.authoring.calibrate',side_effect=AssertionError('Native runner started')):
+        from firmware_bench.benchmark_support.family_calibration import calibrate
+        with patch('firmware_bench.benchmark_support.authoring.calibrate',side_effect=AssertionError('Native runner started')):
             with self.assertRaises(ValueError):
                 calibrate('sampled-sensor-v1',authoring_root=Path('/absent-authoring'),renode=Path('relative'),
                     ghidra_home=Path('/absent-ghidra'),java_home=Path('/absent-java'),output_dir=Path('/absent-output'))
@@ -811,12 +811,12 @@ class WrapperTests(unittest.TestCase):
     def test_the_truth_calibrate_command_routes_a_family_to_its_authoring_calibration(self):
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.evaluator_cli import manage
+        from firmware_bench.benchmark_support.evaluator_cli import manage
         with self.assertRaisesRegex(ValueError, '--authoring-dir'):
             manage('calibrate', 'parameter-store-v1', None, '/absent-output')
         record = {'ok': True, 'case': 'sampled-sensor-v1', 'execution': 'reference-calibration', 'backend': 'native-renode',
                   'status': 'passed', 'references': [1], 'mutants': [1, 2], 'private': 'evaluator-only evidence'}
-        with patch('generative_driver.benchmark_support.family_calibration.calibrate', return_value=record) as family:
+        with patch('firmware_bench.benchmark_support.family_calibration.calibrate', return_value=record) as family:
             summary = manage('calibrate', 'sampled-sensor-v1', None, '/private/out', compiler='/opt/arm/bin/arm-none-eabi-gcc',
                              authoring_dir='/private/sampled-sensor-v1-authoring', renode='/opt/renode',
                              ghidra_home='/opt/ghidra', java_home='/opt/java')
@@ -830,8 +830,8 @@ class WrapperTests(unittest.TestCase):
                    authoring_dir='/private/sampled-sensor-v1-authoring')
         # The command exits 1 when the calibration did not pass, as the family's own CLI does.
         import io, contextlib
-        from generative_driver.benchmark import main
-        with patch('generative_driver.benchmark_support.family_calibration.calibrate', return_value={**record, 'ok': False}), \
+        from firmware_bench.benchmark import main
+        with patch('firmware_bench.benchmark_support.family_calibration.calibrate', return_value={**record, 'ok': False}), \
                 contextlib.redirect_stdout(io.StringIO()):
             code = main(['truth', 'calibrate', '--case', 'sampled-sensor-v1', '--output', '/private/out',
                          '--authoring-dir', '/private/sampled-sensor-v1-authoring', '--renode', '/opt/renode',
@@ -839,19 +839,19 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(code, 1)
 
     def test_the_old_calibration_module_command_fails_and_names_where_it_moved(self):
-        # Catches `python -m generative_driver.benchmark_support.calibration`, the family calibration command before it
+        # Catches `python -m firmware_bench.benchmark_support.calibration`, the family calibration command before it
         # moved, exiting 0 without calibrating anything, which an operator's script would take for success.
         import os, subprocess, sys
         from tool_fixtures import package_env
-        moved = subprocess.run([sys.executable, '-m', 'generative_driver.benchmark_support.calibration', 'sampled-sensor-v1'],
+        moved = subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark_support.calibration', 'sampled-sensor-v1'],
                                capture_output=True, text=True, timeout=60, env={**os.environ, **package_env()})
         self.assertNotEqual(moved.returncode, 0)
-        self.assertIn('generative_driver.benchmark_support.family_calibration', moved.stderr)
+        self.assertIn('firmware_bench.benchmark_support.family_calibration', moved.stderr)
         self.assertEqual(moved.stdout, '')
 
 class SeedEpisodeTests(unittest.TestCase):
     def test_seed_rotates_only_whole_reset_delimited_episodes(self):
-        from generative_driver.benchmark_support.family_support import private_phase
+        from firmware_bench.benchmark_support.family_support import private_phase
         actions=[{'kind':'reset','episode':'a'},{'kind':'call','episode':'a'},
                  {'kind':'observe','episode':'a'},{'kind':'reset','episode':'b'},
                  {'kind':'call','episode':'b'},{'kind':'observe','episode':'b'}]
@@ -866,7 +866,7 @@ class FailedProducerTests(unittest.TestCase):
     def test_failed_native_preflight_keeps_pending_inventory_without_qualification_record(self):
         import json,tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.authoring import calibrate
+        from firmware_bench.benchmark_support.authoring import calibrate
         from benchmark_family_fixtures import toy_sensor_phase
         _,truth=toy_sensor_phase();phase=truth['phases']['diagnostic']
         phase['actions']=[{'kind':'reset','values':{}},{'kind':'call','task':'toy','inputs':{},'grants':[]},

@@ -122,11 +122,6 @@ def summarize(result, events, *, case_manifest=None, case_state=None, provenance
                                 ((provenance or {}).get("agent") or {}).get("runtime"))
     evidence = {"stage_verdicts": verdicts,
                 "probe_evaluation": {"observations": case_state.get("probe_evaluation", {}).get("observations", {})}}
-    if "physical_grounding" in case_state:
-        evidence["physical_grounding"] = {k: v for k, v in case_state["physical_grounding"].items()
-                                         if k in {"observations", "reference", "physical", "score"}}
-    if 'physical_final' in case_state:
-        evidence['physical_final'] = {k: v for k, v in case_state['physical_final'].items() if k in {'observations', 'score', 'reference', 'measurement_time'}}
     return {"schema": "benchmark-report/1", "run_id": result["run_id"],
             "case": case_manifest.get("id"), "case_version": case_manifest.get("version"),
             "evaluator_version": case_manifest.get("evaluator_version"), "seed": 0,
@@ -182,7 +177,7 @@ def _public(value, home):
 def markdown(report):
     def show(value):
         return "unknown" if value is None else f"{value:.2f}" if isinstance(value, float) else str(value)
-    from ..client_interface import PROTOCOL
+    from generative_driver.client_interface import PROTOCOL
     # Nothing grades an assistive run's stages, and only a benchmark run's evaluator grades its driver
     # (benchmark-report/3): a generic assistive run has neither a stage evaluator column nor an independent verdict.
     assistive = report.get("protocol") == PROTOCOL
@@ -261,7 +256,7 @@ def _why(result, events):
 
 def report_run(run_id, home=None, output=None, *, autostart=True):
     """Export a saved run to portable JSON and a human-readable Markdown sibling."""
-    from ..client import call, default_home
+    from generative_driver.client import call, default_home
     from .case_assets import case_root
     root = Path(home or default_home()).resolve()
     result = call("result", {"run_id": run_id}, home=root, autostart=autostart)
@@ -302,8 +297,12 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
                 'artifacts': [{'name': Path(a['path']).name, 'sha256': a['sha256'], 'kind': a.get('kind')}
                     for a in h['artifacts']]} for h in result.get('accepted_handoffs', [])]}
     else:
-        # The tool's package folder, which this module lay in before it moved to the benchmark's.
-        package_root = Path(__file__).parents[1]
+        # The files these two revisions covered while the tool and the benchmark lay in one source tree: the tool's
+        # package and its runtime, found through the interface, and the benchmark's own package (Feature 12 of the
+        # untangle Run, docs/features/untangle/12-firmware-bench.md, 12-B2).
+        from . import tool_install
+        from .integrity import revision_folder
+        tool_root = tool_install.tool_folder()
         agent = config.get("agent")
         if not agent and result.get("worker_reports"):
             record = result["worker_reports"][0]
@@ -312,9 +311,11 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
                        "architecture": platform.machine(), "python": platform.python_version()},
                       "budget_seconds": config.get("budget_seconds"), "attempt_limits": config.get("limits"),
                       "toolchain_revision": hashlib.sha256(
-                          (_tree_hash(package_root) + _tree_hash(package_root.parent / "interface_runtime")).encode()
+                          (_tree_hash(revision_folder(tool_root))
+                           + _tree_hash(revision_folder(tool_install.runtime_folder()))
+                           + _tree_hash(revision_folder(Path(__file__).resolve().parents[1]))).encode()
                       ).hexdigest(),
-                      "skills_revision": _tree_hash(package_root / "resources/toolchain/skills"),
+                      "skills_revision": _tree_hash(revision_folder(tool_root / "resources" / "toolchain" / "skills")),
                       "truth_sha256": manifest.get("truth", {}).get("sha256"), "case_inputs": manifest.get("images"),
                       "time_policy": manifest.get("time_policy", state.get("time_policy")),
                       "artifact_hashes": [{"stage": h["stage"], "revision": h.get("revision", 0),
@@ -334,7 +335,7 @@ def report_run(run_id, home=None, output=None, *, autostart=True):
             'agent': 'Effective runtime configuration captured before execution; individual worker records retain reported identity.',
             'case_metadata': 'Case manifest and input hashes captured before execution.'}
     report["evaluator_verdicts"] = result.get("evaluator_verdicts", [])
-    from ..client_interface import PROTOCOL
+    from generative_driver.client_interface import PROTOCOL
     if snapshot and (result.get('progress') or {}).get('protocol') == PROTOCOL:
         # An assistive benchmark run, of any case, is graded once, after it: its report is its recorded verdict, and no
         # stage evaluation exists.

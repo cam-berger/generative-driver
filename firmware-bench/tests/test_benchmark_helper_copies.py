@@ -15,10 +15,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_evaluation import PASS, TOKEN, HarnessTrialFixture, reference
-import generative_driver
+import firmware_bench
 from generative_driver import integrity, replay, verdict_labels
-from generative_driver.benchmark_support import integrity as grader_integrity, labels as grader_labels
-from generative_driver.benchmark_support.grader_identity import grader_closure
+from firmware_bench.benchmark_support import integrity as grader_integrity, labels as grader_labels
+from firmware_bench.benchmark_support.grader_identity import grader_closure
 
 
 def answer(helper, argument):
@@ -119,7 +119,7 @@ class GradingBoundaryTests(unittest.TestCase):
     """Grading code is what `grader_closure` names: all of it lies in `benchmark_support`."""
 
     def assert_inside_the_benchmark_folder(self, closure):
-        """Every module of `closure`, named from the `generative_driver` package, is `benchmark_support` or under
+        """Every module of `closure`, named from the `firmware_bench` package, is `benchmark_support` or under
         it."""
         outside = [name for name in closure if name.split('.')[0] != 'benchmark_support']
         self.assertEqual(outside, [], 'Grading code imports modules outside the benchmark folder')
@@ -133,14 +133,15 @@ class GradingBoundaryTests(unittest.TestCase):
     def test_02_B5_the_same_check_finds_a_grading_module_that_imports_the_tools_integrity(self):
         temporary = tempfile.TemporaryDirectory(prefix='helper copies ')
         self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name) / 'generative_driver'
-        shutil.copytree(Path(generative_driver.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
+        root = Path(temporary.name) / 'firmware_bench'
+        shutil.copytree(Path(firmware_bench.__file__).parent, root, ignore=shutil.ignore_patterns('__pycache__'))
         # In the copy alone, the grader's helper takes the tool's `digest` in place of its own.
         helper = root / 'benchmark_support' / 'integrity.py'
-        helper.write_text(helper.read_text(encoding='utf-8') + '\nfrom ..integrity import digest\n', encoding='utf-8')
+        helper.write_text(helper.read_text(encoding='utf-8') + '\nfrom generative_driver.integrity import digest\n',
+                          encoding='utf-8')
         closure = grader_closure(root)
-        self.assertIn('integrity', closure)
-        with self.assertRaisesRegex(AssertionError, r"\['integrity'\] != \[\]"):
+        self.assertIn('generative_driver.integrity', closure)
+        with self.assertRaisesRegex(AssertionError, r"\['generative_driver\.integrity'\] != \[\]"):
             self.assert_inside_the_benchmark_folder(closure)
 
 
@@ -150,13 +151,13 @@ class HarnessIntegrityTests(HarnessTrialFixture):
     def conclude(self, result, *, truth_source):
         """The trial record `harness.conclude` returns for the completed run of `result`, in the trial folder its
         case was frozen in."""
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         return harness.conclude(self.frozen, 'tq9-v2', self.home / 'runs' / result['run_id'], result,
                                 password=self.password_object(), truth_source=truth_source, token=TOKEN,
                                 call=self.configurator)
 
     def test_02_B7_a_package_changed_before_grading_is_recorded_unscored_for_integrity(self):
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         _, result = self.pending(tamper=True)
         with patch.object(evaluator, 'reference_execute', side_effect=AssertionError('device started')):
             done = self.conclude(result, truth_source=self.refused_truth)
@@ -167,7 +168,7 @@ class HarnessIntegrityTests(HarnessTrialFixture):
                          ['integrity: Accepted package bytes changed'])
 
     def test_02_B7_a_seal_that_finds_accepted_bytes_changed_leaves_an_unscored_record_for_integrity(self):
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         _, result = self.pending(tamper_notes=True)
         with patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             done = self.conclude(result, truth_source=self.unlocked_truth)

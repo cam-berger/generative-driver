@@ -1,6 +1,6 @@
 import unittest
 
-from generative_driver.benchmark_support.registry import resolve_case, case_ids
+from firmware_bench.benchmark_support.registry import resolve_case, case_ids
 from generative_driver.configurator import validate_scoped_approval
 
 # A stand-in for the descriptor of a supplied device: the approval asks only whether a start has one.
@@ -27,7 +27,7 @@ class RegistryTests(unittest.TestCase):
         import os
         import tempfile
         from unittest.mock import patch
-        from generative_driver.benchmark import case_root
+        from firmware_bench.benchmark import case_root
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             with patch.dict(os.environ, {'GENERATIVE_DRIVER_BENCH_ROOT': first,
                                          'GENERATIVE_DRIVER_CASE_ROOT': second}):
@@ -55,7 +55,7 @@ class RegistryTests(unittest.TestCase):
     def test_resource_paths_and_seed_types_are_bounded(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import resource_path, pin_case
+        from firmware_bench.benchmark_support.registry import resource_path, pin_case
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / 'image.bin').write_bytes(b'toy')
@@ -81,7 +81,7 @@ class RegistryTests(unittest.TestCase):
     def test_duplicate_manifest_ids_are_rejected(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             path = root / 'tq9-v2' / 'case.json'
@@ -99,7 +99,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             path = root / 'tq9-v2' / 'case.json'
@@ -114,7 +114,7 @@ class RegistryTests(unittest.TestCase):
         import contextlib
         import io
         import json
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             status = main(['cases'])
@@ -127,15 +127,15 @@ class RegistryTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark import run
+        from firmware_bench.benchmark import run
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root, calibration={'status': 'passed'})
             home = root / 'owner'
             # A public 'passed' label admits nothing by itself: without a running configurator, a start that may not
             # create one is refused before any harness, device or owner exists (admission is the harness's, later).
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 refused = run('tq9-v2', options={'scenario_id': 'original', 'home': str(home)}, autostart=False)
             self.assertFalse(refused['ok'], refused)
             self.assertIn('service start', refused['reason'])
@@ -149,10 +149,10 @@ class RegistryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 # The benchmark reads the registry's approval scope itself; the service asks for a supplied device.
-                from generative_driver.benchmark_support.suites import emulator_approval
+                from firmware_bench.benchmark_support.suites import emulator_approval
                 emulator_approval('tq9-v2')
                 with self.assertRaisesRegex(ValueError, 'registered emulator profile'):
                     emulator_approval('setup-smoke')
@@ -164,7 +164,7 @@ class RegistryTests(unittest.TestCase):
     def test_truth_management_rejects_unknown_case_before_output(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.evaluator_cli import manage
+        from firmware_bench.benchmark_support.evaluator_cli import manage
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / 'output'
             with self.assertRaisesRegex(ValueError, 'Unknown benchmark case'):
@@ -175,7 +175,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
@@ -186,13 +186,13 @@ class RegistryTests(unittest.TestCase):
                 load_definition(path, resource_root=root)
 
     def test_emulator_approval_rejects_operator_binding_before_owner(self):
-        from generative_driver.benchmark import run
+        from firmware_bench.benchmark import run
         with self.assertRaisesRegex(ValueError, 'binding'):
             run('tq9-v2', options={'scoped_tool_approval': 'emulator',
                                    'binding': {'host': '127.0.0.1', 'port': 1234}}, autostart=False)
 
     def test_emulator_approval_rejects_empty_binding_before_owner(self):
-        from generative_driver.benchmark import run
+        from firmware_bench.benchmark import run
         with self.assertRaisesRegex(ValueError, 'binding'):
             run('tq9-v2', options={'scoped_tool_approval': 'emulator', 'binding': {}}, autostart=False)
 
@@ -216,7 +216,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
@@ -230,7 +230,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
@@ -255,7 +255,7 @@ class RegistryTests(unittest.TestCase):
     def test_missing_identity_fields_are_validation_errors(self):
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             path = root / 'tq9-v2' / 'case.json'
@@ -268,13 +268,13 @@ class RegistryTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import case_descriptors, pin_case
+        from firmware_bench.benchmark_support.registry import case_descriptors, pin_case
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
             (root / 'cases' / 'tq9-v2' / 'firmware.bin').unlink()
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
                 self.assertEqual(rows['tq9-v2']['status'], 'pending')
                 with self.assertRaises(ValueError):
@@ -296,7 +296,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
@@ -310,7 +310,7 @@ class RegistryTests(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        from generative_driver.benchmark_support.registry import load_definition
+        from firmware_bench.benchmark_support.registry import load_definition
         for field in ('images', 'assets', 'truth'):
             for value in (None, [], 'invalid', 3):
                 with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as temp:
@@ -325,13 +325,13 @@ class RegistryTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import case_descriptors
+        from firmware_bench.benchmark_support.registry import case_descriptors
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
             (root / 'cases' / 'tq9-v2' / 'firmware.bin').write_bytes(b'corrupt')
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 rows = {row['id']: row for row in case_descriptors()}
             self.assertEqual(rows['tq9-v2']['status'], 'invalid')
             self.assertIn('hash mismatch', rows['tq9-v2']['error'])
@@ -340,12 +340,12 @@ class RegistryTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import case_descriptors
+        from firmware_bench.benchmark_support.registry import case_descriptors
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self._v2_case(root)
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
             self.assertEqual(row['status'], 'pending')
             self.assertEqual(row['calibration'], {'status': 'pending'})
@@ -355,13 +355,13 @@ class RegistryTests(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        from generative_driver.benchmark_support.registry import case_descriptors
+        from firmware_bench.benchmark_support.registry import case_descriptors
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self._v2_case(root)
             manifest['calibration'] = None
             (root / 'cases' / 'tq9-v2' / 'case.json').write_text(json.dumps(manifest))
-            with patch('generative_driver.benchmark.case_root', return_value=root), \
-                    patch('generative_driver.benchmark_support.case_assets.case_root', return_value=root):
+            with patch('firmware_bench.benchmark.case_root', return_value=root), \
+                    patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=root):
                 row = next(row for row in case_descriptors() if row['id'] == 'tq9-v2')
             self.assertEqual(row['status'], 'invalid')

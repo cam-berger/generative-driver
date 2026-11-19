@@ -4,8 +4,8 @@ from benchmark_family_fixtures import toy_sample_model
 
 
 def payload():
-    from generative_driver.benchmark_support.missions import load_mission
-    from generative_driver.benchmark_support.zephyr_modbus import REQUIRED_MUTANTS
+    from firmware_bench.benchmark_support.missions import load_mission
+    from firmware_bench.benchmark_support.zephyr_modbus import REQUIRED_MUTANTS
     a = toy_sample_model()
     b = copy.deepcopy(a); b['device']['name'] = 'Second synthetic parser fixture'
     phases = {}

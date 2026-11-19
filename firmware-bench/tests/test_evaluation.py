@@ -18,10 +18,10 @@ from unittest.mock import patch
 
 from tool_fixtures import scripted_stages, wait_stopped
 from test_harness import Device, EVIDENCE, unstarted_provider
-from generative_driver.benchmark_support.truth import EvaluatorPassword, UnlockedTruth, read_password
+from firmware_bench.benchmark_support.truth import EvaluatorPassword, UnlockedTruth, read_password
 
 TOKEN = 'scripted harness token'
-CASE_TRUTH = 'generative_driver.benchmark_support.registry.case_truth'
+CASE_TRUTH = 'firmware_bench.benchmark_support.registry.case_truth'
 # A value only the evaluator's contract holds: no public record, trial record or configurator file may carry it.
 EXPECTED = 271.828
 PASS, FAIL = (EXPECTED, 370), (EXPECTED, 0)
@@ -136,8 +136,8 @@ class PendingRunFixture(unittest.TestCase):
     The configurator unlocks no truth; the evaluator's truth is a toy one."""
 
     # What must not run in this process unless a test asks for it: the fixture's truth file is opaque.
-    refused_unlocks = ('generative_driver.benchmark_support.registry.admitted_truth',
-                       'generative_driver.benchmark_support.emulator.truth_for_case')
+    refused_unlocks = ('firmware_bench.benchmark_support.registry.admitted_truth',
+                       'firmware_bench.benchmark_support.emulator.truth_for_case')
 
     def setUp(self):
         from suite_fixtures import public_case_fixture
@@ -150,8 +150,8 @@ class PendingRunFixture(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         public_case_fixture(self.root / 'resources', calibration={'status': 'passed', 'evidence_sha256': EVIDENCE})
         self.image = self.root / 'resources/cases/tq9-v2/firmware.bin'
-        for target in ('generative_driver.benchmark.case_root',
-                       'generative_driver.benchmark_support.case_assets.case_root'):
+        for target in ('firmware_bench.benchmark.case_root',
+                       'firmware_bench.benchmark_support.case_assets.case_root'):
             guard = patch(target, return_value=self.root / 'resources')
             guard.start(); self.addCleanup(guard.stop)
         for target in self.refused_unlocks:
@@ -211,7 +211,7 @@ class PendingRunFixture(unittest.TestCase):
 
     def pin(self):
         """The pin of the fixture's case, as the harness's admission gives it."""
-        from generative_driver.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support.registry import pin_case
         return pin_case('tq9-v2', 'original', 0)
 
     def unlocked_truth(self, payload=None):
@@ -409,7 +409,7 @@ class HarnessTrialFixture(PendingRunFixture):
     def trial(self, name='trial', *, truth=None, **options):
         """One trial through the harness against the in-process configurator: (trial dir, trial record). Its admission
         hands out a provider of synthetic peers, and `truth`, or what `registry.case_truth` unlocks."""
-        from generative_driver.benchmark_support import harness, registry
+        from firmware_bench.benchmark_support import harness, registry
         trial = self.root / 'bench' / name
         self.peers = []
         provider = unstarted_provider(self, self.image, trial, self.peers)
@@ -428,7 +428,7 @@ class HarnessTrialFixture(PendingRunFixture):
         return read_password(self.password)
 
     def resume(self, trial, renode=None):
-        from generative_driver.benchmark_support import harness
+        from firmware_bench.benchmark_support import harness
         with patch('generative_driver.client.call', side_effect=self.configurator):
             return harness.resume(trial, password=self.password_object(), renode=renode)
 
@@ -445,7 +445,7 @@ class HarnessGradingTests(HarnessTrialFixture):
 
     def test_native_pending_grade_resumes_without_a_renode_executable(self):
         # Scripted workflow regression; the native Adapter itself is exercised on Linux separately.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         manifest_path = self.image.parent/'case.json'
         manifest = json.loads(manifest_path.read_text())
         native_image = self.image.with_suffix('.elf')
@@ -463,7 +463,7 @@ class HarnessGradingTests(HarnessTrialFixture):
             resumed = self.resume(trial)
         self.assertEqual(resumed['status'], 'evaluated')
         self.assertIs(resumed['equivalence']['equivalent'], False)
-        from generative_driver.benchmark_support.run_reporting import report_run
+        from firmware_bench.benchmark_support.run_reporting import report_run
         output = self.root/'native-report.json'
         with patch('generative_driver.client.call', side_effect=self.configurator):
             report = report_run(record['run_id'], home=self.home, output=output)
@@ -476,7 +476,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches grading before the run is terminal or while the run's device still runs, grading another package or
         # mapping than the run accepted, a public verdict that carries expected values, evaluator evidence left in
         # plaintext or written into the configurator's home, and a verdict the configurator never records.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         for name, values, equivalent in (('good', PASS, True), ('wrong', FAIL, False)):
             with self.subTest(driver=name):
                 trial, observed, calls, unlocked = self.root / 'bench' / name, [], [], []
@@ -547,7 +547,7 @@ class HarnessGradingTests(HarnessTrialFixture):
 
     def test_a_harness_that_died_after_grading_resumes_without_grading_again(self):
         # Catches a resumed harness grading the frozen driver a second time, and a resume that records nothing.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         calls, unlocked = [], []
         with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL, calls)), \
@@ -576,7 +576,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_a_grade_is_posted_only_once_it_is_sealed(self):
         # Catches a verdict recorded whose evidence was never sealed, which no one could regrade, and a seal failure
         # still reported after a resume sealed and recorded the grade.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         real_seal = evaluator.seal
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
@@ -601,7 +601,7 @@ class HarnessGradingTests(HarnessTrialFixture):
 
     def test_a_verdict_the_configurator_did_not_take_is_posted_again_by_resume(self):
         # Catches a trial that reports the earlier failed post after a resume recorded the verdict.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         self.unreachable = ('record_evaluation',)
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
@@ -622,7 +622,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_a_final_the_draft_holds_is_rebuilt_never_graded_again(self):
         # Catches a saved final submission replayed on the device (ported from the in-loop final's replay guard): the
         # evaluator rebuilds its grade from the draft, with no truth unlocked and no emulator started.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(FAIL)):
             trial, record = self.trial()
@@ -638,7 +638,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_a_grade_carries_the_protocol_of_the_run_it_grades(self):
         # Catches a grade stamped with the configurator's own protocol rather than the run's, and a run that names no
         # protocol graded under a default, where the grade would claim a protocol the run never had.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial()
@@ -658,7 +658,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_an_evaluator_host_fault_is_unscored_until_an_explicit_resume_grades(self):
         # Catches a host fault recorded as a failed driver, its message (which may name a hidden stimulus) published,
         # an unscored grade that can never be completed, and a resume with no emulator posting another host fault.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         from generative_driver.configurator import PENDING
         unlocked = []
         with patch(CASE_TRUTH, side_effect=self.truth(unlocked)), \
@@ -698,7 +698,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_no_driver_no_mapping_or_a_changed_package_is_judged_without_the_device(self):
         # Catches an emulator started or truth unlocked for a run that emitted no driver or handed on no mapping, a
         # missing mapping scored as unscored rather than not equivalent, and a package changed after its handoff graded.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         for name, options, status, equivalent, reason in (
                 ('no-package', {'emit': False}, 'no-driver', False, 'no driver emitted'),
                 ('no-mapping', {'mapping': False}, 'graded', False, 'no capability mapping'),
@@ -726,7 +726,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches a frozen package's malformed model ending unscored as an evaluator host fault, which would leave the
         # system's broken driver out of its pass rate. The model is the driver's own bytes: the grade fails it before
         # any truth is unlocked or emulator started.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         model = lambda text: lambda package: (package / 'driver/model.json').write_text(text)
         def not_a_file(package):
             (package / 'driver/model.json').unlink()
@@ -753,7 +753,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # read it as UTF-8 text: one saved with a byte-order mark or as UTF-16 is the driver's own and grades on the device
         # like any other. (The toolkit's emit check, `_toolchain/emit.py`, still reads the model as UTF-8 text, so today's
         # toolkit refuses such a package first; this is tolerance for one a changed system may emit.)
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
             calls, unlocked = [], []
             save = lambda package, codec=codec: (package / 'driver/model.json').write_bytes(json.dumps(self.model).encode(codec))
@@ -770,7 +770,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches the grader's own private copy of the model, unreadable for a reason of the host's (here an I/O error),
         # graded as the driver's failure: only a model that is missing, not a file or not JSON is the driver's, so this
         # ends unscored, a host fault the harness records.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         private = self.root / 'bench/unreadable/private'
         def unreadable(read):
             def refuse(path, *args, **kwargs):
@@ -790,8 +790,8 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_a_run_stamped_with_another_evaluator_revision_is_unscored_before_grading(self):
         # Catches a grader edited during a trial sealing a verdict under the revision the run started with: the grade
         # refuses for integrity before any truth is unlocked or emulator started, and the trial ends unscored.
-        from generative_driver.benchmark_support import evaluator, harness
-        with patch('generative_driver.benchmark_support.grader_identity.grader_identity', return_value={'sha256': 'e' * 64}):
+        from firmware_bench.benchmark_support import evaluator, harness
+        with patch('firmware_bench.benchmark_support.grader_identity.grader_identity', return_value={'sha256': 'e' * 64}):
             run, result = self.pending()
         run_dir = self.home / 'runs' / run['run_id']
         executed = json.loads((run_dir / 'benchmark/execution.json').read_text())['executed']
@@ -810,7 +810,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_grading_ended_by_any_exit_leaves_no_plaintext_evaluation(self):
         # Catches the private copy and the plaintext evaluation output (the contract with its expected values and the
         # raw records) left in the trial directory when grading ends by an exit no handler catches.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         for name, stop in (('interrupt', KeyboardInterrupt), ('exit', SystemExit)):
             with self.subTest(exit=name):
                 def interrupted(stop=stop):
@@ -832,7 +832,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_accepted_bytes_changed_before_sealing_are_unscored_for_integrity(self):
         # Catches a grade whose accepted record (here a handoff's notes) changed after acceptance left awaiting an
         # evaluation no resume can seal, with nothing told to the configurator.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial(tamper_notes=True)
@@ -861,7 +861,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches a record the configurator's equivalence/1 schema refuses (a mission reason over its length limit, a
         # grade inconsistent with its checks), which every resume would rebuild and post again, so that the driver's
         # grade is never recorded.
-        from generative_driver.benchmark_support import case_assets, evaluator
+        from firmware_bench.benchmark_support import case_assets, evaluator
         reason = 'The capability mapping cannot judge the mission: KeyError: ' + 'k' * 300
         long = {'name': 'fresh_worker_mission', 'passed': None, 'reason': reason, 'fault': 'f' * 400}
         with patch.object(case_assets, 'reuse_mission', return_value=long):
@@ -895,7 +895,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # device stop was not confirmed or that awaits no evaluation, two resumes evaluating at once (a lock that is
         # held, or whose holder cannot be established), and a lock left by an evaluation that ended blocking every
         # later one.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         from generative_driver.client import hold_process_lock
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
@@ -965,7 +965,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches an evaluation lock read from the bare process id it names: once the evaluation that took it ended
         # without letting go (killed, say), that id may name another running process (as the system reuses ids) or one
         # this user may not signal, and every later evaluation of the trial was refused until that process ended.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
@@ -986,7 +986,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches the trial's harness read as running from the bare process id its record names: once the harness was
         # killed after its device stop, before it recorded that it finished, that id may name another running process
         # (as the system reuses ids) or one this user may not signal, and every resume was refused until it ended.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
@@ -1005,7 +1005,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches a trial its harness recorded run-stopped (the run stopped after fresh reuse, by a restart, say) whose
         # run its operator has since completed awaiting the grade: no resume graded it, so the trial never got a verdict
         # and its suite stayed blocked. Grading needs only the confirmed stop: it uses a fresh emulator.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(evaluator, 'seal', side_effect=OSError('No space left on device')):
@@ -1028,7 +1028,7 @@ class HarnessGradingTests(HarnessTrialFixture):
     def test_a_resume_reads_the_trial_under_the_lock_and_lets_go_only_of_its_own_lock(self):
         # Catches a resume that waited for the lock and then wrote back the trial record it read before, over the one
         # the evaluation that held the lock left, and a resume that removes a lock another evaluation now holds.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         trials = {}
         for name in ('waited', 'replaced'):
             with patch(CASE_TRUTH, side_effect=self.truth([])), \
@@ -1063,8 +1063,8 @@ class HarnessGradingTests(HarnessTrialFixture):
 
     def test_trial_resume_completes_an_evaluation_from_the_command_line_and_the_harness_entry(self):
         # Catches either entry point failing to reach resume, or printing the password file path.
-        from generative_driver import benchmark
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench import benchmark
+        from firmware_bench.benchmark_support import evaluator, harness
         for entry in ('trial-resume', 'harness-resume'):
             with self.subTest(entry=entry):
                 with patch(CASE_TRUTH, side_effect=self.truth([])), \
@@ -1095,7 +1095,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # hash of them), whose sha256 in the configurator's store would let anyone who reads that store test password
         # guesses far faster than the truth envelope's key derivation allows, and a token kept anywhere in plaintext.
         import hmac
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
             trial, record = self.trial('token')
@@ -1124,7 +1124,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches a resume under a password the trial was not run with grading as a host fault, sealing evidence under
         # that password over the good evidence, and recording the trial unscored, all before anything checked the
         # password; and a resume of a trial whose evaluation token is gone.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         self.unreachable = ('record_evaluation',)
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)):
@@ -1168,7 +1168,7 @@ class HarnessGradingTests(HarnessTrialFixture):
         # Catches a trial left evaluated with no evidence after its harness died between the configurator recording
         # the verdict and the trial record being written, although the evidence the verdict names is in the trial
         # directory; and evidence that no longer matches the verdict reported as its seal.
-        from generative_driver.benchmark_support import evaluator, harness
+        from firmware_bench.benchmark_support import evaluator, harness
         with patch(CASE_TRUTH, side_effect=self.truth([])), \
                 patch.object(evaluator, 'reference_execute', side_effect=reference(PASS)), \
                 patch.object(harness, '_settle', side_effect=SystemExit('harness killed after the post')), \
@@ -1206,7 +1206,7 @@ class SealedEvidenceTests(PendingRunFixture):
     def test_sealed_run_evidence_grades_only_the_accepted_emitted_driver(self):
         # Catches sealing a final of another package than the run accepted, accepted bytes that changed, or a snapshot
         # whose identity no longer holds.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         run, result = self.pending()
         frozen = self.emitted(result)
         run_dir = self.home / 'runs' / run['run_id']
@@ -1236,8 +1236,8 @@ class SealedEvidenceTests(PendingRunFixture):
     def test_sealed_run_evidence_names_the_protocol_of_its_run(self):
         # Catches run evidence stamped with the configurator's protocol whatever the run's, which a regrade would take
         # for the run's own, and evidence sealed for a run that names no protocol.
-        from generative_driver.benchmark_support import evaluator
-        from generative_driver.benchmark_support.evidence import seal_run_evidence_v2
+        from firmware_bench.benchmark_support import evaluator
+        from firmware_bench.benchmark_support.evidence import seal_run_evidence_v2
         run, result = self.pending()
         run_dir = self.home / 'runs' / run['run_id']
         learning = {**result, 'progress': {**result['progress'], 'protocol': 'learning/1'}}
@@ -1259,13 +1259,13 @@ class RunProtocolTests(unittest.TestCase):
 
     def test_records_carry_the_runs_protocol(self):
         # Catches a grade stamped with the configurator's protocol whatever the run's.
-        from generative_driver.benchmark_support.evaluator import record
+        from firmware_bench.benchmark_support.evaluator import record
         made = record('graded', True, [{'id': 'a', 'passed': True}], [], 'e' * 64, protocol='learning/1')
         self.assertEqual(made['protocol'], 'learning/1')
 
     def test_final_and_unscored_records_carry_the_runs_protocol(self):
         # Catches a regraded final, or an unscored grade, stamped with the configurator's protocol whatever the run's.
-        from generative_driver.benchmark_support.evaluator import final_record, unscored
+        from firmware_bench.benchmark_support.evaluator import final_record, unscored
         sha = 'a' * 64
         checks = contract(sha)['checks']
         final = {'contract': contract(sha), 'frozen_artifact_sha256': sha,
@@ -1283,7 +1283,7 @@ class FreshReuseVerdictTests(unittest.TestCase):
     def test_fresh_reuse_is_reported_beside_the_verdict(self):
         # Catches the owner's proof of generated MCP reuse, or the fresh worker's mission, entering the verdict as a check:
         # a driver whose behavior matched graded not equivalent for a reuse that failed.
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         sha = 'a' * 64
         checks = contract(sha)['checks']
         final = {'contract': contract(sha), 'frozen_artifact_sha256': sha,
@@ -1329,7 +1329,7 @@ class FreshReuseVerdictTests(unittest.TestCase):
         self.assertEqual([d['id'] for d in made['diff']], ['final/effect-1/duty'])
 
     def test_generated_profile_cannot_pass_its_mission_without_sealed_owner_proof(self):
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         sha = 'a'*64
         definition = contract(sha)
         final = {'contract':definition,'records':[{'id':c['id'],'revision':0,'artifact_sha256':sha,
@@ -1349,7 +1349,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # Catches an undecided check graded as a failure, so that a device the evaluator could not read counts against the
         # driver, an unknown grade the configurator refuses, an undecided check that outweighs a failed one, and a failed
         # one beside it that the configurator refuses, which the harness would turn into an unscored fault.
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
         decided = [record_for(contract, 's1/0/answer', 'value')]
@@ -1374,7 +1374,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # revision, unit or channel, an undecided record that hides a duplicate or an unexpected one, and a marker that is
         # no reason (empty, longer than an equivalence/1 text, not text, null) that fails the driver, when only the
         # evaluator can have written it: it raises, as an invalid contract does, and the harness leaves the run unscored.
-        from generative_driver.benchmark_support.behavior import validate_records
+        from firmware_bench.benchmark_support.behavior import validate_records
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
         contract['checks'][1]['scenario'] = 'original'
         decided = record_for(contract, 's1/0/answer', 'value')
@@ -1423,7 +1423,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # name each undecided check, a count that takes an undecided check for a pass or no sealed evidence, a check that
         # passed null in any grade but an unknown one or a driver graded not equivalent beside a failed check, and that
         # driver graded equivalent or without a difference for each undecided check.
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2), ('s1/0/state:level', 3))
         decided = record_for(contract, 's1/0/answer', 'value')
@@ -1487,7 +1487,7 @@ class UndecidedCheckTests(unittest.TestCase):
         # unexpected record: the grade is equivalent only when every check passed, not equivalent when one failed and
         # unknown otherwise, and always one the schema accepts.
         import itertools
-        from generative_driver.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.evaluator import final_record
         from generative_driver.client_interface import verdict_errors
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2), ('s1/0/state:level', 3))
         right = {'s1/0/answer': 'value', 's1/0/state:mode': 2, 's1/0/state:level': 3}
@@ -1515,8 +1515,8 @@ class UndecidedCheckTests(unittest.TestCase):
     def test_an_unknown_grade_reads_unknown_and_its_reason_names_each_undecided_check(self):
         # Catches an unknown grade labelled unscored, as a grade with no verdict is, or equivalent, which the run's reason,
         # its report and the dashboard print.
-        from generative_driver.benchmark_support.evaluator import final_record
-        from generative_driver.benchmark_support.labels import equivalence_label, verdict_reason
+        from firmware_bench.benchmark_support.evaluator import final_record
+        from firmware_bench.benchmark_support.labels import equivalence_label, verdict_reason
         contract = contract_of(('s1/0/answer', 'value'), ('s1/0/state:mode', 2))
         made = final_record(final_of(contract, [record_for(contract, 's1/0/answer', 'value'),
                                                 {**record_for(contract, 's1/0/state:mode', None), 'undecided': 'unreadable state'}]),
@@ -1540,7 +1540,7 @@ class DurableRecordTests(unittest.TestCase):
     def test_an_interrupted_draft_or_evidence_write_leaves_the_previous_one_whole(self):
         # Catches the evaluator's draft (or the run evidence) overwritten in place, so that a write cut short by a
         # killed process or a full disk leaves a truncated file every later grade fails to unlock.
-        from generative_driver.benchmark_support import evaluator
+        from firmware_bench.benchmark_support import evaluator
         trial = self.root / 'trial'
         trial.mkdir()
         first = {'evaluations': [{'run_id': 'run-1', 'phase': 'final', 'frozen_artifact_sha256': 'a' * 64}]}
@@ -1565,7 +1565,7 @@ class PortableModelTests(unittest.TestCase):
     def test_the_adapted_model_is_utf8_lf_bytes_on_a_host_that_translates_newlines(self):
         # Catches the probe's adapted model written through the host's newline translation: on Windows each '\n'
         # became '\r\n', and the package that carries those bytes no longer matched the portable reference bytes.
-        from generative_driver.benchmark_support.calibration import reference_model_bytes
+        from firmware_bench.benchmark_support.calibration import reference_model_bytes
         from generative_driver.supplied.evaluate import adapt_model
         from tq9_workflow_fixture import model
         original = model()
@@ -1582,7 +1582,7 @@ class PortableModelTests(unittest.TestCase):
         # Catches the final phase's invoker reading the frozen model as the host's locale text, which fails a model saved
         # with a byte-order mark or as UTF-16 although the configurator and the package runtime parse its bytes (the
         # toolkit's emit check reads text, and refuses such a package before it is handed on).
-        from generative_driver.benchmark_support.emulated_actions import canonical_package_invoker
+        from firmware_bench.benchmark_support.emulated_actions import canonical_package_invoker
         from tq9_workflow_fixture import capabilities, model
         for name, codec in (('utf-8-bom', 'utf-8-sig'), ('utf-16', 'utf-16')):
             with self.subTest(model=name), tempfile.TemporaryDirectory() as temporary:

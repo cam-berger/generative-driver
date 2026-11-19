@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 
 
 class EncryptedTruthTests(unittest.TestCase):

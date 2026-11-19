@@ -1,12 +1,12 @@
 # Upstream firmware corpus
 
-The software-first pilot tracks seven upstream firmware lineages. Its published inventory contains one upstream case with native qualification evidence, `zephyr-modbus-v1`, and six blocked lineages. A lineage is a source ancestry and mission; an executable case is a registered, versioned image and evaluator. Public availability is only a metadata check. Authenticate qualification against the installed code before running agents.
+The software-first pilot tracks seven upstream firmware lineages. Its published inventory contains one upstream case, `zephyr-modbus-v1`, and six blocked lineages. A lineage is a source ancestry and mission; an executable case is a registered, versioned image and evaluator. Public availability is only a metadata check. Authenticate qualification against the installed code before running agents.
 
-The three synthetic development cases (`tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1`) remain in their separate suite. They require fresh native qualification under their current grader identities before new trials. A case's identity covers the grading core, its family's closure, its own entry in [`cases.json`](../src/generative_driver/resources/registrations/cases.json) and the `cryptography` version: a change to any of them, editing the entry included, voids that case's qualification; adding a case, editing another family's own modules, or a runtime, template, toolkit or report change does not. The core still holds some families' code, so editing that code voids every case's qualification ([grader identity](benchmark-case-authoring.md#grader-identity)). Source intake, evaluator qualification and measured model performance are separate evidence. See the [catalog and execution gaps](#catalog-and-execution-gaps), [registration decision](adr/0001-benchmark-registration-and-selection.md) and [case authoring guide](benchmark-case-authoring.md).
+The three synthetic development cases (`tq9-v2`, `sampled-sensor-v1`, `parameter-store-v1`) remain in their separate suite. They require fresh native qualification under their current grader identities before new trials. A case's identity covers the grading core, its family's closure, its own entry in [`cases.json`](../src/firmware_bench/resources/registrations/cases.json) and the `cryptography` version: a change to any of them, editing the entry included, voids that case's qualification; adding a case, editing another family's own modules, or a runtime, template, toolkit or report change does not. The core still holds some families' code, so editing that code voids every case's qualification ([grader identity](case-authoring.md#grader-identity)). Source intake, evaluator qualification and measured model performance are separate evidence. See the [catalog and execution gaps](#catalog-and-execution-gaps), [registration decision](adr/0001-benchmark-registration-and-selection.md) and [case authoring guide](case-authoring.md).
 
 ## Catalog and execution gaps
 
-The [versioned catalog](../src/generative_driver/resources/bench/corpora/seven-area-pilot.json) pins upstream commits, source ancestry, missions, acceptance requirements and blockers. All seven lineages are development cases. Source availability or a license declaration is not execution qualification; only the admitted Zephyr image is redistributed, with component notices.
+The [versioned catalog](../src/firmware_bench/resources/bench/corpora/seven-area-pilot.json) pins upstream commits, source ancestry, missions, acceptance requirements and blockers. All seven lineages are development cases. Source availability or a license declaration is not execution qualification; only the Zephyr image is redistributed, with component notices.
 
 | Area | Selected upstream lineage | Software evidence and remaining gap |
 |---|---|---|
@@ -16,18 +16,18 @@ The [versioned catalog](../src/generative_driver/resources/bench/corpora/seven-a
 | USB peripherals | sigrok fx2lafw | Pinned 8051 application and board descriptors. Needs SDCC build qualification, a USB-capable FX2 backend and independent digital stimuli. UART is not a substitute for USB evidence. |
 | Instruments | EEZ PSU firmware | Pinned Arduino Due application and Linux simulator build. The simulator is a host application, not an MCU image. Needs a validated execution setup and independent plant observer; the host simulator is a candidate, not a requirement for MCU emulation. |
 | Controllers | ODrive | Pinned application and ASCII interface. Start with non-motion configuration and idle state. Motor/encoder peripherals and an independent state observer remain unqualified; CAN remains a separate gap. |
-| Industrial controllers | Zephyr Modbus RTU server | Upstream sample compiled for STM32F4, with unchanged application and Modbus code. Native register/GPIO probes and two identical rebuilds succeeded. Reference/mutant and agent results are recorded separately below. |
+| Industrial controllers | Zephyr Modbus RTU server | Upstream sample compiled for STM32F4, with unchanged application and Modbus code. Native register/GPIO probes and two identical rebuilds succeeded. |
 
 
 ### grbl
 
 The P2IM port at `d4c7456574ce2c2ed038e6f14fea8e3142b3c1f7` built and booted in Renode 1.16.1 with GCC 14.2.Rel1. The only disclosed source change disabled its fuzzing hypercall (`noHyperCall = 1`); compilation used `-fcommon`. Acknowledged commands and `Run` status produced no observed position/step change. The port also has no-op spindle/coolant handlers. It is not admitted: protocol acknowledgment alone cannot establish actuator effects.
 
-These six targets lack validated execution setups. A full board emulator is optional. Investigate native application/protocol execution first, then selective HAL replacement or peripheral modeling where appropriate. Preserve authentic parsing, validation, state and replies plus independently observable effects; replacing the graded handler with a substitute weakens the evidence. Hardware forwarding needs separate reset/synchronization qualification. Recorded replies do not support arbitrary new probes. Use the same registry, provider, lifecycle, runner and reports for each execution method, and identify the artifact actually executed. The [native Zephyr instructions](benchmark-case-authoring.md#native-zephyr-execution) and [measured pilot](verification.md#native-modbus-pilot--2026-10-27) demonstrate that path for one lineage only.
+These six targets lack validated execution setups. A full board emulator is optional. Investigate native application/protocol execution first, then selective HAL replacement or peripheral modeling where appropriate. Preserve authentic parsing, validation, state and replies plus independently observable effects; replacing the graded handler with a substitute weakens the evidence. Hardware forwarding needs separate reset/synchronization qualification. Recorded replies do not support arbitrary new probes. Use the same registry, provider, lifecycle, runner and reports for each execution method, and identify the artifact actually executed. The [native Zephyr instructions](case-authoring.md#native-zephyr-execution) demonstrate that path for one lineage only.
 
 ## Freeze a selection
 
-Use an installed `generative-driver`. All paths below are operator-chosen placeholders; replace them with absolute paths and create their report/private parent directories first. On Windows, use absolute Windows paths and follow the [owner startup instructions](setup.md#start-the-configurator).
+Use an installed `generative-driver`. All paths below are operator-chosen placeholders; replace them with absolute paths and create their report/private parent directories first. On Windows, use absolute Windows paths and follow the [owner startup instructions](https://github.com/cam-berger/generative-driver/blob/main/docs/setup.md#start-the-configurator).
 
 ```sh
 generative-driver --home /operator/state/corpus configure --executor codex --command /absolute/path/to/codex --provider openai --model YOUR_MODEL
@@ -43,7 +43,7 @@ firmware-bench --home /operator/state/corpus corpus plan --repetitions 1 --inclu
 
 `--include LINEAGE` can repeat and selects only those lineage IDs. `--exclude LINEAGE REASON` can repeat and records an explicit exclusion, for example `--exclude grbl-motion "No qualified backend for this pilot"`. A lineage cannot be both explicitly included and excluded. With no `--include`, every lineage is selected except explicit exclusions. Neither option deletes catalog entries or coverage slots: unselected slots say `excluded` and retain a reason; selected gaps say `blocked` and retain their admission blockers.
 
-`benchmark-corpus-plan/2` freezes the entire catalog, selection, availability, case pins and repetition count. The runnable suite's manifest ID binds it to that complete context. Freeze a new plan after changing selection, catalog, assets or qualification. Do not edit a frozen plan or use a later exclusion to remove a failed run from its original report. Legacy `/1` plans remain readable with their original all-selected meaning.
+`benchmark-corpus-plan/2` freezes the entire catalog, selection, availability, case pins and repetition count. The runnable suite's manifest ID binds it to that complete context. Freeze a new plan after changing selection, catalog, assets or qualification. Do not edit a frozen plan or use a later exclusion to remove a failed run from its original report.
 
 ## Authenticate, execute and reconnect
 
@@ -81,7 +81,7 @@ Save `suite_id` from `corpus start`; the returned suite is the normal suite life
 firmware-bench --home /operator/state/corpus suite resume SUITE_ID --options /operator/private/corpus-options.json
 ```
 
-Use the [existing suite budget and recovery rules](../bench/README.md#run-a-repeated-suite); resume does not erase attempts, failures or elapsed time. No corpus-specific status or resume command is needed.
+Use the [existing suite budget and recovery rules](../README.md#run-a-repeated-suite); resume does not erase attempts, failures or elapsed time. No corpus-specific status or resume command is needed.
 
 ## Report without losing coverage
 
@@ -100,7 +100,7 @@ Supply either `--suite-id` or `--suite-report`. Omit both for an intake-only rep
 
 | `benchmark-corpus-report/2` field | Meaning |
 |---|---|
-| `measured_success` | Passed / (passed + failed), each trial counted once from the `scored` outcome its suite export stored (a `benchmark-suite-report/2` export stored none, so its rows are scored as exported, with no spent budget visible). A pass is a frozen driver the evaluator grades equivalent; only fresh reuse is reported beside it, never inside it, and accepted stages are not. A driver graded not equivalent or absent, a spent budget and a stop the system caused (safety, integrity, model) are failures. Host and operator stops, missing and unknown grades, and trials not yet settled appear in `counts`, not here. |
+| `measured_success` | Passed / (passed + failed), each trial counted once from the `scored` outcome its suite export stored. A pass is a frozen driver the evaluator grades equivalent; only fresh reuse is reported beside it, never inside it, and accepted stages are not. A driver graded not equivalent or absent, a spent budget and a stop the system caused (safety, integrity, model) are failures. Host and operator stops, missing and unknown grades, and trials not yet settled appear in `counts`, not here. |
 | `selected_coverage` | Passed / all selected slots, including selected blocked, stopped and unrun slots. |
 | `demonstrated_coverage` | Passed / all catalog slots, including excluded slots. |
 | `counts`, `slots` | Separate excluded, blocked, not run, running, stopped, unqualified, unscored, passed and failed outcomes, with selection/blocker/stop reasons and `fresh_mission_fault` / `fresh_mission_reason` when available. |
@@ -139,7 +139,7 @@ Successful calibration writes `case.json` and `zephyr-modbus-v1.enc` to the priv
 ```python
 from pathlib import Path
 import shutil
-from generative_driver.benchmark import case_root
+from firmware_bench.benchmark import case_root
 
 assets = Path("/operator/assets/bench")
 qualified = Path("/operator/private/empty-zephyr-qualification")

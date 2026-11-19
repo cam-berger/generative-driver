@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from generative_driver.benchmark_support.behavior import bind_task, validate_records, project_feedback
+from firmware_bench.benchmark_support.behavior import bind_task, validate_records, project_feedback
 
 
 class BehaviorTests(unittest.TestCase):

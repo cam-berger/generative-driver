@@ -98,8 +98,7 @@ def preflight_selection(manifest: dict) -> tuple[dict, list, list[dict]]:
     for definition, pin in zip(definitions, pins):
         calibration = pin.get('calibration', {})
         status = calibration.get('status') if isinstance(calibration, dict) else None
-        allowed_status = 'legacy-not-required' if definition.id == 'tq9' else 'passed'
-        if status != allowed_status:
+        if status != 'passed':
             raise ValueError('Suite contains a case without required reference calibration')
         if pin.get('scope') != 'full-workflow':
             raise ValueError('Stage-local evidence cannot enter a full-workflow suite')
@@ -110,7 +109,7 @@ def _launch_options(options, home):
     """Split suite options: evaluator password files, the emulator executable and a set suite's `set_root` go to the
     bench harness on its stdin, never into the frozen suite; the rest is frozen with the suite."""
     from pathlib import Path
-    from ..client import default_home
+    from generative_driver.client import default_home
     if options is not None and not isinstance(options, dict):
         raise ValueError('Suite options must be an object')
     selected = dict(options or {})
@@ -132,11 +131,11 @@ def start_suite(manifest: dict, executor: str | None = None, options: dict | Non
     emulator executable and a set suite's `set_root` in `options` go to the harness on its stdin, never into the suite
     tables or a child's run. A selection is checked before any configurator starts; a repeated request_id with the
     same inputs follows the suite it started."""
-    from ..client import call
+    from generative_driver.client import call
     from .harness import launch_suite
     normalized = normalize_manifest(manifest)
     directory, selected, passwords, renode, set_root = _launch_options(options, home)
-    from ..setup import resolve_executor
+    from generative_driver.setup import resolve_executor
     executor = resolve_executor(executor)
     if executor != 'replay' and 'replay_candidates' in selected:
         raise ValueError('Only a replay suite takes replay_candidates')
@@ -178,7 +177,7 @@ def _refuse_live_set_suite(suite_id, home, child_budget_seconds=None, passwords=
     suite it does not know and a suite of no set go on to the harness, which reports them. A slot launching with no
     attached child, which arises only after a configurator crash, is not visible here. The suite is read from the suite
     book and its child from the configurator, and neither read starts a configurator."""
-    from ..client import call
+    from generative_driver.client import call
     from .suite_book import suite_call
     result = suite_call('suite_result', {'suite_id': suite_id, 'limit': 1}, home, autostart=False)
     identity = (result.get('experiment') or {}).get('comparison_identity') or {}

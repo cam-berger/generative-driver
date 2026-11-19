@@ -4,7 +4,7 @@ Feature 09 of the untangle Run (docs/features/untangle/09-commands.md): 09-B2 to
 case still runs through the benchmark's command. This file is a benchmark item: it imports the benchmark and runs a
 registered case. The tool's side of the Feature is in `tests/test_tool_commands.py`, which stays with the tool.
 
-The command is run as `python -m generative_driver.benchmark` or by calling `benchmark.main`; no test needs
+The command is run as `python -m firmware_bench.benchmark` or by calling `benchmark.main`; no test needs
 `firmware-bench` on the search path. Temporary homes only; no model, no emulator and no real password.
 """
 import ast
@@ -21,8 +21,9 @@ from collections import namedtuple
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver import benchmark, client_interface
-from generative_driver.benchmark_support import harness
+from firmware_bench import benchmark
+from generative_driver import client_interface
+from firmware_bench.benchmark_support import harness
 from tool_fixtures import package_env
 from test_benchmark_surface import (BEFORE, FORMS, benchmark_sources, digests, exported, report_module,
                                     sent_methods)
@@ -30,8 +31,8 @@ from test_benchmark_surface import (BEFORE, FORMS, benchmark_sources, digests, e
 
 def command(*words, cwd=None, timeout=60):
     """The finished child process of the benchmark's command for `words`, run as `python -m
-    generative_driver.benchmark`, with its output as text. The child imports the package under test."""
-    return subprocess.run([sys.executable, '-m', 'generative_driver.benchmark', *words], cwd=cwd,
+    firmware_bench.benchmark`, with its output as text. The child imports the package under test."""
+    return subprocess.run([sys.executable, '-m', 'firmware_bench.benchmark', *words], cwd=cwd,
                           env={**os.environ, **package_env()}, stdin=subprocess.DEVNULL, capture_output=True,
                           text=True, encoding='utf-8', errors='replace', timeout=timeout)
 
@@ -76,7 +77,7 @@ class OwnCommandTests(TemporaryFolderCase):
         # Two new processes, so that nothing this process holds stands between them: the module run as a program,
         # and `benchmark.main` called by name.
         called = subprocess.run(
-            [sys.executable, '-c', 'import sys; from generative_driver import benchmark; '
+            [sys.executable, '-c', 'import sys; from firmware_bench import benchmark; '
                                    'raise SystemExit(benchmark.main(sys.argv[1:]))', 'cases'],
             cwd=self.root, env={**os.environ, **package_env()}, stdin=subprocess.DEVNULL, capture_output=True,
             text=True, encoding='utf-8', errors='replace', timeout=60)
@@ -303,7 +304,7 @@ class NoToolTests(unittest.TestCase):
                 self.assertEqual(sdk_imports(source), lines)
 
     def test_09_B4_the_command_does_from_a_terminal_what_the_seven_tools_did(self):
-        from generative_driver.benchmark_support.registry import case_ids
+        from firmware_bench.benchmark_support.registry import case_ids
         self.assertEqual(usage('run'), 'usage: firmware-bench run [-h] ' + RUN.replace('CASES', ','.join(case_ids())))
         for words, arguments in IN_PLACE_OF_THE_TOOLS.items():
             with self.subTest(command=' '.join(words)):
@@ -367,7 +368,7 @@ class OneLaunchTests(TemporaryFolderCase):
         payload = {'trial_id': 'trial-1', 'password_file': str(self.root / 'a secret handle'), 'renode': None}
         with patch('subprocess.Popen', Started):
             process = harness._spawn(folder, ['--trial-dir', str(folder)], payload)
-        self.assertEqual(process.command, [sys.executable, '-m', 'generative_driver.benchmark_support.harness',
+        self.assertEqual(process.command, [sys.executable, '-m', 'firmware_bench.benchmark_support.harness',
                                            '--trial-dir', str(folder)])
         self.assertEqual(Path(process.options['cwd']), folder)
         # The request goes to the harness on its input, never on its command line.

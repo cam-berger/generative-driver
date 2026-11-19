@@ -43,17 +43,6 @@ def check_events(events, worker_events, catalogs, configured, assignment_id, pac
     return True
 
 
-def collect(worker_events, catalogs, accepted):
-    assignments = {handoff['assignment_id'] for handoff in accepted if handoff['stage'] == 'reuse'}
-    calls = [{**{key: event['result']['mcp'].get(key) for key in PROOF_FIELDS},
-              'evidence_id': event['id'], 'result_sha256': canonical_digest(event['result'])}
-             for event in worker_events if event.get('assignment_id') in assignments
-             and event.get('result', {}).get('mcp')]
-    served = [{key: event.get(key) for key in ('assignment_id', 'catalog_sha256', 'manifest_sha256', 'contract_sha256')}
-              for event in catalogs if event.get('assignment_id') in assignments]
-    return {'schema': 'benchmark-mcp-reuse/1', 'calls': calls, 'catalogs': served}
-
-
 def gate_passed(payload, gate):
     from .behavior import _sha
     evidence = payload.get('mcp_reuse', {})

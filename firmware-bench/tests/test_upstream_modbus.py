@@ -7,13 +7,13 @@ import tempfile
 
 class UpstreamModbusTests(unittest.TestCase):
     def test_public_case_grants_the_actuation_its_coil_mission_requires(self):
-        from generative_driver.benchmark_support.registry import resolve_case
+        from firmware_bench.benchmark_support.registry import resolve_case
         case = resolve_case('zephyr-modbus-v1')
         self.assertEqual(case.approval_scope, 'emulator')
         self.assertTrue({'write', 'actuate'} <= set(case.default_effects))
 
     def test_monitor_values_do_not_trust_driver_claims_or_require_one_wire_encoding(self):
-        from generative_driver.benchmark_support.families import family_for
+        from firmware_bench.benchmark_support.families import family_for
         family = family_for('zephyr-modbus-v1')
         raw = {'values': {'register_pair0': 0xabcd1234, 'register_pair1': 0,
                           'register_pair2': 0, 'register_pair3': 0xffff0000, 'gpio_d': 0x5000}}
@@ -26,7 +26,7 @@ class UpstreamModbusTests(unittest.TestCase):
         self.assertTrue(observed['operation_ok'])
 
     def test_refusal_depends_on_failed_operation_not_internal_error_spelling(self):
-        from generative_driver.benchmark_support.zephyr_modbus import observations
+        from firmware_bench.benchmark_support.zephyr_modbus import observations
         raw = {'values': {**{'register_pair'+str(i): 0 for i in range(4)}, 'gpio_d': 0}}
         for code in ('execution_error', 'framing', 'timeout', 'another-model-error'):
             result = {'ok': False, 'identity_verified': True, 'error': {'fault': 'model', 'code': code}}
@@ -35,7 +35,7 @@ class UpstreamModbusTests(unittest.TestCase):
             self.assertFalse(observations(raw, result, {})['operation_refused'])
 
     def test_fresh_reuse_requires_requested_effect_readback_and_unchanged_other_state(self):
-        from generative_driver.benchmark_support.zephyr_modbus import reuse_passed
+        from firmware_bench.benchmark_support.zephyr_modbus import reuse_passed
         initial = {**{'register'+str(i): 0 for i in range(8)}, **{'coil'+str(i): 0 for i in range(3)}}
         written = {**initial, 'register3': 4660}
         on = {**written, 'coil0': 1}
@@ -65,9 +65,9 @@ class UpstreamModbusTests(unittest.TestCase):
         self.assertFalse(reuse_passed([uncertain_write, *events], caps))
 
     def test_pending_upstream_case_is_visible_and_cannot_launch_without_assets(self):
-        from generative_driver.benchmark_support.registry import case_ids, resolve_case, PendingCaseError
+        from firmware_bench.benchmark_support.registry import case_ids, resolve_case, PendingCaseError
         self.assertIn('zephyr-modbus-v1', case_ids())
-        with tempfile.TemporaryDirectory() as root, patch('generative_driver.benchmark.case_root', return_value=Path(root)), \
-                patch('generative_driver.benchmark_support.case_assets.case_root', return_value=Path(root)):
+        with tempfile.TemporaryDirectory() as root, patch('firmware_bench.benchmark.case_root', return_value=Path(root)), \
+                patch('firmware_bench.benchmark_support.case_assets.case_root', return_value=Path(root)):
             with self.assertRaises(PendingCaseError):
                 resolve_case('zephyr-modbus-v1')

@@ -25,14 +25,14 @@ class Process:
 
 def provider(root,launches):
     """A provider of a synthetic image whose launches return the given owners in order (a callable launches one)."""
-    from generative_driver.benchmark_support.device_provider import DeviceProvider
+    from firmware_bench.benchmark_support.device_provider import DeviceProvider
     image=root/'firmware.bin';image.write_bytes(b'synthetic')
     return DeviceProvider('tq9-v2',image,Owner(0).recipe,None,root/'device',start=lambda **kwargs:(lambda item:item() if callable(item) else item)(launches.pop(0)))
 
 
 class EmulatorRecoveryTests(unittest.TestCase):
     def test_startup_values_require_matching_independent_read_evidence(self):
-        from generative_driver.benchmark_support.device_provider import observed_values
+        from firmware_bench.benchmark_support.device_provider import observed_values
         owner=Owner(1)
         owner.observe=lambda:{'values':{'counter':0},'reads':[]}
         with self.assertRaisesRegex(RuntimeError,'observation'):
@@ -50,7 +50,7 @@ class EmulatorRecoveryTests(unittest.TestCase):
 
     def test_cleanup_retains_owned_handle_when_stop_is_unconfirmed(self):
         # The bench harness owns and stops the device: an unconfirmed stop keeps the handle and names the live session.
-        from generative_driver.benchmark_support.harness import finish
+        from firmware_bench.benchmark_support.harness import finish
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);owner=Owner(1);device=provider(root,[owner]);device.start();owner.stop=lambda:None
             with self.assertRaisesRegex(RuntimeError,'stop'):
@@ -73,7 +73,7 @@ class EmulatorRecoveryTests(unittest.TestCase):
     def test_initial_observation_failure_retains_live_owner_when_stop_fails(self):
         # The harness's provider starts the device; one whose startup reading fails and whose stop is unconfirmed stays
         # owned, and the harness's record names its live session.
-        from generative_driver.benchmark_support.harness import finish
+        from firmware_bench.benchmark_support.harness import finish
         for raises in (True,False):
             with self.subTest(stop_raises=raises),tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);owner=Owner(1)

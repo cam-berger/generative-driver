@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import pairing, registry
-from generative_driver.benchmark_support.outcomes import pass_rate
-from generative_driver.benchmark_support.suite_reporting import compare_suites
+from firmware_bench.benchmark_support import pairing, registry
+from firmware_bench.benchmark_support.outcomes import pass_rate
+from firmware_bench.benchmark_support.suite_reporting import compare_suites
 
 # The devices of a scoring set (d) and of a fresh batch (f). A real set registers its devices as cases; each test
 # registers these for its length.
@@ -572,14 +572,14 @@ class LeakCheckTests(ReportCase):
 
 class ScoringSetIdentityTests(ReportCase):
     def test_a_saved_report_may_name_a_scoring_set(self):
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         saved = _saved_report(suite_report('assistive/1', {'d0': 'pass', 'd1': 'failure'}))
         self.assertEqual(identity(saved)['scoring_set'], {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64})
 
     def test_the_experiment_keeps_the_scoring_set_in_the_identity_it_returns(self):
         # Catches an experiment that drops the scoring set, so that the report a suite exports cannot be paired, and
         # one that names a scoring set for a suite that ran none: a key marks a report as a scoring set's.
-        from generative_driver.benchmark_support.suite_reporting import _experiment
+        from firmware_bench.benchmark_support.suite_reporting import _experiment
         report = suite_report('assistive/1', {'d0': 'pass'})
         self.assertEqual(_experiment(report['experiment'])['comparison_identity']['scoring_set'],
                          {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64})
@@ -589,7 +589,7 @@ class ScoringSetIdentityTests(ReportCase):
     def test_a_scoring_set_is_a_registration_and_a_manifest_hash_and_nothing_else(self):
         # Catches a scoring set that is not a mapping, one with a field missing or added, a registration that names
         # nothing and a manifest hash that is not a lowercase sha256.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         good = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
         invalid = [None, [], 'generated-set-1', {}, {'registration': 'generated-set-1'}, {'manifest_sha256': 'a' * 64},
                    {**good, 'extra': 'value'}, {**good, 'registration': ''}, {**good, 'registration': '  '},
@@ -606,7 +606,7 @@ class ScoringSetIdentityTests(ReportCase):
         # Catches a scoring set admitted on a suite that names no protocol: its report would be a benchmark-suite-report/1,
         # which no reader accepts with a scoring set, so the producer must not write it.
         from test_suite_reporting import fixture
-        from generative_driver.benchmark_support.suite_reporting import _experiment, aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import _experiment, aggregate_suite
         report = suite_report('assistive/1', {'d0': 'pass'})
         _experiment(report['experiment'])
         del identity(report)['protocol']
@@ -620,7 +620,7 @@ class ScoringSetIdentityTests(ReportCase):
     def test_only_a_suite_report_3_may_carry_a_scoring_set(self):
         # Catches an earlier report that names a scoring set, which stores no outcome to pair: the same file without
         # the scoring set reads as it did.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         earlier = suite_report('assistive/1', {'d0': 'pass', 'd1': 'failure'})
         earlier['schema'] = 'benchmark-suite-report/2'
         del earlier['pass_rate']
@@ -635,7 +635,7 @@ class ScoringSetIdentityTests(ReportCase):
     def test_a_scoring_set_report_may_name_any_protocol_of_the_form_name_and_number(self):
         # Catches a protocol check that reads only assistive/1, so that a learning/1 report cannot be read at all, and
         # one that lets a name or number of any other shape stand for a series.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         for protocol in ('assistive/1', 'learning/1', 'learning/12'):
             with self.subTest(protocol=protocol):
                 saved = _saved_report(suite_report(protocol, {'d0': 'pass'}))
@@ -650,7 +650,7 @@ class ScoringSetIdentityTests(ReportCase):
     def test_a_report_without_a_scoring_set_keeps_the_assistive_protocol_alone(self):
         # Catches the protocol names a scoring set allows leaking to reports that name no scoring set, which stay
         # separate series.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         plain = unpaired('learning/1')
         with self.assertRaisesRegex(ValueError, 'protocol'):
             _saved_report(plain)
@@ -663,7 +663,7 @@ class SavedOutcomeTests(ReportCase):
         # Catches a label that says a started row never ran, and one that says anything else of a row with no run:
         # `classify` gives `not_run` to a row with no run_id and to no other. Each forgery keeps the pass rate matching its
         # labels, so only this check can refuse it.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         def forged(outcomes, row, **changes):
             report = suite_report('assistive/1', outcomes)
             report['trials'][row].update(changes)
@@ -683,8 +683,8 @@ class SavedOutcomeTests(ReportCase):
         # McNemar and both pass rates, so a failure relabelled fault, unknown, flagged or pass, with the pass rate edited to
         # match, would change the figures of a comparison. Each outcome relabelled as each of the others is refused by the
         # reader and by the comparison; the honest report of each reads.
-        from generative_driver.benchmark_support.outcomes import OUTCOMES
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.outcomes import OUTCOMES
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         refusal = {'schema': 'benchmark-suite-comparison/1', 'compatible': False, 'reason': 'Invalid or incomplete saved suite report'}
         for outcome in OUTCOMES:
             honest = suite_report('assistive/1', {'d0': outcome})
@@ -704,7 +704,7 @@ class ReportProtocolTests(ReportCase):
     def test_an_equivalent_report_is_judged_under_the_protocol_it_names(self):
         # Catches a saved report revalidated under this installation's protocol (assistive/1), which refuses or
         # miscounts a learning/1 report, and a grade accepted under a protocol other than its report's.
-        from generative_driver.benchmark_support.suite_reporting import _report_equivalent
+        from firmware_bench.benchmark_support.suite_reporting import _report_equivalent
         report = lambda protocol, grading=None: {
             'schema': 'benchmark-report/3', 'protocol': protocol, 'workflow_status': 'completed', 'verdict': 'equivalent',
             'equivalence': grade(grading or protocol)}
@@ -724,7 +724,7 @@ class ReportProtocolTests(ReportCase):
     def test_a_saved_report_counts_its_joint_successes_under_its_own_protocol(self):
         # Catches a learning/1 report whose equivalent driver with a passed mission reads as no joint success, so that
         # its stored count is refused, and a count the rows do not support accepted under either protocol.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         joint = lambda passed: {'passed': passed, 'denominator': 2, 'rate': passed / 2}
         for protocol in ('assistive/1', 'learning/1'):
             report = suite_report(protocol, {'d0': 'pass', 'd1': 'failure'})
@@ -743,7 +743,7 @@ class ReportProtocolTests(ReportCase):
 
     def test_a_saved_report_whose_grade_names_another_protocol_counts_no_joint_success(self):
         # Catches a grade of one protocol counted in a report of another, which a report never mixes.
-        from generative_driver.benchmark_support.suite_reporting import _saved_report
+        from firmware_bench.benchmark_support.suite_reporting import _saved_report
         report = suite_report('learning/1', {'d0': 'pass', 'd1': 'failure'})
         report['trials'][0]['equivalence'] = grade('assistive/1')
         self.assertEqual(_saved_report(report)['equivalent_and_mission'], {'passed': 0, 'denominator': 2, 'rate': 0.0})
@@ -832,7 +832,7 @@ class RoutingTests(ReportCase):
 class CommandTests(ReportCase):
     def compare(self, *arguments):
         """`benchmark suite compare` as the command line runs it: (exit code, the JSON it prints)."""
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = main(['suite', 'compare', *arguments])
@@ -868,7 +868,7 @@ class AggregatedReportTests(ReportCase):
         # paired, and a pairing that reads anything but the outcomes the rows store. Its nine trials are three tries of
         # each of three cases, so every device is excluded as tried more than once.
         from test_assistive_reports import assistive_fixture
-        from generative_driver.benchmark_support.suite_reporting import aggregate_suite
+        from firmware_bench.benchmark_support.suite_reporting import aggregate_suite
         suite, trials, reports, experiment = assistive_fixture()
         scoring_set = {'registration': 'generated-set-1', 'manifest_sha256': 'a' * 64}
         experiment['comparison_identity']['scoring_set'] = scoring_set

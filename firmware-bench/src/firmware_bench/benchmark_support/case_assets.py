@@ -8,9 +8,6 @@ from .registry import resolve_case, validate_pinned_workflow
 from .snapshots import read_snapshot
 
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
-# The record of the package calls of a fresh reuse, which the reuse stage hands on.
-REUSE_EVENTS = 'reuse-events.jsonl'
-TASKS = ('temperature', 'arm', 'set_duty', 'disarm')
 # The reason in the mission of a case whose family's `reuse_passed` returns None, so that a regrade reads it from the
 # sealed mission and needs no case id (Feature 03, generated trials).
 NOT_JUDGED = 'This case does not judge fresh reuse'
@@ -60,30 +57,6 @@ def write_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
-
-
-def mapping_errors(mapping, model):
-    """The structural errors of a legacy tq9 capability mapping against its model, or []: every task an object naming
-    one of the model's operations, with object parameters, and temperature naming an output of its operation."""
-    if not isinstance(mapping, dict):
-        return [{'path': 'capabilities.json', 'message': 'The mapping must be a JSON object of tasks'}]
-    operations = model.get('operations') if isinstance(model, dict) and isinstance(model.get('operations'), dict) else {}
-    errors = []
-    for task in TASKS:
-        entry = mapping.get(task)
-        if not isinstance(entry, dict):
-            errors.append({'path': task, 'message': 'Task is missing or not an object'})
-            continue
-        operation = operations.get(entry.get('operation')) if isinstance(entry.get('operation'), str) else None
-        if not isinstance(operation, dict):
-            errors.append({'path': task + '.operation', 'message': 'Names no operation of the model'})
-        if not isinstance(entry.get('parameters', {}), dict):
-            errors.append({'path': task + '.parameters', 'message': 'Parameters must be an object'})
-        outputs = operation.get('outputs') if isinstance(operation, dict) else None
-        if task == 'temperature' and not (isinstance(entry.get('output'), str) and isinstance(outputs, dict)
-                                          and entry['output'] in outputs):
-            errors.append({'path': 'temperature.output', 'message': 'Names no output of the task\'s operation'})
-    return errors
 
 
 def reuse_mission(case_id, events, capabilities):

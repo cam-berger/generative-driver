@@ -1,10 +1,9 @@
 """The benchmark's side of the boundary between the benchmark's tests and the tool's.
 
-Feature 10 of the untangle Run (docs/features/untangle/10-tests.md), 10-B3 and the last point of 10-B4. The
-benchmark's tests take nothing from the tool's test files: what they used of them is copied into `tool_fixtures.py`
-of this folder, and no file name is in both test folders. No benchmark test file reads the deletion list or imports
-its check or its tests, which stay with the tool until the deletion removes them. A benchmark test file is a Python
-file of this folder.
+Feature 10 of the untangle Run (docs/features/untangle/10-tests.md), 10-B3. The benchmark's tests take nothing from
+the tool's test files: what they used of them is copied into `tool_fixtures.py` of this folder, and no file name is
+in both test folders. A benchmark test file is a Python file of this folder. The two tests on the tool's deletion
+list went with that list (Feature 12 of this Run, docs/features/untangle/12-firmware-bench.md).
 
 The sources are read as syntax trees. One Python child is started, with the environment the copy of `package_env`
 gives.
@@ -18,12 +17,11 @@ import textwrap
 import unittest
 from unittest.mock import patch
 
+import firmware_bench
 import generative_driver
 
 TESTS = Path(__file__).resolve().parent
 TOOL_TESTS = TESTS.parents[1] / 'tests'
-# The check of the deletion list, its tests, and the name of the list as a path holds it.
-LIST_MODULES, LIST_NAME = ('deletion_marking', 'test_deletion_marking'), 'benchmark-deletion-list'
 
 
 def benchmark_test_files():
@@ -61,28 +59,9 @@ def imported(source):
     return sorted(found)
 
 
-def code_strings(source):
-    """The strings of the code of the Python `source`, as pairs of line and text. A doc of the module, of a class or
-    of a function is no code."""
-    tree = ast.parse(source)
-    docs = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
-            first = node.body[0]
-            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
-                docs.add(first.value)
-    return [(node.lineno, node.value) for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and node not in docs]
-
-
 def takes(source, modules):
     """The lines of the Python `source` that import one of `modules`, sorted, each with the module."""
     return [(line, name) for line, name in imported(source) if name in modules]
-
-
-def reads_the_list(source):
-    """The lines of the Python `source` whose code holds the name of the deletion list in a string, sorted."""
-    return sorted({line for line, text in code_strings(source) if LIST_NAME in text})
 
 
 TOOL = {'test_configurator', 'package_env', 'owner_ipc_fixture'}
@@ -107,17 +86,6 @@ IMPORTS = (
     ("reason = 'Tests that import test_configurator fail where the tool is gone'", []),
     ("name = 'package_env'", []),
 )
-# Sources that read the deletion list or take its check, each with whether the scan must name it.
-LIST_READS = (
-    ("LIST = REPO / 'docs' / 'benchmark-deletion-list.md'", True),
-    ("text = (REPO / 'docs/benchmark-deletion-list.md').read_text(encoding='utf-8')", True),
-    ("def table(heading):\n    return open(f'{root}/docs/benchmark-deletion-list.md').read()", True),
-    ('"""This module reads docs/benchmark-deletion-list.md."""', False),
-    ('class Tests:\n    """It holds docs/benchmark-deletion-list.md to the tree."""', False),
-    ('LIST = 1  # docs/benchmark-deletion-list.md', False),
-    ("DOCUMENT = REPO / 'docs' / 'client-interface.md'", False),
-)
-
 
 class ToolTestFileTests(unittest.TestCase):
     """The benchmark's tests take nothing from the tool's test files (10-B3)."""
@@ -155,46 +123,30 @@ class ToolTestFileTests(unittest.TestCase):
     def test_10_B3_a_python_child_gets_the_environment_of_the_copy_of_package_env(self):
         self.assertTrue((TESTS / 'tool_fixtures.py').is_file(), 'firmware-bench/tests/tool_fixtures.py is missing')
         from tool_fixtures import package_env
-        parent = str(Path(generative_driver.__file__).resolve().parents[1])
+        # Both package folders (12-B4 of Feature 12 of this Run): the folder that holds the benchmark's package and
+        # the folder that holds the tool's, once where they are the same folder, as with both installed.
+        folders = (str(Path(firmware_bench.__file__).resolve().parents[1]),
+                   str(Path(generative_driver.__file__).resolve().parents[1]))
+        parents = os.pathsep.join(dict.fromkeys(folders))
         with patch.dict(os.environ, {'PYTHONPATH': 'inherited'}):
             before = dict(os.environ)
             self.assertEqual(package_env(GD_EXAMPLE='1'),
-                             {'PYTHONPATH': parent + os.pathsep + 'inherited', 'GD_EXAMPLE': '1'})
+                             {'PYTHONPATH': parents + os.pathsep + 'inherited', 'GD_EXAMPLE': '1'})
             self.assertEqual(dict(os.environ), before)
         with patch.dict(os.environ):
             os.environ.pop('PYTHONPATH', None)
-            self.assertEqual(package_env(), {'PYTHONPATH': parent})
-            # A child that inherits no `PYTHONPATH`, as an MCP stdio child, still imports this process's package.
-            script = 'import generative_driver; print(generative_driver.__file__)'
+            self.assertEqual(package_env(), {'PYTHONPATH': parents})
+            # A child that inherits no `PYTHONPATH`, as an MCP stdio child, still imports this process's packages.
+            script = ('import firmware_bench, generative_driver\n'
+                      'print(firmware_bench.__file__)\nprint(generative_driver.__file__)')
             child = subprocess.run([sys.executable, '-c', script], env={**os.environ, **package_env()},
                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
         self.assertEqual(child.returncode, 0, child.stderr)
-        self.assertEqual(Path(child.stdout.strip()).resolve(), Path(generative_driver.__file__).resolve())
-
-
-class DeletionListTests(unittest.TestCase):
-    """No benchmark test file reads the deletion list or imports its check or its tests (10-B4)."""
-
-    def test_10_B4_no_benchmark_test_file_reads_the_deletion_list_or_imports_its_check_or_its_tests(self):
-        files = [path for path in benchmark_test_files() if path != Path(__file__).resolve()]
-        self.assertGreater(len(files), 70)
-        found = []
-        for path in files:
-            source = path.read_text(encoding='utf-8')
-            found += [f'{path.name}:{line} imports {name}' for line, name in takes(source, LIST_MODULES)]
-            found += [f'{path.name}:{line} names the deletion list' for line in reads_the_list(source)]
-        self.assertEqual(len(found), 0, '\n'.join(found))
-
-    def test_10_B4_the_scan_sees_the_name_of_the_list_in_code_and_the_check_in_an_import(self):
-        for source, read in LIST_READS:
-            with self.subTest(source=source):
-                self.assertEqual(bool(reads_the_list(source)), read)
-        for source in ('from deletion_marking import problems, strip', 'import test_deletion_marking',
-                       'def late():\n    from test_deletion_marking import REPO, table',
-                       "command = [sys.executable, '-c', 'import deletion_marking']"):
-            with self.subTest(source=source):
-                self.assertTrue(takes(source, LIST_MODULES))
-        self.assertEqual(takes('from generative_driver import client', LIST_MODULES), [])
+        self.assertEqual([Path(line).resolve() for line in child.stdout.splitlines()],
+                         [Path(firmware_bench.__file__).resolve(), Path(generative_driver.__file__).resolve()])
+        with patch('tool_fixtures.PACKAGE_ROOTS', ('one folder', 'one folder')), patch.dict(os.environ):
+            os.environ.pop('PYTHONPATH', None)
+            self.assertEqual(package_env(), {'PYTHONPATH': 'one folder'})
 
 
 if __name__ == '__main__':

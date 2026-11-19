@@ -27,8 +27,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from generative_driver.benchmark_support import evaluator, harness, suite_book, suites, trial_store
-from generative_driver.benchmark_support.suite_book import SuiteBook
+from firmware_bench.benchmark_support import evaluator, harness, suite_book, suites, trial_store
+from firmware_bench.benchmark_support.suite_book import SuiteBook
 from tool_fixtures import package_env
 from suite_fixtures import scripted_manifest
 from test_benchmark_runs import CASE, CONFIGURED, TrialCase
@@ -253,10 +253,12 @@ class BookCase(unittest.TestCase):
     def stored(self, repetitions=1, scoring=False, **changes):
         """The id of a running suite put into the book's store as it is frozen, for a suite a manifest cannot give:
         `scoring` marks it a scoring suite, and `changes` are laid over its frozen record."""
-        from generative_driver.benchmark_support.snapshots import execution_provenance
+        from firmware_bench.benchmark_support import tool_install
+        from firmware_bench.benchmark_support.snapshots import execution_provenance
         config = {**CONFIGURED, 'runtime': 'codex'}
         frozen = suites.freeze_suite(scripted_manifest(repetitions), 'codex', config, {},
-                                     execution_provenance(config, case_ids=[CASE]), harness_token_sha256=TOKEN_SHA256)
+                                     execution_provenance(config, case_ids=[CASE], **tool_install.folders()),
+                                     harness_token_sha256=TOKEN_SHA256)
         if scoring:
             frozen['scoring_set'] = {'registration': 'set-v1', 'manifest_sha256': SHA}
         frozen.update(changes)
@@ -529,7 +531,7 @@ class CallTests(BookCase):
 
     ASKING = ('import json, sys\n'
               'from pathlib import Path\n'
-              'from generative_driver.benchmark_support.suite_book import SuiteBook\n'
+              'from firmware_bench.benchmark_support.suite_book import SuiteBook\n'
               'home, method, params = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])\n'
               'def service(name, request=None):\n'
               '    if name == "ping":\n'
@@ -1403,7 +1405,12 @@ class InProcessServiceTests(unittest.TestCase):
             self.assertEqual(real('status', {'request_id': reserved['slot']['child_request_id']})['run_id'],
                              started['run_id'])
             deadline = time.monotonic() + 60
-            while real('status', {'run_id': started['run_id']})['status'] in ('queued', 'running'):
+
+            def ended():
+                # The child has ended with nothing of it left stopping: the book settles no child before that.
+                status = real('status', {'run_id': started['run_id']})
+                return status['status'] not in ('queued', 'running') and not status['stopping']
+            while not ended():
                 self.assertLess(time.monotonic(), deadline)
                 time.sleep(.02)
             settled = suite_book_of_home.call('suite_settle', {**driving, 'ordinal': 0})
@@ -1653,7 +1660,7 @@ class ReaderTests(ScriptedSuiteCase):
 
     def command(self, *arguments):
         """What `benchmark suite <arguments>` prints, as JSON, with the methods the service received meanwhile."""
-        from generative_driver import benchmark
+        from firmware_bench import benchmark
         mark = len(self.fixture.calls)
         printed = io.StringIO()
         with patch.dict(os.environ, {'GENERATIVE_DRIVER_HOME': str(self.fixture.home)}), \
@@ -1692,7 +1699,7 @@ class ReaderTests(ScriptedSuiteCase):
         self.assertEqual(self.asked('suite_status', suite_id=self.suite_id)['status'], 'completed')
 
     def test_07_B14_the_readers_read_the_suite_from_the_book_and_the_runs_from_the_service(self):
-        from generative_driver.benchmark_support import suite_reporting
+        from firmware_bench.benchmark_support import suite_reporting
         asked, sent = [], []
         real = suite_book.suite_call
 
@@ -1735,8 +1742,8 @@ class ReaderTests(ScriptedSuiteCase):
             self.assertEqual(re.findall(r"\bcall\('suite_[a-z_]+'", text), [], module.__name__)
 
     def test_07_B14_a_report_a_scorecard_and_a_comparison_of_a_scripted_suite_hold_what_they_held_and_no_request(self):
-        from generative_driver.benchmark_support import suite_reporting
-        from generative_driver.benchmark_support.scorecard import bench_trial_dirs, suite_scorecard
+        from firmware_bench.benchmark_support import suite_reporting
+        from firmware_bench.benchmark_support.scorecard import bench_trial_dirs, suite_scorecard
         home = self.fixture.home
         with patch('generative_driver.client.call', side_effect=self.fixture.configurator), \
                 tempfile.TemporaryDirectory() as output:

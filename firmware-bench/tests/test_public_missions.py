@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 class PublicMissionTests(unittest.TestCase):
     def test_operating_conditions_are_optional_bounded_public_text(self):
-        from generative_driver.benchmark_support.missions import load_mission, validate_mission
+        from firmware_bench.benchmark_support.missions import load_mission, validate_mission
         original = load_mission('sampled-sensor-v1')
         conditions = ['The device needs a quiet interval before each request.',
                       'The operator supplies a stable byte stream.']
@@ -116,8 +116,8 @@ class PublicMissionTests(unittest.TestCase):
             self.assertIn('read_pressure', checked.stdout)
 
     def test_missions_are_public_semantics_and_preserve_existing_contracts(self):
-        from generative_driver import benchmark
-        from generative_driver.benchmark_support.missions import load_mission
+        from firmware_bench import benchmark
+        from firmware_bench.benchmark_support.missions import load_mission
         from generative_driver.supplied.candidate_context import task_contract
         for case, tasks in [('tq9-v2', ['temperature', 'arm', 'set_duty', 'disarm']),
                             ('sampled-sensor-v1', ['measure', 'read']),
@@ -141,7 +141,7 @@ class PublicMissionTests(unittest.TestCase):
             self.assertTrue(load_mission(case)['tasks'])
 
     def test_missing_or_malformed_mission_cannot_fall_back_to_controller_tasks(self):
-        from generative_driver.benchmark_support.missions import load_mission, validate_mission
+        from firmware_bench.benchmark_support.missions import load_mission, validate_mission
         with self.assertRaises(ValueError):
             load_mission('../tq9-v2')
         with self.assertRaises(ValueError):

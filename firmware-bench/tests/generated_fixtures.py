@@ -13,8 +13,8 @@ import socketserver
 import threading
 from pathlib import Path
 
-from generative_driver.benchmark_support.generated_sets import seal_device, write_manifest
-from generative_driver.benchmark_support.truth import EvaluatorPassword
+from firmware_bench.benchmark_support.generated_sets import seal_device, write_manifest
+from firmware_bench.benchmark_support.truth import EvaluatorPassword
 
 PASSWORD_TEXT = 'synthetic fixture credential'
 PASSWORD = EvaluatorPassword(PASSWORD_TEXT)
@@ -122,7 +122,7 @@ class FixtureDevice:
         """A NativeSession attached to this device; stopping the session stops the device. With `process` it has a
         stand-in for the emulator's process, so that a device provider can confirm its stop. A set's qualification runs
         without one, so that its record says no native emulator process ran."""
-        from generative_driver.benchmark_support.native import NativeSession
+        from firmware_bench.benchmark_support.native import NativeSession
         info = {'binding': self.binding, 'monitor_port': self.servers[1].server_address[1]}
         if private_dir is not None:
             Path(private_dir).mkdir(parents=True, exist_ok=True)

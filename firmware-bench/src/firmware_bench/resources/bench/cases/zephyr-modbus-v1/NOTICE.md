@@ -14,6 +14,6 @@ Pinned modules:
 
 The build uses Arm GNU Toolchain 14.2.Rel1, including libgcc under GPLv3 with the GCC Runtime Library Exception 3.1. Both texts are included. These component licenses do not change the project's own license. No proprietary ST binary blobs were fetched for this image.
 
-The firmware is public input; private reference drivers and qualification episodes are distributed only in the encrypted evaluator bundle. The evaluator password is a separate operator credential and is not included in this distribution. See the repository's `docs/benchmark-corpus.md` for source reconstruction and qualification commands.
+The firmware is public input; private reference drivers and qualification episodes are distributed only in the encrypted evaluator bundle. The evaluator password is a separate operator credential and is not included in this distribution. See the repository's `docs/corpus.md` for source reconstruction and qualification commands.
 
 The separate host transport adapter in `platforms/BufferedSocketTerminal.cs` is derived from Renode's `ServerSocketTerminal` and `BackendTerminal`, copyright Antmicro (2010–2026) and Realtime Embedded (2011–2015), under MIT. Its license is in `platforms/Renode-MIT.txt`. It is not linked into this firmware.

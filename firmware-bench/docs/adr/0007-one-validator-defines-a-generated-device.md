@@ -1,12 +1,12 @@
 # One validator defines a generated device
 
-Status: proposed with the [generated-device interface](../generated-device-interface.md).
+Status: accepted with the [generated-device interface](../generated-device-interface.md).
 
 The interface review of 2026-11-02 settled that one validator in this repository defines a valid generated device, run when the generator seals a device and when the evaluator opens one. Three modules could hold it: the generated family's grading module (`generated.py`), the set bundle module (`generated_sets.py`) or a module of its own.
 
 ## Decision
 
-A new module, `benchmark_support/generated_device.py`, is the executable form of the interface document and nothing else. It has two entry points:
+A new module, `benchmark_support/generated_device.py`, is the executable form of the interface document and nothing else. It has three entry points:
 - `validate_device(device, *, image, mission, key=None)` checks every rule over the plaintext device: the identity part of its manifest entry (`id`, `level`, `framing`), the image, the public mission and, with a key, the key's own rules, its agreement with the mission and the framing, and what its references must show.
 - `answer_key(key)` checks the key's own rules, for a grader that holds only the key, and the module derives the key's check ids.
 - `validate_identity(device)` checks the identity part alone, which the manifest checks share.

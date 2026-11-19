@@ -40,7 +40,7 @@ def qualification_inputs(root):
 
 class UpstreamAuthoringTests(unittest.TestCase):
     def test_qualification_stops_before_mutants_when_a_positive_reference_fails(self):
-        from generative_driver.benchmark_support.upstream_qualification import qualify
+        from firmware_bench.benchmark_support.upstream_qualification import qualify
         with tempfile.TemporaryDirectory() as temp:
             truth, manifest, image, output, (renode, ghidra, java), command = qualification_inputs(Path(temp))
             def reference(*args, **kwargs):
@@ -51,9 +51,9 @@ class UpstreamAuthoringTests(unittest.TestCase):
                     'grade': {'verdict': 'failed', 'checks': [{'id': 'toy', 'passed': False}]},
                     'model_sha256': 'a'*64, 'capabilities_sha256': 'b'*64, 'package_sha256': None,
                     'runtime_sha256': 'c'*64, 'artifact_execution': 'model-runtime'}
-            with patch('generative_driver.benchmark_support.reference_calibration.run_reference', side_effect=reference) as run, \
-                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
-                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
+            with patch('firmware_bench.benchmark_support.reference_calibration.run_reference', side_effect=reference) as run, \
+                    patch('firmware_bench.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
+                    patch('firmware_bench.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
                     contextlib.redirect_stderr(io.StringIO()):
                 record = qualify(truth, manifest, image, output, renode=renode, ghidra_home=ghidra, java_home=java)
             self.assertEqual(record['status'], 'pending')
@@ -66,7 +66,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
         # the grade's evaluation.json and the grading session's log would replace or mix with the emission's. The real
         # runner emits and grades through the toy sensor; only the emulator sessions and the native tools are scripted.
         from test_benchmark_family_calibration import ReferenceExecutionTests
-        from generative_driver.benchmark_support.upstream_qualification import qualify
+        from firmware_bench.benchmark_support.upstream_qualification import qualify
         with ReferenceExecutionTests().toy_sensor() as (temp, toy, _, _, _):
             truth, manifest, image, output, (renode, ghidra, java), command = qualification_inputs(Path(temp))
             # The fixture's checked value is the toy sensor's temperature, which its mutants rescale.
@@ -92,10 +92,10 @@ class UpstreamAuthoringTests(unittest.TestCase):
                 def reset(self, values): return {}
                 def observe(self): return {'values': {**{'register_pair' + str(i): 0 for i in range(4)}, 'gpio_d': 0}}
                 def stop(self): pass
-            with patch('generative_driver.benchmark_support.native.NativeSession.start',
+            with patch('firmware_bench.benchmark_support.native.NativeSession.start',
                        side_effect=lambda **kwargs: Emulator(kwargs['private_dir'])), \
-                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
-                    patch('generative_driver.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
+                    patch('firmware_bench.benchmark_support.upstream_qualification.subprocess.run', side_effect=command), \
+                    patch('firmware_bench.benchmark_support.upstream_qualification.subprocess.check_output', return_value='fixture Renode'), \
                     contextlib.redirect_stderr(io.StringIO()):
                 record = qualify(truth, manifest, image, output, renode=renode, ghidra_home=ghidra, java_home=java)
             self.assertEqual(record['status'], 'passed', record.get('failures') or record.get('failure'))
@@ -121,14 +121,14 @@ class UpstreamAuthoringTests(unittest.TestCase):
                     self.assertEqual((output/'runs'/name).stat().st_mode & 0o777, 0o700, name)
 
     def test_build_refuses_an_unpinned_source_before_launching_a_compiler(self):
-        from generative_driver.benchmark_support.upstream_build import verify_source
+        from firmware_bench.benchmark_support.upstream_build import verify_source
         with tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
             verify_source(Path(temp))
 
     def test_upstream_mutants_must_fail_the_named_requirement_but_may_expose_related_failures(self):
         from test_benchmark_family_calibration import AdmissionTests
-        from generative_driver.benchmark_support.calibration import validate_calibration
-        from generative_driver.benchmark_support.zephyr_modbus import REQUIRED_MUTANTS
+        from firmware_bench.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.zephyr_modbus import REQUIRED_MUTANTS
         manifest, record = AdmissionTests().fixture('zephyr-modbus-v1')
         manifest.update(family='zephyr-modbus')
         record.update(required_mutants=sorted(REQUIRED_MUTANTS))
@@ -151,7 +151,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
         self.assertFalse(validate_calibration(manifest, record)['ok'])
 
     def test_external_resources_are_explicit_and_never_written_into_installation(self):
-        from generative_driver.benchmark import case_root
+        from firmware_bench.benchmark import case_root
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             with patch.dict(os.environ, {'GENERATIVE_DRIVER_BENCH_ROOT': str(root)}):
@@ -162,7 +162,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
 
     def test_upstream_truth_derives_commitments_and_refuses_mutant_or_phase_omissions(self):
         from upstream_fixture import payload as make_payload
-        from generative_driver.benchmark_support.upstream import hydrate_truth
+        from firmware_bench.benchmark_support.upstream import hydrate_truth
         from interface_runtime.engine import validate_model
         payload = make_payload()
         hydrated = hydrate_truth(payload)
@@ -182,7 +182,7 @@ class UpstreamAuthoringTests(unittest.TestCase):
 
     def test_declared_mutants_target_observable_checks_and_change_executed_inputs(self):
         from upstream_fixture import payload as make_payload
-        from generative_driver.benchmark_support.calibration import apply_mutation
+        from firmware_bench.benchmark_support.calibration import apply_mutation
         payload = make_payload()
         checks = {c['id'] for c in payload['phases']['final']['contract']['checks']}
         for mutant in payload['mutations']['mutants']:

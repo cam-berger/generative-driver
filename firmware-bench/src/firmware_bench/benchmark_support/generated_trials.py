@@ -3,10 +3,10 @@
 A generated device has no case of its own: its files are in the answer vault, which the configurator cannot open and
 which the operator closes while workers run (Feature 05, vault gate; spec decision 17). So the harness holds the set's
 sealed files in memory and watches its folder go out of reach here, builds each device's pin, and the configurator only
-freezes it, taking the harness's word for the image and answer hashes: that is within the same-user limit of
-`docs/design.md`, not isolation. Admission decrypts the held device, writes what a worker receives into the trial folder
-and hands back the answer key for the grade. This module is the harness's, outside the grading core: only the generated
-family's own closure holds `generated_sets`.
+freezes it, taking the harness's word for the image and answer hashes: that is within the same-user limit of the
+tool's `docs/design.md`, not isolation. Admission decrypts the held device, writes what a worker receives into the
+trial folder and hands back the answer key for the grade. This module is the harness's, outside the grading core: only
+the generated family's own closure holds `generated_sets`.
 """
 import hashlib
 import os
@@ -106,7 +106,7 @@ class SetDevice:
 def fixture_variable_reasons(registration, shipped=None):
     """[the reason the set `registration` may not run], or [] when it may: with `GD_TEST_HARNESS_FIXTURE` set, which can
     replace any check of the harness, a set named in the file `shipped`, by default the package's own `sets.json` read
-    by its own path, is refused. This catches a mistake only (`docs/design.md`)."""
+    by its own path, is refused. This catches a mistake only (the tool's `docs/design.md`)."""
     if not os.environ.get('GD_TEST_HARNESS_FIXTURE'):
         return []
     if registration not in generated_sets.set_registrations(_SHIPPED_SETS if shipped is None else shipped):

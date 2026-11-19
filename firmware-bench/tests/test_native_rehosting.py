@@ -16,8 +16,8 @@ class NativeBuildTests(unittest.TestCase):
     def test_authored_native_case_describes_its_actual_uart_bridge(self):
         # Authoring fixture only; no execution or validation claim is made for these bytes.
         from unittest.mock import patch
-        from generative_driver.benchmark import main
-        from generative_driver.benchmark_support.upstream_build import SOURCE_COMMIT
+        from firmware_bench.benchmark import main
+        from firmware_bench.benchmark_support.upstream_build import SOURCE_COMMIT
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             build = root/'build'; build.mkdir()
@@ -32,9 +32,9 @@ class NativeBuildTests(unittest.TestCase):
             (build/'build-report.json').write_text(json.dumps(record))
             password = root/'test.password'; password.write_text('test authoring password')
             stream = io.StringIO()
-            with patch('generative_driver.benchmark_support.upstream_build.native_recipe',
+            with patch('firmware_bench.benchmark_support.upstream_build.native_recipe',
                        return_value={'backend': 'native-sim'}), \
-                    patch('generative_driver.benchmark_support.emulator.truth_for_case', return_value={}), \
+                    patch('firmware_bench.benchmark_support.emulator.truth_for_case', return_value={}), \
                     contextlib.redirect_stdout(stream):
                 status = main(['corpus', 'prepare-execution', '--build', str(build),
                     '--password-file', str(password), '--output', str(root/'resources')])
@@ -44,7 +44,7 @@ class NativeBuildTests(unittest.TestCase):
                 'Zephyr native TTY UART via a host PTY and a protocol-independent TCP bridge.')
 
     def test_preparing_native_case_refuses_missing_build_evidence_before_output(self):
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stream = io.StringIO()
@@ -57,7 +57,7 @@ class NativeBuildTests(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == 'linux', 'Linux runs the real native process test')
     def test_core_reports_the_optional_linux_requirement_without_importing_posix_drivers(self):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             image = root/'firmware.elf'; image.write_bytes(b'\x7fELF fixture')
@@ -67,7 +67,7 @@ class NativeBuildTests(unittest.TestCase):
             self.assertFalse(provider.status()['healthy'])
 
     def test_native_build_refuses_missing_pinned_source_before_creating_output(self):
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'build'
             stream = io.StringIO()
@@ -83,7 +83,7 @@ class NativeBuildTests(unittest.TestCase):
 class NativeIdentityTests(unittest.TestCase):
     def test_native_qualification_requires_measured_comparison_before_running_tools(self):
         from upstream_fixture import payload
-        from generative_driver.benchmark_support.upstream_qualification import qualify
+        from firmware_bench.benchmark_support.upstream_qualification import qualify
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             image = root/'firmware.elf'; image.write_bytes(b'\x7fELF qualification fixture')
@@ -99,7 +99,7 @@ class NativeIdentityTests(unittest.TestCase):
 
     def test_native_reference_qualification_is_bound_to_its_backend_and_executable_inventory(self):
         from test_benchmark_family_calibration import AdmissionTests
-        from generative_driver.benchmark_support.calibration import validate_calibration
+        from firmware_bench.benchmark_support.calibration import validate_calibration
         manifest, record = AdmissionTests().fixture()
         manifest['images'] = {'firmware.elf': manifest['images']['firmware.bin']}
         manifest['execution_setup'] = {'method': 'native-sim', 'artifact': 'firmware.elf',
@@ -124,9 +124,9 @@ class NativeIdentityTests(unittest.TestCase):
         import os
         from unittest.mock import patch
         from benchmark_case_stages import prepare_stage
-        from generative_driver.benchmark import case_root
-        from generative_driver.benchmark_support.registry import pin_case
-        from generative_driver.benchmark_support.snapshots import snapshot_case
+        from firmware_bench.benchmark import case_root
+        from firmware_bench.benchmark_support.registry import pin_case
+        from firmware_bench.benchmark_support.snapshots import snapshot_case
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             resources = root/'resources'
@@ -155,8 +155,8 @@ class NativeIdentityTests(unittest.TestCase):
 class ExecutionComparisonTests(unittest.TestCase):
     def test_complete_looking_traffic_cannot_hide_wrong_firmware_or_unconfirmed_execution(self):
         import copy
-        from generative_driver.benchmark import case_root, main
-        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark import case_root, main
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
         plan = json.loads((case_root()/'qualification/zephyr-modbus-rtu.json').read_text())
         good = {'schema': 'firmware-execution-observation/1', 'case': plan['case'],
             'execution': 'firmware-reference-exercise', 'method': 'native-sim',
@@ -180,7 +180,7 @@ class ExecutionComparisonTests(unittest.TestCase):
                 self.assertEqual(json.loads(stream.getvalue())['verdict'], 'failed')
 
     def test_execution_exercise_requires_authenticated_setup_before_creating_output(self):
-        from generative_driver.benchmark import main
+        from firmware_bench.benchmark import main
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             stream = io.StringIO()
@@ -192,8 +192,8 @@ class ExecutionComparisonTests(unittest.TestCase):
             self.assertFalse((root/'output').exists())
 
     def test_comparison_rejects_changed_effect_even_when_both_records_claim_success(self):
-        from generative_driver.benchmark import case_root, main
-        from generative_driver.benchmark_support.snapshots import canonical_digest
+        from firmware_bench.benchmark import case_root, main
+        from firmware_bench.benchmark_support.snapshots import canonical_digest
         import copy
         plan = json.loads((case_root()/'qualification/zephyr-modbus-rtu.json').read_text())
         # Scripted observations of the published qualification plan, with a planted wrong effect.
@@ -220,7 +220,7 @@ class ExecutionComparisonTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == 'linux' and shutil.which('gcc'), 'optional Linux native backend')
 class NativeProviderTests(unittest.TestCase):
     def test_native_target_keeps_state_observes_memory_and_replaces_through_the_provider(self):
-        from generative_driver.benchmark_support.device_provider import DeviceProvider
+        from firmware_bench.benchmark_support.device_provider import DeviceProvider
         with tempfile.TemporaryDirectory(prefix='native process ') as directory:
             root = Path(directory)
             source, image = root/'target.c', root/'target.elf'

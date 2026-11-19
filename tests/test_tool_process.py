@@ -599,10 +599,11 @@ class CheckTests(unittest.TestCase):
         """The run's events once `reached(events)` holds; the run must not stop before."""
         until = time.monotonic() + seconds
         while True:
+            # The status is read first, so the events of a run that ends between the two reads are all there.
+            status = call('status', run)
             events = call('events', run)['events']
             if reached(events):
                 return events
-            status = call('status', run)
             self.assertTrue(status['status'] in ('queued', 'running') and time.monotonic() < until,
                             (status, [event['kind'] for event in events]))
             time.sleep(.1)

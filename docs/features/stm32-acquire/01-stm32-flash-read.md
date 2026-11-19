@@ -122,3 +122,43 @@ One Behaviour at a time, each test seen to fail first. Then the whole test comma
 - A read of a real chip. That is a physical operation, and the operator's to run.
 
 ## Deviations
+
+- `configure-program` refuses as an argparse error, exit status 2, with the text `generative-driver configure-program: error: <reason>` — the Spec says "refuses" without a form, and `configure` lets a `ValueError` through as a traceback.
+- The three refusal texts of 01-B1 are the implementer's: `The command of a program must be an absolute path: <path>`, `The command of a program cannot be a batch file, which only a shell starts: <path>`, `An argument of a program cannot be empty: argument <n>` — the Spec gives none.
+- The tool also requires the program's first word to be an absolute path, with the same check the configuration uses — a relative name would resolve against the launch folder `acquire/stm32/`.
+- A reported flash size of 0 counts as not reported — the Spec does not cover it, and a read of no bytes is no read.
+- `dump failed` carries `cause`, one of `the read launch exited nonzero`, `the read launch left no file`, `the file is not the size asked for` — the Spec says "with which of the three", not how.
+- On a failure the kept texts are named under `launch_texts` and hashed under the event's `files` — the Spec says the result names them, not the key.
+- An RDP line needs exactly two hex digits after `0x`; anything else is `unknown` and the tool reads — the reading of "0x and two hex digits" that 01-B13 allows.
+- A call that an exception ends after the tool's checks returns `available: false`, `reason: "the read could not be finished"`, `cause: "<type>: <message>"` and exit code 1, with `launch_texts` for the texts written — 01-B12 lists no such case; it is the shape every other failed read has, and it lets the result carry `returned_to_application`.
+- Only a launch whose program started counts as a launch: a first launch the system cannot start is followed by no return launch and no `returned_to_application` — the Spec's Terms call a launch "one start of the program", and no chip was touched.
+- A return launch that cannot be made gives `returned_to_application: false`, and its exception is not kept — 01-B10 defines the key as whether that launch exited 0.
+- An exception inside the read is not written to the service log; its type and message are in the result, the tool's event and the run's `tool.finished` event — no rule asks for the log entry. The traceback is lost; see `noticed.md`.
+- A failed call also removes `acquire/stm32/provenance.json`; a `flash.bin` or record that cannot be removed is left — 01-B14 writes the record on success, and a record without an image describes nothing.
+- The hash of each kept text is taken from the bytes written, not by reading the file back — the same value, and nothing on the failure path reads a file.
+- When an exception comes after a read launch that already ended with a reset, the return launch resets the chip once more — 01-B10 asks for the return launch on every tool-ended failure after a launch, and the operator granted the reset.
+- A launch past its limit is ended with `process.kill()`, the program alone, not processes it may have started — the Spec does not say how.
+- The stand-in finds its record folder through the environment variable `STM32_STAND_IN_STATE` — the Spec does not say how.
+- The stand-in's scenario `in_the_way` leaves a folder where the image is to go, so the stand-in knows `acquire/interpret-input.bin` and `acquire/stm32/flash.bin` — both are paths the Spec names, and it is the portable way found to make the move fail.
+- One 01-B10 test replaces `subprocess.Popen` with one that refuses chosen commands — a mock at the system boundary, the portable way found to make a launch unstartable.
+- The record's keys are `debug_probe` and `debug_probe_program`; a request's top-level keys of those names are dropped when the binding declares no probe — only a binding declares a probe.
+- The program's command is read from the configuration twice at start, once to refuse and once to copy — the smallest change; a configuration changed in that window is the one the run keeps.
+- The probe's lease identity is the fixed text `debug-probe`, its refusal is a `SafetyError` as the binding's is, and `DeviceAccess.claim_binding` became a shared `_claim` plus `claim_probe` — the binding's own claim does what it did.
+- The lease claim at stage assignment (`configurator.py:1668`) has no test of its own — start and resume are tested, and no test was found that fails without that one line.
+- A binding that holds only a probe, started with `scoped_tool_approval: "bound-device"`, is refused with the existing text on an explicit operator binding — a consequence of 01-B5: such a run has no device binding.
+- The device-session clause of 01-B5 is asserted through the runtime's `validate_binding`, not by opening a session — the refusal is made there.
+- The context entry `debug_probe` stands after `serial`, and the 01-B7 test pins the literal texts of the plain acquire context — to hold "what they were before this Feature".
+- The gateway's new refusal applies to this tool only, by name, as the USB one does; `allow_reset` is whether `reset` is among the assignment's effects — the Spec gives the refusal's text, not its reach.
+- In `tools.json` the description and the schema (`size_kb`, minimum 1, maximum 16384) are the implementer's wording — the Spec gives the argument and its range.
+- The tool repeats the expression `Path(...).is_absolute()` instead of sharing a function with the configuration — the tool module does not import the configuration module.
+- 01-B15 needed no new code; its test was shown to fail by removing the image from the tool's result, then putting it back — the whole run already carried the image once 01-B7 to 01-B14 stood.
+- The extra 01-B10 test that a call the configurator stops makes no return launch passed when first run and has no red — it describes what the tool's process already does.
+- The resume test of 01-B6 was rewritten after its code, and shown to fail by removing the lease claim — its first form failed about once in eight runs, because the resumed run could end before the assertion.
+- The test of a failed move got its red by removing the record's clean-up line, which had been written with the main fix — the excerpt fails for the test's own reason.
+- The 01-B17 test was written before the code of 01-B1, and one 01-B17 test stayed red until 01-B8 listed the tool — it holds what stays, across the Feature.
+- The check that the documented command and binding are ones the tool takes (01-B16) goes through `Controller.start` — the configurator seam, after the review asked for it.
+- The two limit tests of 01-B12 measure a plain read on the machine and patch the limit to five times that, 3 s at least — a fixed 3 s could fail on a slow hosted runner.
+- Two tests gain a case for a path without its drive, on Windows only — there `Path.is_absolute` refuses such a path and the case adds nothing elsewhere.
+- The 09-B6 test keeps its name, which says "fifteen", with a comment and the count 16 — the Spec changes the count, and a rename would lose the test's history.
+- `docs/setup.md` says two things beyond the list of 01-B16: a run keeps the command it started with, and a run on a supplied device takes no probe. The skill's sentence stands before "Smoke uses no inference." — both are Behaviours of this Spec that an operator meets.
+- In round 0 two test-only edits followed the whole test command, and in fix round 1 that command was held while a graded measurement ran on the machine; the hosted workflows ran each state, and the command ran again before the Feature was marked done — one machine could not do both at once.

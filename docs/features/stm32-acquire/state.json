@@ -2,14 +2,14 @@
   "goal": "Let the acquire stage read the firmware of an STM32 device off the chip, through STM32CubeProgrammer and an ST-LINK probe, so that a run on a new STM32 device needs no firmware file.",
   "slug": "stm32-acquire",
   "branch": "mdk/stm32-acquire",
-  "stage": "build",
+  "stage": "done",
   "awaiting": null,
-  "current": "01",
+  "current": null,
   "features": [
     {
       "id": "01",
       "slug": "stm32-flash-read",
-      "status": "building",
+      "status": "done",
       "base": "65497b92880cb173ad90968c6ce43d30b32c3c14"
     }
   ],

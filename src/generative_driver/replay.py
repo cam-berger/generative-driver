@@ -139,6 +139,7 @@ def _resolve(value, context, results):
 
 async def _replay(root, steps, context, gateway, workspace):
     """Each step's (status, name, reason, produced paths), in order."""
+    from .dispatch_outcome import read
     outcomes, results = [], []
     async with contextlib.AsyncExitStack() as stack:
         session, listed, unavailable = None, set(), 'No gateway tools are assigned to this stage'
@@ -181,7 +182,7 @@ async def _replay(root, steps, context, gateway, workspace):
                 outcomes.append(('fail', name, type(error).__name__ + ': ' + str(error), []))
                 continue
             results.append(result)
-            ok = result.get('_exit', 0) == 0 and bool(result.get('ok', result.get('available', True)))
+            ok = read(name, result).succeeded
             produced = [Path(result[key]) for key in RESULT_PATHS if isinstance(result.get(key), str)
                         and Path(result[key]).is_absolute() and Path(result[key]).resolve().is_relative_to(workspace)
                         and Path(result[key]).exists()]

@@ -329,9 +329,9 @@ def _mapping_errors(mission, mapping, model):
 
 def _host(result):
     """emit_check could not run on this host: the configurator's positive list, or an error that declares a host fault."""
-    from ..configurator import _host_fault
+    from ..dispatch_outcome import read
     error = result.get('error')
-    return _host_fault(result) or isinstance(error, dict) and error.get('fault') == 'host'
+    return read('emit_check', result).host_fault or isinstance(error, dict) and error.get('fault') == 'host'
 
 
 def _emitted(ws, report, options):

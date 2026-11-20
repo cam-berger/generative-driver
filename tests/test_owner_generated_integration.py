@@ -222,6 +222,20 @@ class OwnerGeneratedTests(unittest.TestCase):
                     db.execute('UPDATE events SET payload=? WHERE seq=?',(json.dumps({**finish,'result':{**result,**changes}}),identifier))
                     self.assertNotEqual(unresolved_outcomes(db,'run',assignment)[0],'model')
 
+    def test_01_B4_the_recovery_takes_the_faults_from_the_reading_and_holds_no_copy_of_their_rule(self):
+        import inspect
+        from generative_driver import device_recovery
+        for function in (device_recovery.diagnostic_faults, device_recovery.unresolved_outcomes):
+            with self.subTest(function.__name__):
+                source = inspect.getsource(function)
+                for field in ('transport_open_attempted', 'identity_verified', 'requested_command_dispatched',
+                              "'fault'", "'results'"):
+                    self.assertNotIn(field, source)
+                self.assertIn('dispatch_outcome', inspect.getsource(device_recovery))
+        self.assertIn('.other_faults', inspect.getsource(device_recovery.diagnostic_faults))
+        unresolved = inspect.getsource(device_recovery.unresolved_outcomes)
+        self.assertTrue('.pending_faults' in unresolved and '.model_failures' in unresolved)
+
 
 class ResetOpeningOwnershipTests(unittest.TestCase):
     @staticmethod

@@ -464,5 +464,17 @@ class OutcomeReadingTest(unittest.TestCase):
                 self.assertIs(read(name, result).leaves_uncertain, expected)
 
 
+class CallerTest(unittest.TestCase):
+
+    def test_01_B1_replay_and_the_scripted_worker_ask_the_reading_and_hold_no_copy(self):
+        import inspect
+        from generative_driver import replay, scripted_worker
+        for module in (replay, scripted_worker):
+            with self.subTest(module.__name__):
+                source = inspect.getsource(module)
+                self.assertFalse("get('available'" in source or "get('_exit'" in source, 'holds a copy of the test')
+                self.assertTrue('dispatch_outcome' in source and '.succeeded' in source, 'does not ask the reading')
+
+
 if __name__ == '__main__':
     unittest.main()

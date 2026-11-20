@@ -7,6 +7,8 @@ import json
 import threading
 import time
 
+from . import dispatch_outcome
+
 RECEIPT = 'emulator-recovery/2'
 LIVE_TOOLS = ('interface_execute', 'probe_run', 'emit_test_live')
 
@@ -33,34 +35,10 @@ def diagnostic_faults(finishes, assignment):
                 or event.get('ok') is not False or (event.get('name') not in LIVE_TOOLS and not _generated(event, assignment))):
             continue
         result = event.get('result')
-        if not isinstance(result,dict):
-            faults.append('unknown')
-            continue
-        items = result.get('results') if 'results' in result else [result]
-        if not isinstance(items,list) or not items:
-            faults.append('unknown')
-            continue
-        if all(isinstance(item,dict) and item.get('transport_open_attempted') is False for item in items):
-            continue  # Trusted refusals before opening cannot establish outstanding effects.
-        outer_error = result.get('error') if isinstance(result.get('error'),dict) else {}
-        outer_fault = result.get('fault') or outer_error.get('fault')
-        if outer_fault in ('host','operator'):
-            faults.append(outer_fault)
-        elif outer_fault not in (None,'model'):
-            faults.append('unknown')
-        for item in items:
-            if not isinstance(item,dict):
-                faults.append('unknown')
-                continue
-            if item.get('ok') is True or item.get('transport_open_attempted') is False:
-                continue
-            error = item.get('error') if isinstance(item.get('error'),dict) else {}
-            fault = error.get('fault')
-            if fault in ('host','operator'):
-                faults.append(fault)
-            elif fault != 'model' or (item.get('schema') != 'interface-result/1' and not
-                    (item.get('schema') == 'driver-result/1' and _generated(event, assignment))):
-                faults.append('unknown')
+        # A result that is no object, or a proof that is none, proves no generated call; it is not read for one.
+        generated = (isinstance(result, dict) and isinstance(result.get('mcp') or {}, dict)
+                     and _generated(event, assignment))
+        faults.extend(dispatch_outcome.read(event.get('name'), result, generated=generated).other_faults)
     return faults
 
 
@@ -89,32 +67,9 @@ def unresolved_outcomes(db, run_id, assignment):
             continue
         result = event.get('result')
         generated = _generated(event, assignment) and (result.get('mcp') or {}).get('session_id') == run_id
-        items = result.get('results') if isinstance(result,dict) and 'results' in result else [result]
-        if not isinstance(items,list) or not items:
-            faults.append('unknown')
-            continue
-        failures = []
-        for item in items:
-            if (not isinstance(item,dict) or (item.get('schema') != 'interface-result/1' and not
-                    (generated and item.get('schema') == 'driver-result/1' and item.get('requested_command_dispatched') is True))
-                    or type(item.get('ok')) is not bool):
-                faults.append('unknown')
-                continue
-            if item['ok']:
-                continue
-            failures.append(item)
-            error = item.get('error') if isinstance(item.get('error'),dict) else {}
-            fault = error.get('fault')
-            if fault in ('host','operator'):
-                faults.append(fault)
-            elif (fault == 'model' and item.get('identity_verified') is True
-                  and item.get('transport_open_attempted') is True and item.get('transcript')):
-                faults.append('model')
-                failed.append((identifier,item))
-            else:
-                faults.append('unknown')
-        if not failures:
-            faults.append('unknown')
+        reading = dispatch_outcome.read(event.get('name'), result, generated=generated)
+        faults.extend(reading.pending_faults)
+        failed.extend((identifier, item) for item in reading.model_failures)
     category = next((fault for fault in ('operator','host','unknown') if fault in faults),
                     'model' if pending and faults and all(fault=='model' for fault in faults) else 'unknown')
     return category, failed, dispatches

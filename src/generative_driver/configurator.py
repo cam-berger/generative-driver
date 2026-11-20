@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
-from . import debug_probe, run_status, service_log, tool_process
+from . import debug_probe, dispatch_outcome, run_status, service_log, tool_process
 from .service_log import LOG_NAME, ServiceLog
 # Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
 from .integrity import IntegrityError, digest
@@ -419,18 +419,6 @@ def _replaced(value, replacements):
     return {key: _replaced(item, replacements) for key, item in value.items()} if isinstance(value, dict) else value
 
 
-def _answered(event):
-    """Whether a probe_run's record holds what the device did on the connection the configurator supplied: a live run
-    that succeeded, or a failure the runtime attributes to the model after the transport opened."""
-    result = _result_of(event)
-    if event.get('name') != 'probe_run' or event.get('connected') is not True or result.get('evidence_kind', 'live') != 'live':
-        return False
-    if event.get('ok') is True:
-        return True
-    failed = [r for r in _listed(result.get('results')) if r.get('ok') is False]
-    return result.get('fault') == 'model' and bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
-
-
 def _probe_records(events):
     """The probe records one assignment's runs leave to hand on, from the configurator's own record of its tools.
 
@@ -451,7 +439,8 @@ def _probe_records(events):
         if path in last:
             superseded.append(last[path][1].get('dispatch_id'))
         last[path] = (sha, event)
-    return {path: kept for path, kept in last.items() if _answered(kept[1])}, superseded
+    return {path: kept for path, kept in last.items() if kept[1].get('connected') is True
+            and dispatch_outcome.read(kept[1].get('name'), kept[1].get('result')).answered}, superseded
 
 
 def _record_writers(accepted):
@@ -502,7 +491,8 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     # Records a probe_diff may compare: those handed on that the assigned model wrote, and those the assigned model's
     # runs wrote here as the device answered. A record of another model says what the device did for that model.
     handed = {sha for sha in inputs if inputs & (writers or {}).get(sha, set())}
-    compared = handed | {record_of(event) for event in events if live(event) and _answered(event)}
+    compared = handed | {record_of(event) for event in events
+                         if live(event) and dispatch_outcome.read(event.get('name'), event.get('result')).answered}
     probes = [_result_of(event)['probe'] for event in events
               if event.get('name') == 'probe_run' and isinstance(_result_of(event).get('probe'), str)]
     replacements = sorted(((path, Path(path).name) for path in [*paths, *probes]), key=lambda item: -len(item[0]))
@@ -684,29 +674,6 @@ def _observed_packages(named, built, given, unseen):
     return observed, not_handed_off, dropped
 
 
-def _toolchain_fault(result):
-    """The exception type a toolchain error result names ('OSError' for 'OSError: ...'), or 'toolchain error'."""
-    error = result.get('error')
-    kind = error.split(':', 1)[0].strip() if isinstance(error, str) and ':' in error else ''
-    return kind if re.fullmatch(r'[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt|Expired)', kind) else 'toolchain error'
-
-
-def _host_fault(result):
-    """Whether a tool result says the host, not its input, failed, by a positive list: the tool says so (fault host),
-    or it is a toolchain error naming a host failure (the OSError family, ImportError, MemoryError or a subprocess
-    timeout), or an error that names no exception type, which the toolkit returns when even its own record of the call
-    failed. Any other error, such as an AttributeError or RecursionError on content a worker wrote, is no host fault."""
-    if result.get('fault') == 'host':
-        return True
-    if not isinstance(result.get('error'), str):
-        return False
-    import builtins
-    kind = _toolchain_fault(result)
-    cls = getattr(builtins, kind, None)
-    return (kind == 'toolchain error' or kind.rsplit('.', 1)[-1] == 'TimeoutExpired'
-            or isinstance(cls, type) and issubclass(cls, (OSError, ImportError, MemoryError)))
-
-
 def _before_contact(result):
     """Whether a tool declared that it stopped before it contacted the device: its own result, with no execution
     record, says no transport was opened (the runtime's interface-result/1 does the same for one execution)."""
@@ -718,50 +685,6 @@ def _declared_refusal(result):
     declares there (its temporary folder, a snapshot copy it cannot read back) is no refusal: nothing reached the
     device, but the call says nothing about its input either, so it is inconclusive."""
     return _before_contact(result) and result.get('fault') != 'host'
-
-
-def _live_outcome(event):
-    """How one live operation the configurator dispatched ended, from its own record of the tool result:
-
-    - 'succeeded': it succeeded, or some of its operations passed on the device and every one that did not was
-      refused before the device was contacted (a refused operation is not a live operation);
-    - 'refused': refused before the device was contacted, so not a live operation. Either the runtime's preflight
-      refused it (no execution passed and none that failed attempted to open the transport), or the tool declared
-      that it refused before its first device call (transport_open_attempted false and no execution record: an
-      argument, binding, grant, snapshot or integrity refusal);
-    - 'failed': the model it ran failed on the device: the runtime attributes a failure to the model after the
-      transport opened. The verdict counts it as the driver's only when the operation ran the frozen bytes;
-    - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4), a
-      host fault the tool declared before its first device call, or a toolchain error the tool did not declare as a
-      refusal, which may have come after the device was contacted (labelled a host fault only when it names one,
-      `_host_fault`). It says nothing about the driver.
-
-    Returns (outcome, fault detail for an inconclusive one)."""
-    from interface_runtime.faults import classify_failure
-    result = _result_of(event)
-    if event.get('ok') is True:
-        return 'succeeded', None
-    executions = (_listed(result['results']) if isinstance(result.get('results'), list) else
-                  [result] if result.get('schema') in ('interface-result/1', 'driver-result/1') else [])
-    failed = [r for r in executions if r.get('ok') is not True]
-    refused = bool(failed) and all(r.get('transport_open_attempted') is False for r in failed)
-    if event.get('refused_before_open') is True or _declared_refusal(result) or (refused and len(failed) == len(executions)):
-        return 'refused', None
-    fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else (r.get('error') or {}).get('fault', r.get('fault'))
-    if any(fault(r) == 'model' and r.get('transport_open_attempted', True) is True for r in failed):
-        return 'failed', None
-    if refused and result.get('fault') is None:
-        return 'succeeded', None
-    if executions or 'fault' in result or result.get('_exit') == 4:
-        first = failed[0] if failed else result
-        error = first.get('error') if isinstance(first.get('error'), dict) else {}
-        named = _toolchain_fault(first) if isinstance(first.get('error'), str) else 'toolchain error'
-        code = first.get('error_code') or error.get('code') or (named if named != 'toolchain error' else None)
-        return 'inconclusive', str((fault(first) if failed else result.get('fault')) or 'unclassified') + ' fault' + (
-            ' (' + str(code) + ')' if code else '')
-    # The tool raised without declaring a refusal: say whether that names a host failure, never guess one.
-    return 'inconclusive', ('host fault' if _host_fault(result) else 'undeclared toolchain error') + (
-        ' (' + _toolchain_fault(result) + ')')
 
 
 def _frozen_package(package, strict=False):
@@ -914,7 +837,8 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
                 and proof.get('dispatch_id') == event.get('dispatch_id')
                 and proof.get('tool_name') == event.get('name'))
     def outcome_of(event):
-        outcome, detail = _live_outcome(event)
+        reading = dispatch_outcome.read(event.get('name'), event.get('result'))
+        outcome, detail = reading.outcome, reading.detail
         if outcome == 'failed' and not emitted(event):
             return 'inconclusive', 'model fault outside the emitted driver'
         return outcome, detail
@@ -2621,7 +2545,7 @@ class Controller:
                 result = self._check_tool(call_tool, run_dir.name, stage, 'emit_check',
                                           {'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
                 # A check that did not finish says nothing about the host: the package is rejected with the cause.
-                if not result.get('unfinished') and _host_fault(result):
+                if not result.get('unfinished') and dispatch_outcome.read('emit_check', result).host_fault:
                     # The host could not run the check, which says nothing about the package: stop for the host
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '

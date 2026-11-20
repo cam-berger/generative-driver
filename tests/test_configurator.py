@@ -1656,9 +1656,27 @@ class FinalVerdictTests(unittest.TestCase):
                 finally:
                     controller.close()
 
+    def test_01_B3_fresh_reuse_reads_a_missing_result_as_failed_never_as_succeeded(self):
+        # The verdict reads the stored result, not the event's `ok`: a finished call with no result object is no
+        # success, so it leaves the verdict unsettled.
+        from generative_driver.configurator import _fresh_reuse
+        event = {'name': 'interface_execute', 'connected': True, 'ok': True, 'dispatch_id': '1'}
+        check, _ = _fresh_reuse(None, [event], grants=['read'])
+        self.assertEqual([(o['outcome'], o['ok']) for o in check['operations']], [('inconclusive', False)])
+
+    def test_01_B3_the_verdict_and_the_emit_check_ask_the_reading_and_hold_no_copy(self):
+        import inspect
+        from generative_driver import configurator
+        from generative_driver.supplied import stages
+        for name in ('_live_outcome', '_answered', '_host_fault', '_toolchain_fault'):
+            with self.subTest(name):
+                self.assertFalse(hasattr(configurator, name), 'the configurator holds ' + name)
+        self.assertNotIn('_host_fault', inspect.getsource(stages._host))
+        self.assertIn('dispatch_outcome', inspect.getsource(stages._host))
+
     def test_only_a_named_host_failure_is_a_host_fault(self):
         """The emit stage stops for the host only on a positive list; any other toolchain error refuses the content."""
-        from generative_driver.configurator import _host_fault, _toolchain_fault
+        from generative_driver.dispatch_outcome import read
         for error, host in (('OSError: [Errno 28] No space left on device', True), ('PermissionError: denied', True),
                             ('FileNotFoundError: no temporary directory', True), ('ModuleNotFoundError: no module', True),
                             ('MemoryError: ', True), ('TimeoutExpired: Command timed out after 260 seconds', True),
@@ -1668,11 +1686,14 @@ class FinalVerdictTests(unittest.TestCase):
                             ('RecursionError: maximum recursion depth exceeded', False),
                             ('ZeroDivisionError: division by zero', False), ('ModelError: identity', False)):
             with self.subTest(error=error):
-                self.assertIs(_host_fault({'ok': False, 'error': error, '_exit': 1}), host)
-        self.assertIs(_host_fault({'ok': False, 'fault': 'host', '_exit': 4}), True)
+                self.assertIs(read('emit_check', {'ok': False, 'error': error, '_exit': 1}).host_fault, host)
+        self.assertIs(read('emit_check', {'ok': False, 'fault': 'host', '_exit': 4}).host_fault, True)
         # A timeout is named as one, so an undeclared one reads as a host fault (TimeoutExpired), not an unnamed error.
-        self.assertEqual(_toolchain_fault({'error': 'TimeoutExpired: Command timed out after 260 seconds'}), 'TimeoutExpired')
-        self.assertIs(_host_fault({'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1}), False)
+        timeout = read('emit_check', {'ok': False, 'error': 'TimeoutExpired: Command timed out after 260 seconds',
+                                      '_exit': 1})
+        self.assertEqual((timeout.outcome, timeout.detail), ('inconclusive', 'host fault (TimeoutExpired)'))
+        self.assertIs(read('emit_check', {'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1})
+                      .host_fault, False)
 
     def test_03_B6_functions_the_operator_did_not_grant_leave_the_verdict_unscored_never_not_equivalent(self):
         """The frozen package's only function writes and the operator granted read alone: the gateway refuses every call

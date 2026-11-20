@@ -1,7 +1,7 @@
-"""Execute the operations of a package, keeping the public rules of its driver across one connection.
+"""Execute the operations of a package's driver, keeping the public rules of that driver across one connection.
 
-The interface model is the one statement of a driver, so a session reads `driver/model.json` and computes the driver
-contract from it: preconditions, warnings and what each operation takes and gives
+The interface model is the one statement of a driver, so a session reads the package's driver file and computes the
+driver contract from it: preconditions, warnings and what each operation takes and gives
 (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3). The engine checks what an output may be when it decodes
 it.
 """
@@ -10,24 +10,24 @@ import json
 
 from .contracts import contract_view, operation_warnings
 from .engine import Session, _arguments
-from .evidence import read_json, ReplayFactory, RecordingFactory, _evidence_bound
-from .package import verify_package, digest
+from .evidence import ReplayFactory, RecordingFactory, _evidence_bound
+from .package import verify_package, the_driver
 from . import transports
 
 MAX_DRIVER_RESULT_BYTES = 2 * 1024 * 1024  # Leaves room in managed IPC and MCP envelopes.
 
 
 class PackageSession:
-    """The executor of a package's operations, used by single calls and uninterrupted package sequences."""
+    """The executor of the operations of a package's one driver, over one connection."""
 
     def __init__(self, root, *, binding=None, allow_effects=(), replay=None):
         self.root = Path(root)
         checked = verify_package(self.root)
         if not checked['ok']:
             raise ValueError(str(checked['defects']))
-        self._manifest_pin = digest(self.root/'manifest.json')
+        self._manifest_pin = checked['manifest_sha256']
         self._manifest = checked['manifest']
-        self._model = read_json(self.root/'driver/model.json')
+        self._entry, self._model = the_driver(checked)
         self._contract = contract_view(self._model)
         self._player = ReplayFactory(replay) if replay is not None else None
         self._recorder = RecordingFactory(self._player if self._player is not None else transports.open_transport)
@@ -83,7 +83,7 @@ class PackageSession:
                     'transactions': list(recorder.transactions),
                     'evidence_kind': 'replay' if player is not None else 'live',
                     'timing_policy': 'skip_delays' if player is not None else 'real',
-                    'model_sha256': manifest['model_sha256'], 'contract_sha256': manifest['contract_sha256']}
+                    'model_sha256': manifest['files'][self._entry['model']]}
             return self._last_result
 
         def refuse(code, message, details=None, fault='operator'):
@@ -110,7 +110,7 @@ class PackageSession:
             bounded = refuse('evidence_bound_exceeded',
                              'Public operation exceeds the aggregate result/evidence bound before I/O; '
                              'inspect the model for omitted caveats.', fault='model')
-            bounded.update(warnings=[], warnings_omitted=len(warnings), warnings_ref='driver/model.json')
+            bounded.update(warnings=[], warnings_omitted=len(warnings), warnings_ref=self._entry['model'])
             return bounded
 
         def invoke(name, arguments):

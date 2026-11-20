@@ -21,7 +21,7 @@ from generative_driver.integrity import digest
 from package_env import package_env
 
 PACKAGE = 'generative_driver.supplied'
-STAGE_FUNCTIONS = ('prepare_stage', 'observe_stage', 'package_call', 'record_call')
+STAGE_FUNCTIONS = ('prepare_stage', 'observe_stage', 'record_call')
 # The SHA-256 of the bytes `supplied firmware`.
 FIRMWARE_SHA256 = '43b4574c479a13842705bb2799c05a94d6055996e56f6fe59e0595059eb8e021'
 # The hand-written mission. It names no registered case.
@@ -52,9 +52,6 @@ SAMPLED = {'tasks': {'measure': {'meaning': 'Take a new sample and return its te
            'reuse_objective': 'Take two new samples and report both temperatures.'}
 SAMPLE_MODEL = {'channel': {'type': 'tcp'}, 'operations': {'sample': {'parameters': {}, 'outputs': {
     'temperature': {'unit': 'degC'}, 'humidity': {'unit': 'percent'}}}}}
-# The command line of a hand-written package: it prints the arguments it was started with as its result.
-ECHO = ('import json, sys\n'
-        "print(json.dumps({'ok': True, 'outputs': {'arguments': sys.argv[1:]}, 'units': {}, 'transcript': []}))\n")
 
 
 def stage_module(test, name):
@@ -89,15 +86,6 @@ def read_state(run_dir):
     return json.loads((Path(run_dir) / 'supplied' / 'state.json').read_text(encoding='utf-8'))
 
 
-def hand_written_package(root, body):
-    """A package at `root/package` whose command line is the Python `body`: the path of the package."""
-    package = Path(root) / 'package'
-    (package / 'driver').mkdir(parents=True)
-    (package / 'driver' / '__init__.py').write_text('', encoding='utf-8')
-    (package / 'driver' / '__main__.py').write_text(body, encoding='utf-8')
-    return package
-
-
 class TemporaryDirectoryCase(unittest.TestCase):
     def directory(self):
         """A new empty directory, removed when the test ends."""
@@ -108,7 +96,7 @@ class TemporaryDirectoryCase(unittest.TestCase):
 
 class PackageTests(unittest.TestCase):
     def test_05_B1_the_stage_package_and_its_named_modules_can_be_imported(self):
-        for name in ('stages', 'instrument_evidence', 'capabilities', 'package_runner'):
+        for name in ('stages', 'instrument_evidence', 'capabilities'):
             with self.subTest(module=name):
                 stage_module(self, name)
         stages = stage_module(self, 'stages')
@@ -169,7 +157,6 @@ class StageInputTests(StageCase):
         self.assertEqual(signatures, {
             'prepare_stage': '(stage, run_dir, workspace, accepted=None, options=None, *, firmware, mission)',
             'observe_stage': '(stage, run_dir, workspace, report, accepted=None, options=None, *, firmware, mission)',
-            'package_call': '(run_dir, stage, arguments)',
             'record_call': '(run_dir, stage, name, arguments, result, before, after, options=None)'})
 
     def test_05_B2_preparing_acquire_copies_the_firmware_and_gives_its_hash(self):
@@ -277,31 +264,11 @@ class StageInputTests(StageCase):
         self.assertEqual(prepared['objective'],
                          'Use only the emitted package and this objective: Read the level twice and report both '
                          'readings.\nProvided operating conditions (public facts):\n- The device answers one request '
-                         'at a time.\n Use package_execute for each operation. Find names and arguments in '
-                         'the package reference. Each result also carries an instrument reading of the emulated device '
+                         'at a time.\n Each result also carries an instrument reading of the emulated device '
                          'after the call. Report actual observations and limitations.')
         self.assertEqual(prepared['inputs'], [str(self.root / 'reuse' / 'package')])
-        self.assertEqual(prepared['allowed_tools'], ['package_execute'])
-
-
-class PackageCallTests(StageCase):
-    def test_05_B2_package_call_runs_only_the_unchanged_stage_assigned_package(self):
-        package = hand_written_package(self.root, ECHO)
-        write_state(self.run, {'package_copies': {'reuse': str(package)}, 'package_sha256': digest(package)})
-        arguments = {'package_dir': str(package), 'operation': 'level', 'parameters': {'samples': 1},
-                     'binding': BINDING, 'allow_effects': ['read', 'write']}
-        call = self.stages.package_call(self.run, 'reuse', arguments)
-        with patch.dict(os.environ, package_env()):
-            result = call()
-        self.assertEqual(result['outputs']['arguments'], [
-            'execute', 'level', '--parameters', '{"samples": 1}', '--binding', '{"host": "127.0.0.1", "port": 1}',
-            '--allow-effect', 'write'])
-        other = hand_written_package(self.root / 'other', ECHO)
-        with self.assertRaisesRegex(ValueError, '^Only the unchanged stage-assigned package may execute$'):
-            self.stages.package_call(self.run, 'reuse', {**arguments, 'package_dir': str(other)})
-        (package / 'driver' / '__main__.py').write_text(ECHO + '# changed\n', encoding='utf-8')
-        with self.assertRaisesRegex(ValueError, '^Only the unchanged stage-assigned package may execute$'):
-            self.stages.package_call(self.run, 'reuse', arguments)
+        # The stage assigns no tool: fresh reuse gets the generated tools of the package, which the service adds.
+        self.assertEqual(prepared['allowed_tools'], [])
 
 
 class FreshReuseTests(StageCase):
@@ -554,28 +521,6 @@ class OwnCopiesTests(TemporaryDirectoryCase):
         self.assertIn(str(given), prepared['inputs'])
         self.assertEqual(given.read_bytes(), Path(rules.__file__).read_bytes())
         self.assertEqual(Path(rules.__file__).parent.name, 'supplied')
-
-    def test_05_B6_the_package_runner_offers_package_invoker_for_a_package_a_binding_and_grants(self):
-        runner = stage_module(self, 'package_runner')
-        self.assertEqual(list(inspect.signature(runner.package_invoker).parameters), ['package', 'binding', 'grants'])
-
-    def test_05_B6_the_package_runner_runs_the_packages_command_line_with_the_binding_and_the_grants(self):
-        runner = stage_module(self, 'package_runner')
-        package = hand_written_package(self.directory(), ECHO)
-        with patch.dict(os.environ, package_env()):
-            result = runner.package_invoker(package, BINDING, ['read', 'write'])('read_level', {'samples': 2})
-        self.assertEqual(result, {'ok': True, 'units': {}, 'transcript': [], 'outputs': {'arguments': [
-            'execute', 'read_level', '--parameters', '{"samples": 2}', '--binding', '{"host": "127.0.0.1", "port": 1}',
-            '--allow-effect', 'write']}})
-
-    def test_05_B6_the_package_runner_reports_a_package_that_prints_no_result_as_a_host_fault(self):
-        runner = stage_module(self, 'package_runner')
-        package = hand_written_package(self.directory(), "import sys\nprint('not a result')\nsys.exit(3)\n")
-        with patch.dict(os.environ, package_env()):
-            result = runner.package_invoker(package, BINDING, [])('read_level', {})
-        self.assertEqual(result, {'ok': False, 'outputs': {}, 'units': {}, 'transcript': [], 'error': {
-            'fault': 'host', 'source': 'package', 'code': 'no_result',
-            'message': 'The package returned no runtime result (exit 3)'}})
 
 
 if __name__ == '__main__':

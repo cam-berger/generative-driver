@@ -278,13 +278,12 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
         if 'operating_conditions' in mission:
             objective += ('\nProvided operating conditions (public facts):\n'
                 + '\n'.join('- ' + condition for condition in mission['operating_conditions']) + '\n')
-        return {'objective': 'Use only the emitted package and this objective: ' + objective
-                    + ' Use package_execute for each operation. Find names and arguments in the package '
-                    'reference. '
+        # The stage names no tool: the configurator assigns the tools generated from the package and names them.
+        return {'objective': 'Use only the emitted package and this objective: ' + objective + ' '
                     + ('Each result also carries an instrument reading of the emulated device after the call. '
                        if readings else '')
                     + 'Report actual observations and limitations.',
-                'inputs': [str(package)], 'allowed_tools': ['package_execute'],
+                'inputs': [str(package)], 'allowed_tools': [],
                 'context': {'package_dir': str(package)}, 'binding': binding,
                 'boundary': 'fresh package-only mission'}
     if stage == 'interpret':
@@ -486,8 +485,7 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
                 'package_dir': str(package), 'model_dir': str(ws/'model')})
             if _host(result):
                 raise RuntimeError('emit_check could not run on this host for ' + package.name + ': ' + str(result.get('error')))
-            if (result.get('ok') and result.get('integrity_ok') and result.get('runtime_current')
-                    and result.get('replay_status') == 'passed'):
+            if result.get('ok') and result.get('integrity_ok') and result.get('replay_status') == 'passed':
                 path, state = _state(run_dir)
                 state.update(package_sha256=digest(package), package_manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest())
                 _write(path, state)
@@ -520,18 +518,6 @@ def _binding(options):
     if not isinstance(device, dict) or not isinstance(device.get('binding'), dict) or not device['binding']:
         return None
     return dict(device['binding'])
-
-
-def package_call(run_dir, stage, arguments):
-    """Check, before anything is dispatched, that the call runs the unchanged stage-assigned package copy, and return
-    the call: it runs the package's own CLI over the assigned binding with the assigned grants."""
-    from .package_runner import package_invoker
-    _, state = _state(run_dir)
-    package = Path(arguments['package_dir']).resolve()
-    if str(package) != state.get('package_copies', {}).get(stage) or digest(package) != state.get('package_sha256'):
-        raise ValueError('Only the unchanged stage-assigned package may execute')
-    invoke = package_invoker(package, arguments['binding'], arguments.get('allow_effects') or [])
-    return lambda: invoke(arguments['operation'], arguments.get('parameters') or {})
 
 
 def record_call(run_dir, stage, name, arguments, result, before, after, options=None):

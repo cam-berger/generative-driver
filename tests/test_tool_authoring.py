@@ -76,3 +76,52 @@ class ToolAuthoringTests(unittest.TestCase):
         self.assertEqual(result['outputs'], {})
         self.assertEqual(result['invalid_outputs'], {'value': 'not a number'})
         self.assertEqual(result['calls'], [])
+
+
+class ManagedDriverTests(unittest.TestCase):
+    """The SDK on a package of format 3 (docs/features/package-format/03-package.md, Behaviour 03-B14)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def test_03_B14_the_sdk_opens_describes_invokes_and_closes_a_session_on_a_package_of_format_3(self):
+        from generative_driver import stand_in_device
+        from generative_driver.configurator import Controller
+        from generative_driver.sdk import ManagedDriver
+        from interface_runtime.contracts import contract_view
+        from owner_ipc_fixture import owner_ipc
+        from test_package_data import FILES, emitted, files_of, samp1
+        result, model, _ = emitted(self.root)
+        package = Path(result['package_dir'])
+        self.assertEqual(files_of(package), FILES)
+        owner = Controller(self.root / 'owner')
+        self.addCleanup(owner.close)
+        with owner_ipc(owner), stand_in_device.serving() as binding:
+            driver = ManagedDriver.open(package, binding=binding, home=owner.home)
+            # The contract is the view of the package's driver, and the session describes the same one.
+            self.assertEqual(driver.contract, contract_view(json.loads(model.read_text(encoding='utf-8'))))
+            self.assertEqual(driver.contract, contract_view(samp1()))
+            described = driver.describe()
+            self.assertEqual((described['ok'], described['contract'], described['manifest_sha256']),
+                             (True, driver.contract, result['manifest_sha256']), described)
+            measured = driver.invoke('measure', request_id='measure-once')
+            self.assertEqual((measured['schema'], measured['ok'], measured['outputs']),
+                             ('driver-result/1', True, {'temperature': 21.5}), measured)
+            # A second client reaches the same session by its id, and reads the saved result of that call.
+            again = ManagedDriver(package, driver.session_id, home=owner.home)
+            status = again.status('measure-once')
+            self.assertEqual((status['status'], status['invocation_status'], status['result']['outputs']),
+                             ('open', 'finished', {'temperature': 21.5}), status)
+            self.assertEqual(driver.close()['status'], 'closed')
+            self.assertEqual(again.status()['status'], 'closed')
+
+    def test_03_B14_the_sdk_refuses_a_package_of_an_earlier_format_by_its_name(self):
+        from generative_driver.sdk import ManagedDriver
+        from test_package_data import emitted, remanifest
+        package = Path(emitted(self.root)[0]['package_dir'])
+        remanifest(package, lambda manifest: manifest.update(schema='interface-package/2'))
+        with self.assertRaisesRegex(ValueError, "package format is not one this kit knows: 'interface-package/2'; "
+                                                'it reads interface-package/3'):
+            ManagedDriver(package, 'not-opened')

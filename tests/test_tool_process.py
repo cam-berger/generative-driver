@@ -179,20 +179,22 @@ def benchmark_run(db, workspace):
 
 
 def reuse_run(db, package, workspace):
-    """Save a fresh-reuse assignment over the generated catalog of `package`, on a binding nothing listens at; nothing
-    of it runs. Returns what its worker's gateway calls carry and the name of the catalog's measuring tool."""
+    """Save a fresh-reuse assignment over the generated tools of `package`, on a binding nothing listens at; nothing
+    of it runs. Returns what its worker's gateway calls carry and the name of the measuring tool."""
+    import hashlib
     from generative_driver.configurator import digest
     workspace.mkdir(parents=True)
-    manifest = json.loads((package / 'manifest.json').read_text(encoding='utf-8'))
-    tools = [tool['name'] for tool in json.loads((package / 'mcp-tools.json').read_text(encoding='utf-8'))['tools']]
+    listed = json.loads((package / 'mcp.json').read_text(encoding='utf-8'))['tools']
+    tools = [tool['name'] for tool in listed]
     binding = {'host': '127.0.0.1', 'port': 9}
     spec = {'goal': 'Measure temperature', 'binding': binding, 'effects': ['read']}
+    # The assignment names the package's manifest and the tools as they were rendered: their JSON with sorted keys.
+    rendered = hashlib.sha256(json.dumps(listed, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
     assignment = {'id': 'reuse-1', 'stage': 'reuse', 'revision': 0, 'workspace': str(workspace),
                   'inputs': {str(package): digest(package)}, 'binding': binding, 'effects': ['read'],
                   'allowed_tools': tools,
                   'device_mcp': {'package_dir': str(package), 'manifest_sha256': digest(package / 'manifest.json'),
-                                 'contract_sha256': manifest['contract_sha256'],
-                                 'catalog_sha256': digest(package / 'mcp-tools.json')}}
+                                 'catalog_sha256': rendered}}
     db.execute('INSERT INTO runs(id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?)',
                ('run-reuse', json.dumps(spec), 'running', 'reuse', time.time(), time.time()))
     db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',

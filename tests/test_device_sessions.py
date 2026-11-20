@@ -138,7 +138,6 @@ class ModelRuleSessionTests(unittest.TestCase):
                 device = ManagedDriver.open(package, binding=binding, home=home)
                 self.assertEqual(device.describe()['contract'], contract_view(model))
                 self.assertEqual(device.contract, contract_view(model))
-                self.assertEqual(json.loads((package/'driver/contract.json').read_text()), contract_view(model))
             finally:
                 call('shutdown', home=home, autostart=False)
 

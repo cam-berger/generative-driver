@@ -1,12 +1,14 @@
 """The client interface: what a client that brings its own device and mission can ask of the tool.
 
 The interface module is tested by what it offers and returns, and the service through `generative_driver.client.call`.
-The values it pins are those of version 4.
+The values it pins are those of version 5, and the page `docs/client-interface.md` is read for what it says of the
+frozen driver.
 
 Temporary homes only; no model and no hardware.
 """
 import hashlib
 import inspect
+import re
 import sys
 import tempfile
 import time
@@ -45,8 +47,9 @@ class InterfaceModuleTests(unittest.TestCase):
 
     def test_03_B1_the_version_the_protocol_the_calls_and_the_verdict_fields_have_their_values(self):
         self.assertIs(type(client_interface.VERSION), int)
-        # Version 3 added `cancel` and `seal` to the calls (07-B6). Version 4 added no call (08-B9).
-        self.assertEqual(client_interface.VERSION, 4)
+        # Version 3 added `cancel` and `seal` to the calls (07-B6). Version 4 added no call (08-B9), and neither did
+        # version 5 (Spec 03 of the package-format Run, 03-B17).
+        self.assertEqual(client_interface.VERSION, 5)
         self.assertEqual(client_interface.PROTOCOL, 'assistive/1')
         self.assertEqual(client_interface.CALLS, ('ping', 'start', 'resume', 'status', 'events', 'result',
                                                   'attach_device', 'record_evaluation', 'cancel', 'seal'))
@@ -210,6 +213,103 @@ class ServiceCallTests(ServiceCase):
         self.assertEqual(client_interface.verdict_errors(record), [FIELDS_MESSAGE])
         self.assertEqual(call('record_evaluation', {'run_id': run, 'token': token, 'equivalence': record}),
                          {'ok': False, 'error': 'ValueError', 'reason': 'Invalid evaluation record: ' + FIELDS_MESSAGE})
+
+
+DOCUMENT = Path(__file__).resolve().parents[1] / 'docs' / 'client-interface.md'
+# The interface as version 4 had it: version 5 changes no call, no field of the verdict record and no import.
+CALLS = ['ping', 'start', 'resume', 'status', 'events', 'result', 'attach_device', 'record_evaluation', 'cancel',
+         'seal']
+IMPORTS = {
+    'generative_driver.client_interface': ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION',
+                                           'device_errors', 'firmware_errors', 'frozen_driver', 'mission_errors',
+                                           'verdict_errors'],
+    'generative_driver.client': ['call', 'default_home'],
+    'generative_driver.integrity': ['digest'],
+    'generative_driver.setup': ['SUPPORTED_EXECUTORS', 'resolve_executor'],
+    'generative_driver.replay': ['candidate_config'],
+    'generative_driver.toolkit': ['call_tool', 'resources_root'],
+    'interface_runtime.engine': ['validate_model'],
+    'interface_runtime': [],
+}
+PACKAGE_FILES = ('README.md', 'manifest.json', 'mcp.json', 'drivers/<driver>.json', 'evidence/<driver>.probe.json')
+
+
+def page(heading=None):
+    """The lines of the page, or those under its second-level `heading`. The lines before the first such heading are
+    under the heading ''."""
+    lines = DOCUMENT.read_text(encoding='utf-8').splitlines()
+    if heading is None:
+        return lines
+    start = lines.index('## ' + heading) + 1 if heading else 0
+    end = next((number for number in range(start, len(lines)) if lines[number].startswith('## ')), len(lines))
+    return lines[start:end]
+
+
+def said(heading=None):
+    """What the page says, or what it says under `heading`, as one line, for a sentence broken over lines."""
+    return ' '.join(' '.join(page(heading)).split())
+
+
+def sentences(text):
+    """The sentences of `text`, each to its full stop."""
+    return [sentence.strip() for sentence in re.findall(r'.*?[.](?= |$)', text)]
+
+
+def backticked(text):
+    """The names `text` gives between backticks, in order."""
+    return re.findall(r'`([^`]+)`', text)
+
+
+class FrozenDriverPageTests(unittest.TestCase):
+    """The client interface says what a client now reads (Spec 03 of the package-format Run, 03-B17)."""
+
+    def test_03_B17_the_page_and_the_module_are_version_5(self):
+        self.assertEqual(page()[0], '# Client interface, version 5')
+        self.assertEqual(client_interface.VERSION, 5)
+        self.assertTrue(client_interface.__doc__.startswith('The client interface, version 5:'),
+                        client_interface.__doc__.splitlines()[0])
+
+    def test_03_B17_the_page_says_the_frozen_driver_is_a_folder_of_data_and_names_its_five_files(self):
+        read = said('Read the records and the frozen driver')
+        self.assertIn('a folder of data in the format `interface-package/3`', read)
+        for file in PACKAGE_FILES:
+            with self.subTest(file=file):
+                self.assertIn('`' + file + '`', read)
+        self.assertIn('five files', read)
+        self.assertIn('no code', read)
+
+    def test_03_B17_the_page_says_how_the_tool_runs_a_frozen_driver_and_what_lies_outside_the_interface(self):
+        told = sentences(said())
+        runs = [sentence for sentence in told if '`generative-driver serve`' in sentence]
+        self.assertTrue(any('started as a process' in sentence for sentence in runs), runs)
+        outside = [sentence for sentence in told if 'outside this interface' in sentence]
+        self.assertTrue(any('managed session' in sentence and 'developer tools' in sentence for sentence in outside),
+                        outside)
+        # It says so as it says of clearing an uncertain effect, which it still says.
+        self.assertIn('The operator clears an uncertain effect through the command line or the MCP server, outside '
+                      'this interface.', told)
+
+    def test_03_B17_the_page_says_every_line_of_package_events_has_mcp(self):
+        holds = [sentence for sentence in sentences(said('Records on disk'))
+                 if sentence.startswith('`supplied/package-events.jsonl` there holds')]
+        self.assertEqual(len(holds), 1, holds)
+        # The sentence that names what each line has names `mcp` among it.
+        self.assertIn('for each call a worker made on the driver package', holds[0])
+        self.assertEqual(backticked(holds[0])[-1], 'mcp')
+        self.assertNotIn('A line has `mcp` when', said('Records on disk'))
+
+    def test_03_B17_no_call_field_or_import_of_the_interface_changes(self):
+        self.assertEqual(list(client_interface.CALLS), CALLS)
+        self.assertEqual({module: list(names) for module, names in client_interface.IMPORTS.items()}, IMPORTS)
+        self.assertEqual(client_interface.VERDICT_FIELDS, frozenset(FIELDS))
+        # The page lists the same calls, the same fields of the verdict record and the same imports.
+        [calls] = [sentence for sentence in sentences(said('')) if 'The calls of this interface are' in sentence]
+        self.assertEqual(backticked(calls), CALLS)
+        fields = [name for line in page('Post one final verdict') if line.startswith('| `')
+                  for name in backticked(line.split('|')[1])]
+        self.assertEqual(sorted(fields), sorted(FIELDS))
+        listed = [backticked(line) for line in page('What a client imports') if line.startswith('- `')]
+        self.assertEqual({module: names for module, *names in listed}, IMPORTS)
 
 
 if __name__ == '__main__':

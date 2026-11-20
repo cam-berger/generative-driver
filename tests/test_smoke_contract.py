@@ -30,15 +30,15 @@ class SmokeFormatTests(SmokeCase):
         handed = Path(interpreted['artifacts'][0]['path'])
         self.assertEqual(json.loads((handed / 'model.json').read_text(encoding='utf-8')), stand_in)
         self.assertEqual([path.name for path in handed.rglob('*') if 'contract' in path.name], [])
-        # Reuse is served the catalog of the package it was given, and its tool shows what the model says.
+        # Reuse is served the tools of the package it was given, and its tool shows what the model says.
         [reuse] = [e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'reuse']
         [package] = reuse['inputs']
-        catalog_path = Path(package) / 'mcp-tools.json'
+        catalog = json.loads((Path(package) / 'mcp.json').read_text(encoding='utf-8'))
         served = [e['data'] for e in events if e['kind'] == 'mcp.catalog_served']
-        self.assertEqual([entry['catalog_sha256'] for entry in served],
-                         [hashlib.sha256(catalog_path.read_bytes()).hexdigest()])
-        catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
-        tool = next(tool for tool in catalog['tools'] if tool['name'] == 'device_measure')
+        # The served tools are named by the hash of their JSON with sorted keys.
+        rendered = json.dumps(catalog['tools'], sort_keys=True, ensure_ascii=False).encode('utf-8')
+        self.assertEqual([entry['catalog_sha256'] for entry in served], [hashlib.sha256(rendered).hexdigest()])
+        tool = next(tool for tool in catalog['tools'] if tool['name'] == 'stand_in_device_measure')
         self.assertEqual(tool['description'], measure['description'])
         shown = tool['outputSchema']['properties']['outputs']['properties']['temperature']['description']
         self.assertEqual(shown.split('\n'), [temperature['description'], 'Unit: not stated by the device.',

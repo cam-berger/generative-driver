@@ -33,18 +33,18 @@ Restart after upgrades or installation edits too: `service status` reports `"com
 
 ## Add optional hardware tools
 
-From the checkout:
-
-```sh
-python -m pip install -e ".[hardware,docs]"
-python -m generative_driver doctor
-```
-
-With uv, name every extra you want in one command, because `uv sync` removes extras it is not given:
+From the checkout, with uv, name every extra you want in one command, because `uv sync` removes extras it is not given:
 
 ```sh
 uv sync --extra dev --extra hardware --extra docs
 uv run generative-driver doctor
+```
+
+Without uv:
+
+```sh
+python -m pip install -e ".[hardware,docs]"
+python -m generative_driver doctor
 ```
 
 USB drivers, permissions, Ghidra and Java are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
@@ -66,6 +66,37 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 ```
 
 This sets six hours total, not six additional hours. The maximum is seven days; repeating a total adds nothing. MCP uses `budget_seconds` and `budget_reason`. Extensions retain start time, attempts and evidence and record a `run.budget_extended` event.
+
+## Serve a package
+
+A run emits a package: five files of data that the installed tool runs. One command serves a package's tools to an agent over MCP:
+
+```sh
+generative-driver serve PACKAGE --binding '{"host": "127.0.0.1", "port": 12345}'
+```
+
+The binding above is an example. The package's `README.md` gives the form of the binding for its channel, and its `mcp.json` holds the entry for an MCP client. Reads need no flag. Add `--allow-effect write`, `--allow-effect actuate` or `--allow-effect reset` for each other effect the agent may use. From a checkout, write `uv run generative-driver` or `python -m generative_driver` in place of `generative-driver`. The [extension guide](extending-drivers-and-mcp.md#serve-a-package) describes the command.
+
+The command opens a managed session, in which the configurator holds the device for this package, and writes the session's id to standard error. It closes the session when it ends. In two cases the session stays open and keeps the binding:
+
+- The command was killed, so it never tried the close.
+- The close was refused, because a call was still active or an effect is uncertain. The command then writes the reason and the session's id to standard error and exits with a non-zero status.
+
+The session's id is in the command's standard error: at the start, and again with the reason when the close is refused. Where that output goes is up to the MCP client that started the command. Free the session through the SDK, with the package's folder and that id:
+
+```python
+from generative_driver.sdk import ManagedDriver
+
+session = ManagedDriver("PACKAGE", "SESSION_ID")
+print(session.status("REQUEST_ID"))
+print(session.close())
+```
+
+Pass `home="DIRECTORY"` to `ManagedDriver` when the command ran with another state directory. The configurator must be running; start it with `service start` when it is not.
+
+`status` with the `_request_id` of a call gives that call's saved result as `result`. After a lost reply, read the result this way and send nothing again. When `result` is null, `invocation_status` says why: `pending` while the call still runs, `interrupted` when it never finished, `unknown` when the session never got that id.
+
+`close` frees the binding. It is refused while a call is still active or an effect is uncertain. The operator then checks the device and resolves the uncertain effect, as the [extension guide](extending-drivers-and-mcp.md#managed-use-and-generated-mcp) says, and closes again. Nothing here repeats a call.
 
 ## Developer command line
 

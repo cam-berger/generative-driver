@@ -242,9 +242,9 @@ class SmokeTests(SmokeCase):
         # emit builds the package.
         self.assertEqual([(e['name'], e['ok']) for e in finished['emit']], [('emit_package', True)])
         # reuse, given only the package and the objective, calls an operation beyond identity through the package's
-        # generated catalog, served by the gateway its launch names.
+        # generated tools, served by the gateway its launch names.
         [package] = assigned['reuse']['inputs']
-        self.assertTrue((Path(package) / 'mcp-tools.json').is_file())
+        self.assertTrue((Path(package) / 'mcp.json').is_file())
         [called] = finished['reuse']
         self.assertEqual((called['ok'], called['connected'], called['result']['mcp']['schema']),
                          (True, True, 'driver-mcp-call/1'))

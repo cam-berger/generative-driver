@@ -45,7 +45,8 @@ STAGE_TOOLS = {
     'probe': ['model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
     'ground': ['probe_run','interface_execute','probe_diff'],
     'emit': ['emit_package','emit_check'],
-    'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
+    # Fresh reuse gets no tool of the kit: its tools are the ones generated from the package it receives.
+    'reuse': [],
 }
 # Tools whose `address` and `serial_number` select a USB device (vid:pid and serial). The configurator owns that
 # selection as it owns the serial port: a worker names a transport, and only the operator's bound identity is read.
@@ -59,12 +60,6 @@ GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: u
                     'observations where given, and report what the device did that the model did not predict. Goal: ')
 
 
-# Fresh reuse's package tool on a supplied device; an emulated device's result carries its instrument reading.
-PACKAGE_EXECUTE = {'name':'package_execute','description':'Execute a packaged driver operation over '
-    'the configurator-owned binding. When the device has an instrument, as an emulated device does, the result also '
-    'carries its reading after the call: device evidence, as a real device\'s reading would be, never a grade.',
-    'inputSchema':{'type':'object','required':['package_dir','operation'],'additionalProperties':False,
-        'properties':{'package_dir':{'type':'string'},'operation':{'type':'string'},'parameters':{'type':'object'}}}}
 # A run on a supplied device is observed without truth: it completes awaiting its client's verdict after the run.
 PENDING = 'Frozen driver awaits independent evaluation'
 # The keys with which an earlier version started a run on a benchmark case. `start` takes none of them.
@@ -649,8 +644,6 @@ def _emit_check_failure(result):
         return result['error']
     if result.get('integrity_ok') is False:
         return 'package integrity failed'
-    if result.get('runtime_current') is False:
-        return "the package carries a runtime other than this kit's"
     if result.get('replay_status') not in (None, 'passed'):
         return 'replay ' + str(result['replay_status'])
     return 'emit_check reported failure'
@@ -772,33 +765,37 @@ def _live_outcome(event):
 
 
 def _frozen_package(package, strict=False):
-    """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
-    (which emit_test_live reports as `manifest_sha256` when it runs the installed runtime over the package's data),
-    its driver directory's digest (which interface_execute runs
-    as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it),
-    whether its channel declares that opening it resets the device (its runtime then needs the reset grant for every
-    operation) and its functions: the operations beyond identity with a step that reaches the device (an exchange or
-    a USB control transfer) asking something identity's own steps do not. An operation of delays alone sends nothing,
+    """What judging a run of a frozen package needs, read from its bytes through the runtime's check of the package
+    (`interface_runtime.package`): its content digest, its manifest's digest (which the proof of a generated call
+    names), its tools, each with its operation, as the runtime renders them from its driver, its identity operation,
+    each operation's declared effect (absent is actuate, as the gateway reads it), whether its channel declares that
+    opening it resets the device (the runtime then needs the reset grant for every operation) and its functions: the
+    operations beyond identity with a step that reaches the device (an exchange or a USB control transfer) asking
+    something identity's own steps do not. An operation of delays alone sends nothing,
     and one that repeats identity's requests asks nothing identity does not, however it reads or checks the reply, so
     running either is no evidence of function. A step is compared by what reaches the device: its op and tx, and for
     a USB control transfer its setup and its rx, whose length the transfer requests. What a step accepts back (its
-    receive mode or bound on a stream, expect and match), its capture name and timeout ask the device nothing. The
-    model is read as the runtime reads it.
+    receive mode or bound on a stream, expect and match), its capture name and timeout ask the device nothing.
 
-    A part that is absent or does not parse is None. So is one the host cannot read, unless `strict`: the final verdict
-    reads a package whose digest it has just verified, so a host failure there says nothing about the driver and
-    raises, stopping the run for the host instead of grading it."""
+    A package the check refuses, such as one whose driver is absent or does not parse, has none of these but the
+    digests: its tools, identity, effects and functions are None, and its manifest's digest is None when the manifest
+    was not read. The check reports a file the host cannot read as a refusal too. So when `strict`, every file is
+    read first and the host's error raises: the final verdict reads a package whose digest it has just verified, so
+    a host failure there says nothing about the driver and stops the run for the host instead of grading it."""
+    from interface_runtime.catalog import render_mcp
+    from interface_runtime.package import digest as file_digest, package_files, the_driver, verify_package
     root = Path(package['path'])
-    def read(load):
+    if strict:
         try:
-            return load()
-        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError, RecursionError):
-            return None
-        except OSError:
-            if strict:
-                raise
-            return None
-    model = read(lambda: _model_json(root / 'driver' / 'model.json'))
+            package_files(root)
+            file_digest(root / 'manifest.json')
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError):
+            # What a package lacks, or holds that a package may not, is its own defect, which the check names.
+            pass
+    checked = verify_package(root)
+    model = the_driver(checked)[1] if checked['ok'] else None
+    tools = ({name: tool['operation'] for name, tool in render_mcp(checked['drivers'])['operations'].items()}
+             if checked['ok'] else None)
     identity = model.get('identity') if isinstance(model, dict) else None
     identity = identity.get('operation') if isinstance(identity, dict) else None
     operations = model.get('operations') if isinstance(model, dict) else None
@@ -815,14 +812,14 @@ def _frozen_package(package, strict=False):
     functions = (sorted(name for name, op in operations.items() if name != identity and requests(op) - own)
                  if named and identity is not None else None)
     channel = model.get('channel') if isinstance(model, dict) else None
-    return {'sha256': package['sha256'], 'manifest_sha256': read(lambda: digest(root / 'manifest.json')),
-            'driver_sha256': read(lambda: digest(root / 'driver')), 'identity': identity, 'effects': effects,
+    return {'sha256': package['sha256'], 'manifest_sha256': checked['manifest_sha256'], 'tools': tools,
+            'identity': identity, 'effects': effects,
             'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
-            'functions': functions, 'generated_mcp': read(lambda: json.loads((root/'manifest.json').read_text()).get('schema')) == 'interface-package/2'}
+            'functions': functions}
 
 
-NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
-IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation with emit_test_live; '
+NEVER_RAN = 'fresh reuse never ran a tool of the frozen package'
+IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation; '
                  "identity alone is not evidence of function, nor is an operation that only waits or repeats identity's requests")
 UNGRANTED = ("the operator's grants permit no function of the frozen package beyond its identity operation (each needs an "
              'effect, or the reset its channel declares on open, that was not granted), so fresh reuse could not test '
@@ -844,7 +841,7 @@ UNLISTENED = ('no worker listened to the bound serial device with acquire_serial
 
 def _reset_ungranted(package, grants):
     """Whether the frozen package (`_frozen_package`) has a function, but its channel resets the device on open and the
-    operator's `grants` (None when not known) hold no reset: its runtime then refuses every operation of those bytes
+    operator's `grants` (None when not known) hold no reset: the runtime then refuses every operation of those bytes
     before it opens the device, a live probe of them included."""
     return (package is not None and grants is not None and isinstance(package.get('functions'), list)
             and bool(package['functions']) and package.get('resets_on_open') is True and 'reset' not in grants)
@@ -853,7 +850,7 @@ def _reset_ungranted(package, grants):
 def _ungranted(package, grants):
     """Whether the operator's grants (`grants`, or None when not known) permit none of the frozen package's functions
     (`_frozen_package`), although it has one: the gateway refuses every function whose effect is not granted, and the
-    package's own runtime refuses every operation, before it opens the device, when its channel resets the device on
+    runtime refuses every operation of the package, before it opens the device, when its channel resets the device on
     open and the reset is not granted (`_reset_ungranted`)."""
     if (package is None or grants is None or not isinstance(package.get('functions'), list)
             or not isinstance(package.get('effects'), dict)):
@@ -887,15 +884,17 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
     connection to the run's device (`_unreachable`), or is None. The final verdict and each reuse attempt's notes use
     this one rule.
 
+    A call ran the frozen package when it is a generated tool call the configurator dispatched for that package: the
+    `mcp` proof the gateway wrote into its result names the package, its manifest, the call's own assignment and
+    dispatch, and its tool. No other call counts as a run of the frozen package.
+
     - It passes when every live operation succeeded (a call refused before the device was contacted is not one) and
-      at least one emit_test_live ran the frozen package and a function of it beyond its identity operation (an
-      operation with a step that reaches the device) on the device: identity alone is not evidence of function, nor is
-      an operation that only waits. The frozen package ran when the configurator hashed those bytes before dispatch and
-      the snapshot the tool executed carries the frozen manifest.
-    - It fails when the driver failed on the device (a failure is the driver's only when the operation ran the frozen
-      bytes: the package for emit_test_live, or its driver directory for interface_execute), or when no such
-      operation ran, including when no worker listened to a serial device the gateway then kept from fresh reuse
-      (UNLISTENED): listening needs no grant.
+      at least one generated call ran a function of the frozen package beyond its identity operation (an operation
+      with a step that reaches the device) on the device: identity alone is not evidence of function, nor is an
+      operation that only waits or repeats identity's requests.
+    - It fails when the driver failed on the device (a failure is the driver's only when the call ran the frozen
+      package), or when no such call ran, including when no worker listened to a serial device the gateway then kept
+      from fresh reuse (UNLISTENED): listening needs no grant.
     - It is unsettled (None) when a live operation was inconclusive (an operator, host or transport fault, or a
       failure of other bytes) or was dispatched without a recorded result, or when no function ran because the
       operator's grants permit none (an effect or the reset its channel needs) or the operator's or the host's limits
@@ -903,44 +902,30 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
       nothing of the driver.
 
     Returns (the fresh_reuse_live_operations check, its diff entries)."""
-    shas = lambda e: e.get('argument_sha256') or {}
-    snapshot = lambda e: _result_of(e).get('manifest_sha256')
-    generated = lambda e: bool(package and package.get('generated_mcp') and _result_of(e).get('mcp', {}).get('schema') == 'driver-mcp-call/1'
-        and _result_of(e)['mcp'].get('manifest_sha256') == package['manifest_sha256']
-        and _result_of(e)['mcp'].get('package_sha256') == package['sha256']
-        and _result_of(e)['mcp'].get('dispatch_id') == e.get('dispatch_id')
-        and _result_of(e)['mcp'].get('assignment_id') == e.get('assignment_id')
-        and _result_of(e)['mcp'].get('tool_name') == e.get('name') and e.get('connected') is True)
-    dispatched = lambda e: generated(e) or (package is not None and not package.get('generated_mcp') and e.get('name') == 'emit_test_live'
-                            and shas(e).get('package_dir') == package['sha256'])
-    emitted = lambda e: generated(e) or (dispatched(e) and snapshot(e) is not None and snapshot(e) == package['manifest_sha256'])
-    ran_driver = lambda e: emitted(e) or (package is not None and package['driver_sha256'] is not None
-                                          and e.get('name') == 'interface_execute' and shas(e).get('model_dir') == package['driver_sha256'])
+    tools = (package or {}).get('tools') or {}
+    functions = (package or {}).get('functions') or ()
+    def emitted(event):
+        """Whether the call ran a tool of the frozen package, by the proof the gateway wrote into its result."""
+        proof = _result_of(event).get('mcp')
+        return (event.get('name') in tools and isinstance(proof, dict) and proof.get('schema') == 'driver-mcp-call/1'
+                and proof.get('package_sha256') == package['sha256']
+                and proof.get('manifest_sha256') == package['manifest_sha256']
+                and proof.get('assignment_id') == event.get('assignment_id')
+                and proof.get('dispatch_id') == event.get('dispatch_id')
+                and proof.get('tool_name') == event.get('name'))
     def outcome_of(event):
         outcome, detail = _live_outcome(event)
-        if outcome == 'failed' and not ran_driver(event):
+        if outcome == 'failed' and not emitted(event):
             return 'inconclusive', 'model fault outside the emitted driver'
         return outcome, detail
-    def beyond_identity(event):
-        """Whether the call ran a function of the frozen package (beyond its identity operation) on the device: True,
-        False, or None when its result does not say (it recorded no execution, or stopped at a fault before one)."""
-        result = _result_of(event)
-        if generated(event):
-            return result.get('operation') in (package['functions'] or ())
-        executions = _listed(result.get('results'))
-        other = lambda name: name in (package['functions'] or ())
-        if any(other(r.get('operation')) and r.get('transport_open_attempted') is not False for r in executions):
-            return True
-        pending = [name for name in result.get('not_run') if other(name)] if isinstance(result.get('not_run'), list) else []
-        return None if pending or not executions else False
     def functional(event, outcome):
-        if not dispatched(event) or outcome == 'refused':
+        """Whether the call ran, or may have run, a function of the frozen package on the device."""
+        if outcome == 'refused' or tools.get(event.get('name')) not in functions:
             return False
-        if outcome in ('inconclusive', 'unresolved'):
-            # It stopped at a fault: it may have run a function of the frozen package, unless it plainly ran other
-            # bytes or no function.
-            return beyond_identity(event) is not False and snapshot(event) in (None, package['manifest_sha256'])
-        return emitted(event) and beyond_identity(event) is True
+        # A dispatch without a recorded result has no proof. It may have run the function when the configurator
+        # recorded, as it dispatched the tool, the digest of the frozen package.
+        return emitted(event) or (outcome == 'unresolved'
+                                  and (event.get('argument_sha256') or {}).get('package_dir') == package['sha256'])
     recorded = {e.get('dispatch_id') for e in events}
     # A device dispatch without a recorded result (the tool raised after it was dispatched) is unresolved.
     rows = [(e, *outcome_of(e)) for e in events if e.get('connected') is True]
@@ -966,8 +951,8 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
         ' was inconclusive: ' + str(detail) + ', not a driver failure' if outcome == 'inconclusive' else
         ' was dispatched but its result was never recorded') + dispatch(e)} for e, outcome, detail in unsettled]
     if not exercised:
-        # The rule is a live test of a function of the frozen package itself; running its driver directory as a
-        # model is judged above but is not that test.
+        # The rule is a generated call of a function of the frozen package itself; any other live operation is
+        # judged above but is not that call.
         diff.append({'id': check['id'], 'reason': unreachable if blocked else UNGRANTED if ungranted else IDENTITY_ONLY if ran else
                      UNLISTENED if unreachable == UNLISTENED else NEVER_RAN + (
             ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
@@ -984,18 +969,17 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
 
     - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
       configurator ran at emit, and fresh reuse passed `_fresh_reuse`: every live operation succeeded, and at least
-      one ran the frozen package with emit_test_live (the bytes the configurator hashed before dispatch, executed as
-      a snapshot of the frozen manifest) and a function of it beyond its identity operation, on the connection the
-      configurator supplied.
+      one generated tool call ran a function of the frozen package beyond its identity operation, on the connection
+      the configurator supplied.
     - **Not equivalent:** no single package passed emit_check replay of device exchanges (a replay of exchanges the
       worker supplied is not one), the driver failed on the device, or fresh reuse never ran a function of the package
-      beyond its identity with emit_test_live.
+      beyond its identity with a generated tool.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
       a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
       operator's grants permit no function of the package beyond its identity (an effect or the reset its channel
       needs), so none could run. So it is without a replay of device exchanges when no live probe could have recorded
       one: the operator's or the host's limits let the configurator open no connection to the device (any `unreachable`
-      but UNLISTENED, the pipeline's own omission), or the frozen package's runtime refuses every operation of its bytes
+      but UNLISTENED, the pipeline's own omission), or the runtime refuses every operation of the frozen package's bytes
       for want of the reset grant its channel declares. That excuses only the one package that passed emit_check
       without a replay of device exchanges, never a driver that was not emitted, a candidate emit_check rejected
       offline or several packages handed off.
@@ -1047,7 +1031,7 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
                       'none of the ' + str(candidates) + ' emitted packages passed emit_check')
         diff.append({'id': replay['id'], 'reason': reason})
     # No live probe could record device exchanges to replay when the operator's or the host's limits kept every
-    # connection from the device, or the frozen package's runtime refuses its bytes without the reset grant its channel
+    # connection from the device, or the runtime refuses the frozen package's bytes without the reset grant its channel
     # declares. Then the one package that passed emit_check lacks its replay of device exchanges for that limit, not
     # for the driver, and the verdict is unscored unless the driver failed; it is never equivalent. No driver emitted,
     # a candidate emit_check rejected offline, or several packages handed off failed whatever the device access.
@@ -2278,24 +2262,26 @@ class Controller:
 
     @staticmethod
     def _generated_reuse(prepared):
+        """The preparation of fresh reuse with the tools generated from the package among its inputs: the worker is
+        assigned those tools alone, and its objective names them and the package's documentation."""
+        from interface_runtime.catalog import render_mcp, tools_digest
         from interface_runtime.package import verify_package
         for raw in prepared.get('inputs', []):
             package = Path(raw)
             manifest_path = package / 'manifest.json'
             if not manifest_path.is_file():
                 continue
-            manifest = json.loads(manifest_path.read_text())
-            if manifest.get('schema') != 'interface-package/2':
-                continue
             checked = verify_package(package)
             if not checked['ok']:
                 raise IntegrityError('Generated reuse package is invalid: ' + str(checked['defects']))
-            catalog = json.loads((package/'mcp-tools.json').read_text())
-            configured = {'package_dir': str(package), 'manifest_sha256': digest(manifest_path),
-                'contract_sha256': manifest['contract_sha256'], 'catalog_sha256': digest(package/'mcp-tools.json')}
-            return {**prepared, 'device_mcp': configured, 'allowed_tools': [t['name'] for t in catalog['tools']],
-                'objective': prepared['objective'].replace('Use package_execute for each operation.',
-                    'Use the generated MCP tools for each operation.') + ' Use only the assigned generated MCP tools to operate this device.'}
+            catalog = render_mcp(checked['drivers'])
+            configured = {'package_dir': str(package), 'manifest_sha256': checked['manifest_sha256'],
+                          'catalog_sha256': tools_digest(catalog['tools'])}
+            tools = [t['name'] for t in catalog['tools']]
+            return {**prepared, 'device_mcp': configured, 'allowed_tools': tools,
+                    'objective': prepared['objective'] + ' Operate the device only with the generated tools '
+                                 + ', '.join(tools) + '. README.md in the package says what each operation means, '
+                                 'what it takes and gives, and what was tested.'}
         return prepared
 
     @staticmethod
@@ -2624,7 +2610,7 @@ class Controller:
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
                                        + str(result.get('error')))
                 replayed=result.get('replay_status')=='passed'
-                if result.get('ok') and result.get('_exit',0)==0 and result.get('runtime_current') and replayed:
+                if result.get('ok') and result.get('_exit',0)==0 and result.get('integrity_ok') and replayed:
                     selected.append(str(package))
                     # A package replays the exchanges it bundles, which are device exchanges only when its probe
                     # evidence was recorded live.
@@ -3019,8 +3005,6 @@ class Controller:
         condition_ids = [condition['id'] for condition in conditions]
         allowed=assignment['allowed_tools']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
-        if 'package_execute' in assignment['allowed_tools']:
-            contracts.append(copy.deepcopy(PACKAGE_EXECUTE))
         for contract in contracts:
             schema = contract['inputSchema']
             if condition_ids and contract['name'] in ('interface_execute', 'probe_run'):
@@ -3144,8 +3128,7 @@ class Controller:
             # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
             # endpoint: a worker's own bus_url is refused above.
             arguments['bus_url'] = binding['url']
-        connected = (name in ('probe_run', 'interface_execute', 'emit_test_live', 'package_execute')
-                     and not arguments.get('replay'))
+        connected = name in ('probe_run', 'interface_execute', 'emit_test_live') and not arguments.get('replay')
         if connected:
             if not assignment.get('binding'):
                 raise ValueError('No operator-owned device binding for this stage')
@@ -3168,15 +3151,11 @@ class Controller:
         device = invoke = None
         if connected and spec.get('device'):
             # A device the client supplies. Everything refusable is checked before the dispatch is marked: the
-            # binding is the one the run recorded, and a package call runs only the unchanged stage-assigned copy.
+            # binding is the one the run recorded.
             from .device_client import open_device
             if arguments['binding'] != (progress.get('device') or {}).get('binding'):
                 raise ValueError('Assigned binding differs from the supplied device')
-            if name == 'package_execute':
-                from .supplied.stages import package_call
-                invoke = package_call(self.home / 'runs' / run['id'], assignment['stage'], arguments)
-            else:
-                invoke = lambda: call_tool(name, arguments)
+            invoke = lambda: call_tool(name, arguments)
             device = open_device(spec['device'])
         # Facts the device diff rests on, recorded by the configurator, never taken from the worker: whether it
         # supplied the device connection (a replay gets none), and the content of every evidence path the tool reads.
@@ -3186,7 +3165,7 @@ class Controller:
                     if device is not None else {}),
                  **({'condition_id': condition_id} if condition_requested else {})}
         # A generic run's kit tool runs in a child process within the call's limits, when the service turned that on.
-        kit_tool = device is None and name != 'package_execute'
+        kit_tool = device is None
         limits = self._limits(run['id'], spec, run['created'], marker['expires']) if kit_tool else None
         # The uncertain flag is persisted before dispatch. A crash or cancellation
         # cannot turn an outstanding physical effect into an automatic retry.
@@ -3242,7 +3221,7 @@ class Controller:
             # declared before its first device call. Empty transcripts alone cannot establish this: opening may
             # itself reset it.
             executions = result.get('results') if name == 'probe_run' else [result]
-            refused_before_open = ((name in ('interface_execute', 'probe_run', 'package_execute')
+            refused_before_open = ((name in ('interface_execute', 'probe_run')
                 and type(executions) is list and bool(executions)
                 and all(type(item) is dict and item.get('schema') == 'interface-result/1'
                         and item.get('transport_open_attempted') is False for item in executions))
@@ -3258,8 +3237,6 @@ class Controller:
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
                 'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
                 'refused_before_open':refused_before_open,**facts,'actor':'worker'}, db)
-        if name == 'package_execute':
-            result = {**result, 'evidence_id': str(evidence_id)}
         return result
 
     def close(self, timeout=10):

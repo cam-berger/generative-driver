@@ -8,7 +8,7 @@ import threading
 import time
 
 RECEIPT = 'emulator-recovery/2'
-LIVE_TOOLS = ('interface_execute', 'probe_run', 'package_execute', 'emit_test_live')
+LIVE_TOOLS = ('interface_execute', 'probe_run', 'emit_test_live')
 
 
 def _generated(event, assignment):
@@ -22,8 +22,7 @@ def _generated(event, assignment):
         and proof.get('tool_name') == event.get('name')
         and proof.get('package_sha256') == assignment.get('inputs', {}).get(configured.get('package_dir'))
         and (event.get('argument_sha256') or {}).get('package_dir') == proof.get('package_sha256')
-        and all(proof.get(key) == configured.get(key) for key in
-                ('manifest_sha256', 'contract_sha256', 'catalog_sha256')))
+        and all(proof.get(key) == configured.get(key) for key in ('manifest_sha256', 'catalog_sha256')))
 
 
 def diagnostic_faults(finishes, assignment):

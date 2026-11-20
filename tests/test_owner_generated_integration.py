@@ -170,11 +170,11 @@ class OwnerGeneratedTests(unittest.TestCase):
                                                     'replay': str(root / 'replay.json')})
                     emitted = call_tool('emit_package', {**run, 'probe': probe['probe']})
                     self.assertTrue(emitted.get('ok'), emitted)
-                    catalog = json.loads((Path(emitted['package_dir']) / 'mcp-tools.json').read_text())
+                    catalog = json.loads((Path(emitted['package_dir']) / 'mcp.json').read_text())
                     tools = {tool['name']: tool['description'].split('\n') for tool in catalog['tools']}
-                    self.assertEqual(tools['device_measure'],
+                    self.assertEqual(tools['fictional_demonstration_measure'],
                                      ['Read the temperature of the probe.', 'Warning: ' + RANGE['message']])
-                    self.assertEqual(tools['device_set_level'],
+                    self.assertEqual(tools['fictional_demonstration_set_level'],
                                      ['Set the output level.', 'Precondition armed_required: ' + GUARD['description']])
 
     def test_device_rpc_waits_for_long_operation_and_never_resends_lost_reply(self):
@@ -201,15 +201,16 @@ class OwnerGeneratedTests(unittest.TestCase):
         from generative_driver.device_recovery import unresolved_outcomes
         with tempfile.TemporaryDirectory() as temporary:
             owner=Controller(Path(temporary)/'owner')
-            configured={'manifest_sha256':'a'*64,'catalog_sha256':'b'*64,'contract_sha256':'c'*64,'package_dir':'package'}
+            configured={'manifest_sha256':'a'*64,'catalog_sha256':'b'*64,'package_dir':'package'}
             assignment={'id':'reuse','stage':'reuse','device_mcp':configured,'inputs':{'package':'d'*64}}
-            start={'stage':'reuse','assignment_id':'reuse','actor':'worker','name':'device_write','effectful':True,
+            start={'stage':'reuse','assignment_id':'reuse','actor':'worker','name':'samp1_write','effectful':True,
                 'connected':True,'argument_sha256':{'package_dir':'d'*64}}
             with owner._db() as db:
                 dispatch=owner._event('run','tool.started',start,db)
                 db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch,'run','reuse','worker'))
-                proof={'schema':'driver-mcp-call/1','tool_name':'device_write','session_id':'run','assignment_id':'reuse',
-                    'dispatch_id':str(dispatch),'package_sha256':'d'*64,**{k:v for k,v in configured.items() if k!='package_dir'}}
+                proof={'schema':'driver-mcp-call/1','tool_name':'samp1_write','session_id':'run',
+                    'assignment_id':'reuse','dispatch_id':str(dispatch),'package_sha256':'d'*64,
+                    **{k:v for k,v in configured.items() if k!='package_dir'}}
                 result={'schema':'driver-result/1','ok':False,'identity_verified':True,'transport_open_attempted':True,
                     'requested_command_dispatched':True,'transcript':[{'op':'exchange'}],'mcp':proof,
                     'error':{'fault':'model','code':'response_mismatch'}}

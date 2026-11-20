@@ -1,4 +1,4 @@
-"""The client interface, version 4: what a client that brings its own device, firmware and mission needs in code.
+"""The client interface, version 5: what a client that brings its own device, firmware and mission needs in code.
 
 Such a client asks five things of the service: start a run on a device it supplies, replace that device, post one
 final verdict, read the run's records and its frozen driver, and stop or seal a run. This module names the calls it
@@ -19,7 +19,7 @@ __all__ = ['CALLS', 'IMPORTS', 'PROTOCOL', 'VERDICT_FIELDS', 'VERSION', 'device_
            'frozen_driver', 'mission_errors', 'verdict_errors']
 
 # The title of `docs/client-interface.md` carries this number.
-VERSION = 4
+VERSION = 5
 # Runs record their protocol; a run saved without this label used the earlier gated stage progression.
 PROTOCOL = 'assistive/1'
 # The service knows other calls too; these are the ones a client of this interface sends.

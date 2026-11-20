@@ -1,14 +1,13 @@
 """Configurator-owned leases and dispatch records for stages and package sessions.
 
-What an operation of a package does is read from the package's interface model, `driver/model.json`, the one statement
-of its driver (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
+What an operation of a package does is read from the package's interface model, the file of its driver under
+`drivers/`, the one statement of that driver (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
 """
 from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
 import shutil
-import sys
 import tempfile
 import threading
 import time
@@ -162,9 +161,8 @@ class DeviceAccess:
 
     def open(self, params):
         from .configurator import _json
-        from ._toolchain.interface import _copy
-        from interface_runtime.evidence import read_json
-        from interface_runtime.package import digest
+        from ._toolchain.interface import checked_copy, refusal_text
+        from interface_runtime.package import digest, the_driver
         from interface_runtime.transports import validate_binding
         package = Path(params['package_dir']).expanduser().resolve()
         grants = params.get('effects', ['read'])
@@ -186,16 +184,13 @@ class DeviceAccess:
             storage = self.owner.home/'devices'/session_id
             storage.mkdir(parents=True)
             try:
-                # The session keeps the package's own files, so a later kit runs its runtime over the same data.
-                snapshot, manifest, refused = _copy(package, None, pin, storage)
+                # The session keeps a checked copy of the package, so a package changed later does not change it.
+                snapshot, checked, refused = checked_copy(package, None, pin, storage)
                 if refused is not None:
-                    raise ValueError(str(refused))
-                if manifest['schema'] != 'interface-package/2':
-                    raise ValueError('Managed package use requires a driver-contract package')
-                validate_binding(read_json(snapshot/'driver/model.json')['channel'], binding)
+                    raise ValueError(refusal_text(refused))
+                validate_binding(the_driver(checked)[1]['channel'], binding)
                 spec = {'configuration': configuration, 'package_dir': str(snapshot),
-                        'manifest_sha256': pin, 'contract_sha256': manifest['contract_sha256'],
-                        'binding': binding, 'effects': grants}
+                        'manifest_sha256': pin, 'binding': binding, 'effects': grants}
                 with self.owner._db() as db:
                     db.execute('INSERT INTO device_sessions(id,request_id,spec,status,created,updated) VALUES(?,?,?,?,?,?)',
                                (session_id, request_id, _json(spec), 'open', time.time(), time.time()))
@@ -203,8 +198,7 @@ class DeviceAccess:
             except Exception:
                 shutil.rmtree(storage)
                 raise
-        return {'ok': True, 'session_id': session_id, 'manifest_sha256': pin,
-                'contract_sha256': manifest['contract_sha256']}
+        return {'ok': True, 'session_id': session_id, 'manifest_sha256': pin}
 
     def _invocation(self, owner_id, request_id, operation, parameters, uncertain):
         if type(request_id) is not str or not 1 <= len(request_id) <= 128:
@@ -232,7 +226,7 @@ class DeviceAccess:
                       'message': 'Invocation has no durable result; inspect its status instead of resending a command.'}}
 
     def execute(self, params):
-        from interface_runtime.evidence import read_json
+        from interface_runtime.package import the_driver
         session_id = params['session_id']
         request_id = params.get('request_id')
         with self.lease(session_id):
@@ -244,7 +238,7 @@ class DeviceAccess:
             if previous is not None:
                 return previous
             package = Path(spec['package_dir'])
-            model = read_json(package/'driver/model.json')
+            model = the_driver(self._checked(package, spec['manifest_sha256']))[1]
             operation = params['operation']
             if operation not in model['operations']:
                 raise ValueError('Unknown public operation')
@@ -262,21 +256,25 @@ class DeviceAccess:
             return {**result, 'session_id': session_id, 'request_id': request_id,
                     'dispatch_id': str(dispatch), 'evidence_id': str(evidence)}
 
+    @staticmethod
+    def _checked(package, pin):
+        """The check of the package a session or an assignment holds, whose manifest must still have the hash `pin`."""
+        from ._toolchain.interface import refusal_text
+        from interface_runtime.package import verify_package
+        checked = verify_package(package, expected_manifest_sha256=pin)
+        if not checked['ok']:
+            raise ValueError(refusal_text(checked))
+        return checked
+
     def invoke_package(self, package, pin, operation, parameters, binding, effects):
-        """The installed runtime and driver entry over the package's data, in a subprocess; callers hold the owner lease
-        and journal dispatch."""
-        from ._toolchain.interface import _snapshot, _live_call, BOOT
+        """One operation of the package on the installed runtime, in a child process over a checked copy of the
+        package's data; callers hold the owner lease and journal dispatch."""
+        from ._toolchain.interface import checked_copy, refusal_text, run_child
         with tempfile.TemporaryDirectory(dir=self.owner.home) as temporary:
-            snapshot, manifest, refused = _snapshot(package, None, pin, temporary)
+            copy, _, refused = checked_copy(package, None, pin, temporary)
             if refused is not None:
-                raise ValueError(str(refused))
-            command = [sys.executable, '-I', '-S', '-B', '-c', BOOT, str(snapshot),
-                       'execute', operation, '--parameters', json.dumps(parameters, allow_nan=False),
-                       '--binding', json.dumps(binding, allow_nan=False)]
-            for grant in effects:
-                if grant != 'read':
-                    command += ['--allow-effect', grant]
-            completed = _live_call(operation, command)
+                raise ValueError(refusal_text(refused))
+            completed = run_child(copy, operation, parameters, binding, [grant for grant in effects if grant != 'read'])
             result = completed['stdout_json']
             if type(result) is not dict:
                 result = {'schema': 'driver-result/1', 'operation': operation, 'ok': False,
@@ -286,28 +284,28 @@ class DeviceAccess:
 
     def worker_tool(self, method, params, run, assignment, marker=None):
         """Generated tool Adapter joins the run's existing lease and independent observer."""
-        from interface_runtime.package import verify_package, digest
-        from interface_runtime.evidence import read_json
+        from interface_runtime.catalog import render_mcp
+        from interface_runtime.package import verify_package, the_driver
         configured = assignment['device_mcp']
         package = Path(configured['package_dir'])
         self.owner._verify_inputs(assignment['inputs'])
-        checked = verify_package(package)
-        if not checked['ok'] or digest(package/'manifest.json') != configured['manifest_sha256']:
+        checked = verify_package(package, expected_manifest_sha256=configured['manifest_sha256'])
+        if not checked['ok']:
             raise ValueError('Assigned generated MCP package has changed')
-        catalog = read_json(package/'mcp-tools.json')
+        catalog = render_mcp(checked['drivers'])
         if method in ('tools', 'mcp_tools'):
             if method == 'mcp_tools':
                 self.owner._event(run['id'], 'mcp.catalog_served', {
                     'assignment_id': assignment['id'], **configured})
-            return {'ok': True, 'tools': catalog['tools']}
+            return {'ok': True, 'tools': catalog['tools'], 'server': catalog['server']}
         if method != 'mcp_tool':
             raise ValueError('Generated package operations require the assigned MCP gateway')
         name = params.get('name')
         if name not in catalog['operations']:
             raise ValueError('Tool is not assigned to this worker')
-        operation = catalog['operations'][name]
+        operation = catalog['operations'][name]['operation']
         arguments = params.get('arguments', {})
-        model = read_json(package/'driver/model.json')
+        model = the_driver(checked)[1]
         effect = model['operations'][operation]['effect']
         if effect != 'read' and effect not in assignment['effects']:
             raise ValueError('Operation requires an effect grant the operator has not supplied')
@@ -343,7 +341,7 @@ class DeviceAccess:
             marker.update(dispatched=dispatch, effectful=effectful)
         proof = {'schema': 'driver-mcp-call/1', 'tool_name': name,
                  'catalog_sha256': configured['catalog_sha256'], 'manifest_sha256': configured['manifest_sha256'],
-                 'contract_sha256': configured['contract_sha256'], 'session_id': run['id'],
+                 'session_id': run['id'],
                  'package_sha256': assignment['inputs'][str(package)],
                  'assignment_id': assignment['id'], 'dispatch_id': str(dispatch),
                  'request_id': params.get('request_id')}
@@ -369,8 +367,7 @@ class DeviceAccess:
                         'status': row['status'], 'cancelled': bool(row['cancelled']),
                         'uncertain_effect': bool(row['uncertain']),
                         'in_flight': session_id in self.owner._inflight,
-                        'manifest_sha256': spec['manifest_sha256'],
-                        'contract_sha256': spec['contract_sha256'], 'effects': spec['effects']}
+                        'manifest_sha256': spec['manifest_sha256'], 'effects': spec['effects']}
             if 'request_id' in params:
                 with self.owner._db() as db:
                     invocation = db.execute('SELECT * FROM device_invocations WHERE session_id=? AND request_id=?',
@@ -383,16 +380,16 @@ class DeviceAccess:
             return response
 
     def describe(self, params):
+        from interface_runtime.catalog import render_mcp
         from interface_runtime.contracts import contract_view
-        from interface_runtime.evidence import read_json
-        from interface_runtime.package import verify_package, digest
+        from interface_runtime.package import verify_package, the_driver
         _, spec = self._session(params['session_id'])
         package = Path(spec['package_dir'])
-        checked = verify_package(package)
-        if not checked['ok'] or digest(package/'manifest.json') != spec['manifest_sha256']:
+        checked = verify_package(package, expected_manifest_sha256=spec['manifest_sha256'])
+        if not checked['ok']:
             raise ValueError('Managed session package has changed')
-        return {**self.status(params), 'contract': contract_view(read_json(package/'driver/model.json')),
-                'catalog': read_json(package/'mcp-tools.json')}
+        return {**self.status(params), 'contract': contract_view(the_driver(checked)[1]),
+                'catalog': render_mcp(checked['drivers'])}
 
     def stop(self, params, *, close=False):
         session_id = params['session_id']

@@ -35,8 +35,14 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
 {
   "schema": "interpret-fragment/1",
   "operation": "measure",
-  "model": {"effect": "read", "description": "", "parameters": {}, "steps": [], "outputs": {}},
-  "provenance": [{"item": "operations.measure", "source": "handle_measure at 08000340 formats T:%d.%d"}],
+  "model": {
+    "effect": "read", "description": "Read the temperature of the probe.", "parameters": {},
+    "steps": [{"op": "exchange", "tx": [{"text": "T\n"}], "timeout_ms": 1000, "capture": "reply",
+               "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 64}}],
+    "outputs": {"temperature": {"from": "reply", "kind": "ascii_number", "prefix": "T:", "unit": "Cel",
+                                "description": "Temperature of the probe."}}},
+  "provenance": [{"item": "operations.measure",
+                  "source": "handle_measure at 08000340 formats tenths of a degree Celsius as T:%d.%d"}],
   "replies": {"steps": [["T:21.5"]]}
 }
 ```

@@ -1,50 +1,77 @@
-"""Deterministic MCP descriptions derived from public contract data; no MCP dependency.
+"""The names, the tools and `mcp.json` of a package, rendered from its drivers; no MCP dependency.
 
-Every renderer version a kit has written stays here, so an earlier package's catalog still verifies; new packages use
-`RENDERER` (docs/adr/0008-run-the-installed-runtime-over-package-data.md)."""
+One module renders them, so an agent reads the same words wherever a package is served: in `mcp.json`, from the
+command that serves a package, in fresh reuse, in a managed session's description and in an application of the SDK
+(docs/adr/0010-a-package-is-data-in-one-format.md)."""
 from copy import deepcopy
+import hashlib
+import json
+import re
 
-# Renderer 3 differs from 2 only in a null unit that a `unit_not_stated` uncertainty explains.
-RENDERERS = ('2', '3')
-RENDERER = '3'
+from .contracts import contract_view, stated_uncertainties
+
+SCHEMA = 'driver-mcp/2'
 _UNIT_NOT_STATED = 'unit_not_stated'
 
 
-def _unit(definition, renderer_version):
-    if definition['unit'] is not None:
+def driver_name(model):
+    """The name of the driver of `model`, an interface model that validates. A driver is named after its device: the
+    device's name in lower case, each run of other characters than a to z, the digits and `_` as one `_`, without `_`
+    at either end. An empty name is `device`, one that starts with a digit gets `device_` in front, and a name is at
+    most 48 characters long."""
+    name = re.sub('[^a-z0-9_]+', '_', (model['device']['name'] or '').lower()).strip('_')
+    if not name:
+        return 'device'
+    if name[0].isdigit():
+        name = 'device_' + name
+    return name[:48].strip('_')
+
+
+def _unit(definition, number):
+    """The unit a description names for `definition`, or None for no unit line. An output that is a number always
+    has one; a parameter, and an output that is text, only when a unit is stated."""
+    if definition.get('unit') is not None:
         return definition['unit']
-    if renderer_version != '2' and any(item['code'] == _UNIT_NOT_STATED for item in definition['uncertainties']):
+    if not number:
+        return None
+    if any(item['code'] == _UNIT_NOT_STATED for item in definition['uncertainties']):
         return 'not stated by the device'
     return 'unknown'
 
 
-def _description(definition, renderer_version):
+def describe(definition, output=False):
+    """The lines that describe `definition`, an operation, a parameter or, with `output`, an output of a driver
+    contract: its meaning, then its unit, each uncertainty the model states as a warning and each precondition, one
+    line each. Where the model gives no description the meaning reads `Meaning not documented.`, and no warning
+    repeats it."""
     parts = [definition['description']]
-    if 'unit' in definition:
-        parts.append('Unit: ' + _unit(definition, renderer_version) + '.')
-    parts.extend('Warning: ' + item['message'] for item in definition['uncertainties'])
+    number = output and definition['schema'].get('type') in ('number', 'integer')
+    unit = _unit(definition, number)
+    if unit is not None:
+        parts.append('Unit: ' + unit + '.')
+    parts.extend('Warning: ' + item['message'] for item in stated_uncertainties(definition))
     parts.extend('Precondition ' + item['id'] + ': ' + item['description']
                  for item in definition.get('preconditions', []))
-    return '\n'.join(parts)
+    return parts
 
 
-def _known(renderer_version):
-    if renderer_version not in RENDERERS:
-        raise ValueError('MCP catalog renderer version is not one this kit knows: ' + repr(renderer_version))
+def _description(definition, output=False):
+    return '\n'.join(describe(definition, output))
 
 
-def render_tool(name, operation, renderer_version=RENDERER):
-    _known(renderer_version)
+def render_tool(name, operation):
+    """The MCP tool `name` of `operation`, an operation of a driver contract: its description, the schema of its
+    arguments and the schema of the `driver-result/1` it returns."""
     if '_request_id' in operation['parameters']:
         raise ValueError('_request_id is reserved for managed invocation context')
-    parameters = {key: {**deepcopy(spec['schema']), 'description': _description(spec, renderer_version)}
+    parameters = {key: {**deepcopy(spec['schema']), 'description': _description(spec)}
                   for key, spec in sorted(operation['parameters'].items())}
     required = sorted(parameters.keys() | ({'_request_id'} if operation['effect'] != 'read' else set()))
     parameters['_request_id'] = {'type': 'string', 'minLength': 1, 'maxLength': 128,
         'description': 'Caller-chosen invocation ID. Required for writes/actuation. Reuse it only to retrieve this same invocation after a lost reply; never assign a new ID as an automatic retry.'}
-    outputs = {key: {**deepcopy(spec['schema']), 'description': _description(spec, renderer_version)}
+    outputs = {key: {**deepcopy(spec['schema']), 'description': _description(spec, output=True)}
                for key, spec in sorted(operation['outputs'].items())}
-    return {'name': name, 'description': _description(operation, renderer_version),
+    return {'name': name, 'description': _description(operation),
         'inputSchema': {'type': 'object', 'properties': parameters,
                         'required': required, 'additionalProperties': False},
         'outputSchema': {'type': 'object', 'properties': {
@@ -58,14 +85,24 @@ def render_tool(name, operation, renderer_version=RENDERER):
                         'destructiveHint': operation['effect'] != 'read', 'openWorldHint': False}}
 
 
-def render_catalog(contract, contract_sha256, namespace='device', renderer_version=RENDERER):
-    _known(renderer_version)
-    if (type(namespace) is not str or not 1 <= len(namespace) <= 48
-            or not namespace.isascii() or not namespace[0].isalpha()
-            or not all(character.isalnum() or character == '_' for character in namespace)):
-        raise ValueError('MCP namespace must be a bounded ASCII name')
-    operations = {namespace+'_'+name: name for name in sorted(contract['operations'])}
-    return {'schema': 'driver-mcp/1', 'renderer_version': renderer_version, 'namespace': namespace,
-            'contract_sha256': contract_sha256, 'operations': operations,
-            'tools': [render_tool(tool, contract['operations'][operation], renderer_version)
-                      for tool, operation in operations.items()]}
+def render_mcp(drivers):
+    """The document `mcp.json` of a package, for `drivers`, which maps the name of the package's one driver to its
+    interface model: the server's name, which is the driver's, a tool `<driver>_<operation>` for each operation, the
+    driver and operation behind each tool, and the entry an MCP client needs, with the package's folder and the
+    binding left as the words PACKAGE and BINDING for the operator."""
+    if len(drivers) != 1:
+        raise ValueError('a package of several drivers is not built yet')
+    [(driver, model)] = drivers.items()
+    operations = contract_view(model)['operations']
+    behind = {driver + '_' + name: {'driver': driver, 'operation': name} for name in sorted(operations)}
+    return {'schema': SCHEMA, 'server': driver,
+            'tools': [render_tool(tool, operations[entry['operation']]) for tool, entry in behind.items()],
+            'operations': behind,
+            'client': {'mcpServers': {driver: {
+                'command': 'generative-driver', 'args': ['serve', 'PACKAGE', '--binding', 'BINDING']}}}}
+
+
+def tools_digest(tools):
+    """The SHA-256 of `tools` as they were rendered: of their JSON with sorted keys, in UTF-8."""
+    return hashlib.sha256(json.dumps(tools, sort_keys=True, ensure_ascii=False, allow_nan=False)
+                          .encode('utf-8')).hexdigest()

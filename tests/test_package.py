@@ -36,8 +36,7 @@ def example_replay():
 
 
 class PackageTests(unittest.TestCase):
-    def test_emitted_package_runs_a_sequence_over_one_connection(self):
-        import contextlib, importlib, io
+    def test_a_resetting_models_probe_carries_the_single_session_marker_and_still_checks_and_emits(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -50,54 +49,14 @@ class PackageTests(unittest.TestCase):
                 result = call_tool(tool_name, {"run_dir": str(root / "run"), **arguments})
                 self.assertEqual(result.get("_exit", 0), 0, result)
                 return result
-            # A resetting model's probe carries the single-session marker and still checks and emits.
             probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay),
                          allow_effects=["reset"])
             self.assertEqual(json.loads(Path(probe["probe"]).read_text())["session"], "single")
             emitted = call("emit_package", model_dir=str(model), probe_json=probe["probe"])
-            sys.path.insert(0, emitted["package_dir"])
-            try:
-                driver = importlib.import_module("driver")
-                transports = sys.modules["interface_runtime.transports"]
-                opens = []
-                class Fake:
-                    def exchange(self, tx, rx, timeout_ms):
-                        return self.replies.pop(0)
-                    def close(self):
-                        pass
-                def fresh():
-                    fake = Fake()
-                    fake.replies = [bytes.fromhex(t["rx_hex"]) for t in example_replay()["transactions"]] * 2
-                    return fake
-                fake = fresh()
-                def factory(channel, binding):
-                    opens.append(1); return fake
-                steps = [{"operation": "measure"}, {"operation": "measure"}]
-                with patch.object(transports, "open_transport", factory):
-                    refused = driver.sequence(steps, binding={})
-                    self.assertFalse(refused["ok"], refused)
-                    self.assertEqual(opens, [])
-                    result = driver.sequence(steps, binding={}, allow_effects=("reset",))
-                    self.assertTrue(result["ok"], result)
-                    self.assertEqual(len(result["results"]), 2)
-                    self.assertEqual(len(opens), 1)
-                    # CLI: argument parsing and the reset grant, in process.
-                    fake = fresh(); opens.clear()
-                    cli = importlib.import_module("driver.__main__")
-                    out = io.StringIO()
-                    argv = ["driver", "sequence", "--steps", json.dumps(steps), "--binding", "{}",
-                            "--allow-effect", "reset"]
-                    with patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
-                        code = cli.main()
-                    self.assertEqual(code, 0, out.getvalue())
-                    self.assertEqual(len(json.loads(out.getvalue())["results"]), 2)
-                    self.assertEqual(len(opens), 1)
-            finally:
-                sys.path.remove(emitted["package_dir"])
-                for name in [n for n in sys.modules if n == "driver" or n.startswith("driver.")]:
-                    sys.modules.pop(name, None)
+            checked = call("emit_check", package_dir=emitted["package_dir"])
+            self.assertEqual(checked["replay_status"], "passed")
 
-    def test_emitted_package_relocates_and_replays_without_source_checkout(self):
+    def test_emitted_package_relocates_and_its_check_replays_it(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory(prefix="package with spaces ") as temp:
             root = Path(temp).resolve()
@@ -119,11 +78,7 @@ class PackageTests(unittest.TestCase):
             checked = call("emit_check", package_dir=str(relocated),
                            expected_manifest_sha256=emitted["manifest_sha256"])
             self.assertEqual(checked["replay_status"], "passed")
-            result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c",
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(relocated), "replay"], cwd=root, capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["results"][0]["outputs"], {"temperature": 21.5})
+            self.assertEqual(checked["source_evidence_kind"], "replay")
 
     def test_live_test_summary_says_whether_the_package_tried_to_open_the_device(self):
         from generative_driver.toolkit import call_tool
@@ -154,6 +109,8 @@ def tcp_model():
 
 
 DEVICE = {b"ID?": b"DEMO-42\n", b"T": b"T:21.5\n"}
+# The driver and the evidence of a package of the example model, which its device names.
+DRIVER, EVIDENCE = "drivers/fictional_demonstration.json", "evidence/fictional_demonstration.probe.json"
 
 
 class ToolFaultTests(unittest.TestCase):
@@ -202,7 +159,7 @@ class ToolFaultTests(unittest.TestCase):
             root = Path(temp).resolve()
             _, emitted = self.emitted(root, binding)
             tampered = root / "tampered"; shutil.copytree(emitted["package_dir"], tampered)
-            (tampered / "REFERENCE.md").write_text("changed after emission")
+            (tampered / "README.md").write_text("changed after emission")
             del seen[:]
             run = root / "refused"
             for name, arguments in (
@@ -232,9 +189,9 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
                              (4, False, "host", "not_run"), checked)
             self.assertTrue(checked["error"].startswith("FileNotFoundError: "), checked)
-            # A package without its driver model is the package's defect.
+            # A package without its driver is the package's defect.
             broken = root / "broken"; shutil.copytree(package, broken)
-            (broken / "driver" / "model.json").unlink()
+            (broken / DRIVER).unlink()
             refused = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(broken)})
             self.assertEqual((refused["_exit"], refused["ok"]), (1, False), refused)
             self.assertNotIn("fault", refused)
@@ -367,13 +324,11 @@ class ToolFaultTests(unittest.TestCase):
 
     @staticmethod
     def reseal(package):
-        """Rewrite a package's manifest and checksum over its current files, as a worker editing its package could."""
-        from interface_runtime.package import digest, package_files
+        """Rewrite a package's manifest over its current files, as a worker editing its package could."""
+        from interface_runtime.package import package_files
         manifest = json.loads((package / "manifest.json").read_text())
-        manifest.update(files=package_files(package), probe_sha256=digest(package / "probe.json"),
-                        model_sha256=digest(package / "driver" / "model.json"))
+        manifest.update(files=package_files(package))
         (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        (package / "manifest.sha256").write_text(digest(package / "manifest.json") + "\n")
 
     def test_emit_check_refuses_a_hand_edited_package_and_never_calls_it_a_host_fault(self):
         """Content a worker wrote is the package's, however malformed: emit_check refuses it (exit 1) and never
@@ -383,19 +338,19 @@ class ToolFaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
             root = Path(temp).resolve()
             _, emitted = self.emitted(root, binding)
-            record = (Path(emitted["package_dir"]) / "probe.json").read_text()
-            # Each refusal is declared with its defects, except where the toolchain's error names what failed.
+            record = (Path(emitted["package_dir"]) / EVIDENCE).read_text()
+            # Each refusal is declared with its defects.
             for name, path, content, refusal in (
-                    ("a probe record that is a JSON array", "probe.json", "[1, 2]", "defects"),
-                    ("a probe record nested deeper than the parser allows", "probe.json",
+                    ("a probe record that is a JSON array", EVIDENCE, "[1, 2]", "defects"),
+                    ("a probe record nested deeper than the parser allows", EVIDENCE,
                      record.rstrip()[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
-                    ("a driver model nested deeper than the parser allows", "driver/model.json",
+                    ("a driver model nested deeper than the parser allows", DRIVER,
                      '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
                     ("a manifest nested deeper than the parser allows", "manifest.json",
-                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "error"),
-                    ("a driver model the host may not read", "driver/model.json", None, "defects"),
+                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
+                    ("a driver model the host may not read", DRIVER, None, "defects"),
                     # Searching a folder needs its execute permission, which Python 3.12 and earlier report as an error.
-                    ("a driver folder the host may not search", "driver", None, "defects")):
+                    ("a drivers folder the host may not search", "drivers", None, "defects")):
                 with self.subTest(package=name):
                     package = root / name.replace(" ", "-"); shutil.copytree(emitted["package_dir"], package)
                     folder = (package / path).is_dir()
@@ -434,7 +389,8 @@ class ToolFaultTests(unittest.TestCase):
             package = Path(emitted["package_dir"])
             real_digest = runtime_package.digest
             def locked(path):
-                if Path(path).name == "engine.py" and "package" in Path(path).parts and not Path(path).is_relative_to(package):
+                if (Path(path).name == "README.md" and "package" in Path(path).parts
+                        and not Path(path).is_relative_to(package)):
                     raise PermissionError(13, "The process cannot access the file because it is being used by another process", str(path))
                 return real_digest(path)
             del seen[:]
@@ -461,86 +417,6 @@ class ToolFaultTests(unittest.TestCase):
             ran = call_tool("emit_test_live", {"run_dir": str(root / "reuse"), "package_dir": str(package),
                                                "binding": binding, "operations": ["measure"]})
             self.assertEqual((ran["_exit"], ran["ok"]), (0, True), ran)
-
-    def test_a_replay_process_the_host_ended_is_a_host_fault_never_a_differing_replay(self):
-        """emit_check replays the verified snapshot in a separate process of the trusted runtime, after the same replay
-        passed in the check's own process. A replay process that printed no result (killed by the host, out of memory,
-        crashed at start), exited with an error after printing the same result, or could not read the snapshot (the
-        trusted package's package_error) failed around the check: a host fault. Only a replay process that printed a
-        different result says the package's replay differs."""
-        import subprocess as subprocess_module
-        from generative_driver._toolchain import interface
-        from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _host_fault
-        real_run = subprocess_module.run
-        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
-            root = Path(temp).resolve()
-            _, emitted = self.emitted(root, binding)
-            package = emitted["package_dir"]
-            same = real_run([sys.executable, "-I", "-B", "-c", interface.BOOT, package, "replay"], capture_output=True,
-                            text=True, timeout=120).stdout
-            self.assertEqual(json.loads(same)["ok"], True, same)
-            for name, returncode, stdout, host in (
-                    ("a process the host killed", -9, "", True),
-                    ("a process that exited cleanly without a result", 0, "", True),
-                    ("a process that printed half a result", 0, same[: len(same) // 2], True),
-                    ("a process that printed the same result and then failed", 1, same, True),
-                    ("a process that could not read the snapshot", 1, json.dumps(
-                        {"ok": False, "error": {"code": "package_error", "message": "[Errno 13] Permission denied: 'probe.json'"}}), True),
-                    ("a process that printed a different result", 1, json.dumps({"ok": False, "defects": ["differs"]}), False)):
-                with self.subTest(replay=name):
-                    def replay(command, **kwargs):
-                        if "replay" in command:
-                            return subprocess_module.CompletedProcess(command, returncode, stdout, "")
-                        return real_run(command, **kwargs)
-                    with patch.object(subprocess_module, "run", replay):
-                        checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": package})
-                    self.assertFalse(checked["ok"], checked)
-                    if host:
-                        self.assertEqual((checked["_exit"], checked["fault"], checked["replay_status"]), (4, "host", "not_run"), checked)
-                        self.assertTrue(_host_fault(checked))
-                    else:
-                        self.assertEqual((checked["_exit"], checked["replay_status"]), (1, "failed"), checked)
-                        self.assertNotIn("fault", checked)
-                        self.assertFalse(_host_fault(checked))
-                        self.assertEqual(checked["defects"], [{"where": "package replay", "what": "standalone replay differs"}])
-
-    def test_a_replay_process_the_host_keeps_from_the_snapshot_is_a_host_fault_never_a_differing_replay(self):
-        """The replay process reads the verified snapshot whose replay just passed in the check's own process. When the
-        host keeps it from a file of that snapshot (a lock taken after the check read the copy back), the trusted package
-        prints its package_error and exits 1: a failure around the check, which says nothing about the package."""
-        import subprocess as subprocess_module
-        from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _host_fault
-        real_run = subprocess_module.run
-        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
-            root = Path(temp).resolve()
-            _, emitted = self.emitted(root, binding)
-            locked = []
-            def replay(command, **kwargs):
-                if "replay" not in command:
-                    return real_run(command, **kwargs)
-                probe = Path(command[-2]) / "probe.json"
-                mode = probe.stat().st_mode
-                probe.chmod(0)
-                try:
-                    try:
-                        probe.read_bytes()
-                    except PermissionError:
-                        locked.append(probe)
-                    return real_run(command, **kwargs)
-                finally:
-                    probe.chmod(mode)
-            with patch.object(subprocess_module, "run", replay):
-                checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
-            if not locked:
-                self.skipTest("this host reads a file whose permissions forbid reading it")
-            self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
-                             (4, False, "host", "not_run"), checked)
-            self.assertIn("Permission denied", checked["error"])
-            self.assertTrue(_host_fault(checked))
-            passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
-            self.assertEqual((passed["_exit"], passed["replay_status"]), (0, "passed"), passed)
 
     def test_emit_check_keeps_a_passed_replay_when_its_temporary_folder_cannot_be_removed(self):
         """On Windows an antivirus or indexer can hold a file open briefly, so removing a temporary folder fails after
@@ -668,7 +544,7 @@ class RegisterFamilyTests(unittest.TestCase):
                         refused = call_tool(tool, {"run_dir": str(run), "package_dir": str(package), **arguments,
                                                    **model_dir})
                         self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
-                        self.assertIn("package format is not one this kit knows", said(refused), refused)
+                        self.assertIn("package names no format", said(refused), refused)
                         self.assertFalse(marker.exists(), "a file of the register package was imported or run")
                         self.assertEqual(contents(package), supplied)
                         if tool == "emit_test_live":
@@ -706,22 +582,17 @@ class RegisterFamilyTests(unittest.TestCase):
 EARLIER_TAGS = ("interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6")
 
 
-def retagged_package(root, tag, marker):
-    """A package emitted from the example model, whose `driver/model.json` then names `tag` and whose manifest is
-    brought in step with those bytes, so that the tag is all that tells it from a package of today. Its Python
-    writes the file `marker` when imported or run."""
-    from interface_runtime.package import digest, package_files
+def retagged_package(root, tag):
+    """A package emitted from the example model, whose driver then names `tag` and whose manifest is brought in step
+    with those bytes, so that the tag is all that tells it from a package of today."""
+    from interface_runtime.package import package_files
     from test_driver_contract import emit_fixture
     package, _ = emit_fixture(root)
-    model = json.loads((package / "driver/model.json").read_text())
-    (package / "driver/model.json").write_text(json.dumps(dict(model, schema=tag)))
-    for name in ("driver/__init__.py", "driver/__main__.py", "interface_runtime/engine.py"):
-        (package / name).write_text(marking(marker))
+    model = json.loads((package / DRIVER).read_text())
+    (package / DRIVER).write_text(json.dumps(dict(model, schema=tag)))
     manifest = json.loads((package / "manifest.json").read_text())
-    files = package_files(package)
-    manifest.update(files=files, model_sha256=files["driver/model.json"])
+    manifest.update(files=package_files(package))
     (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    (package / "manifest.sha256").write_text(digest(package / "manifest.json") + "\n")
     return package
 
 
@@ -778,8 +649,7 @@ class EarlierFormatTests(unittest.TestCase):
                     patch("interface_runtime.transports.open_transport", transport), \
                     patch("generative_driver.client.call", service):
                 root = Path(temp).resolve()
-                marker = root / "package-ran"
-                package = retagged_package(root, tag, marker)
+                package = retagged_package(root, tag)
                 supplied = contents(package)
                 for tool, arguments in (("emit_check", {}), ("emit_test_live", {"binding": {"port": "/dev/null"}})):
                     run = root / ("run-" + tool)
@@ -795,8 +665,6 @@ class EarlierFormatTests(unittest.TestCase):
                     ManagedDriver.open(package, binding={"port": "/dev/null"}, home=root / "home")
                 self.assertIn(repr(tag), str(managed.exception))
                 self.assertIn("interface-model/7", str(managed.exception))
-                # No file of the package was imported or run.
-                self.assertFalse(marker.exists(), "a file of the refused package was imported or run")
                 self.assertEqual(contents(package), supplied)
         self.assertEqual(opened, [])
 
@@ -807,8 +675,8 @@ class EarlierFormatTests(unittest.TestCase):
         from test_driver_contract import emit_fixture
         with tempfile.TemporaryDirectory() as temp:
             package, _ = emit_fixture(Path(temp).resolve())
-            model = json.loads((package / "driver/model.json").read_text())
-            (package / "driver/model.json").write_text(json.dumps(dict(model, schema="interface-model/5")))
+            model = json.loads((package / DRIVER).read_text())
+            (package / DRIVER).write_text(json.dumps(dict(model, schema="interface-model/5")))
             checked = verify_package(package)
             self.assertFalse(checked["ok"])
             self.assertIn("'interface-model/5'", said(checked), checked)

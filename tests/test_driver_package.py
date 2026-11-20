@@ -1,8 +1,7 @@
 """A driver package runs on the installed runtime over its own data.
 
-Packages are emitted here from invented models with replayed evidence, or copied from `tests/fixtures/earlier-package`,
-which an earlier kit emitted; the device is the smoke's stand-in device on a localhost port. Nothing here is physical
-evidence."""
+Packages are emitted here from invented models with replayed evidence; the device is the smoke's stand-in device on a
+localhost port. Nothing here is physical evidence."""
 import copy
 import hashlib
 import json
@@ -13,21 +12,14 @@ from pathlib import Path
 
 from test_package import example_model, example_replay
 
-EARLIER = Path(__file__).resolve().parent / 'fixtures' / 'earlier-package' / 'package'
 
-
-def emit(root, model=None, contract=None):
-    """A package the installed kit emits from `model` with replayed evidence of `measure`; `contract`, when given, is
-    authored beside the model with the protocol the kit derives from it."""
+def emit(root, model=None):
+    """A package the installed kit emits from `model` with replayed evidence of `measure`."""
     from generative_driver.toolkit import call_tool
-    from interface_runtime.contracts import from_model
     model = model or example_model()
     source = root / 'model'
     source.mkdir(parents=True)
     (source / 'model.json').write_text(json.dumps(model), encoding='utf-8')
-    if contract is not None:
-        (source / 'contract.json').write_text(json.dumps(contract), encoding='utf-8')
-        (source / 'protocol.json').write_text(json.dumps(from_model(model)[1]), encoding='utf-8')
     replay = root / 'replay.json'
     replay.write_text(json.dumps(example_replay()), encoding='utf-8')
     probe = call_tool('probe_run', {'run_dir': str(root / 'run'), 'model_dir': str(source), 'operation': 'measure',
@@ -39,16 +31,21 @@ def emit(root, model=None, contract=None):
     return Path(emitted['package_dir'])
 
 
-def without_unit(model):
-    """`model` with its temperature decoder stating no unit."""
+DESCRIBED = 'Temperature of the probe.'
+
+
+def described(model):
+    """`model` with its temperature described, so that a rendered description shows what the model says of the unit."""
     model = copy.deepcopy(model)
-    del model['operations']['measure']['outputs']['temperature']['unit']
+    model['operations']['measure']['outputs']['temperature']['description'] = DESCRIBED
     return model
 
 
-def earlier(root):
-    """A copy of the package an earlier kit emitted, which tests may change."""
-    return Path(shutil.copytree(EARLIER, root / 'earlier-package'))
+def without_unit(model):
+    """`model` with its temperature described and its decoder stating no unit."""
+    model = described(model)
+    del model['operations']['measure']['outputs']['temperature']['unit']
+    return model
 
 
 def sha256(path):
@@ -205,28 +202,23 @@ class RendererTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
 
     def test_05_B9_new_catalogs_say_a_unit_is_not_stated_by_the_device(self):
-        from interface_runtime.contracts import from_model
         model = without_unit(example_model())
-        contract = from_model(model)[0]
-        contract['operations']['measure']['outputs']['temperature']['uncertainties'] = [{
+        model['operations']['measure']['outputs']['temperature']['uncertainties'] = [{
             'code': 'unit_not_stated', 'message': 'The reply T:21.5 carries no unit, nor does its handler.',
             'evidence_refs': ['replay.json transaction 2']}]
-        catalog, tool = catalog_tool(emit(self.root, model, contract), 'device_measure')
+        catalog, tool = catalog_tool(emit(self.root, model), 'device_measure')
         self.assertEqual(catalog['renderer_version'], '3')
         self.assertEqual(output_description(tool, 'temperature').split('\n'), [
-            'Decoded output temperature.', 'Unit: not stated by the device.',
+            DESCRIBED, 'Unit: not stated by the device.',
             'Warning: The reply T:21.5 carries no unit, nor does its handler.'])
 
     def test_05_B9_a_null_unit_without_unit_not_stated_still_reads_unknown(self):
         catalog, tool = catalog_tool(emit(self.root, without_unit(example_model())), 'device_measure')
         self.assertEqual(catalog['renderer_version'], '3')
-        self.assertEqual(output_description(tool, 'temperature').split('\n'), [
-            'Decoded output temperature.', 'Unit: unknown.',
-            'Warning: Output temperature meaning and operating assumptions are not documented.'])
+        self.assertEqual(output_description(tool, 'temperature').split('\n'), [DESCRIBED, 'Unit: unknown.'])
         # A stated unit renders as before.
-        _, tool = catalog_tool(emit(self.root / 'stated', example_model()), 'device_measure')
-        self.assertEqual(output_description(tool, 'temperature').split('\n'),
-                         ['Decoded output temperature.', 'Unit: degC.'])
+        _, tool = catalog_tool(emit(self.root / 'stated', described(example_model())), 'device_measure')
+        self.assertEqual(output_description(tool, 'temperature').split('\n'), [DESCRIBED, 'Unit: degC.'])
 
 
 class FormatTests(unittest.TestCase):
@@ -235,31 +227,15 @@ class FormatTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
 
-    def test_05_B4_an_earlier_package_verifies_under_the_renderer_it_names(self):
-        from interface_runtime.package import verify_package
-        package = earlier(self.root)
-        catalog = json.loads((package / 'mcp-tools.json').read_text(encoding='utf-8'))
-        self.assertEqual(catalog['renderer_version'], '2')
-        self.assertEqual(verify_package(package)['defects'], [])
-        checked = check(package, self.root)
-        self.assertIs(checked['integrity_ok'], True, checked)
-
     def test_05_B4_a_package_naming_a_format_the_kit_does_not_know_is_refused_naming_it(self):
         changes = {
             'renderer 9': ('mcp-tools.json', lambda catalog: catalog.update(renderer_version='9'), "'9'"),
             'catalog format': ('mcp-tools.json', lambda catalog: catalog.update(schema='driver-mcp/9'), 'driver-mcp/9'),
-            'contract format': ('driver/contract.json', lambda contract: contract.update(schema='driver-contract/9'),
-                                'driver-contract/9'),
-            'protocol format': ('driver/protocol.json', lambda protocol: protocol.update(schema='driver-protocol/9'),
-                                'driver-protocol/9'),
-            'model format': ('driver/protocol.json',
-                             lambda protocol: protocol.update(runtime_schema='interface-model/9'),
-                             'interface-model/9'),
             'package format': ('manifest.json', None, 'interface-package/9'),
         }
         for label, (relative, change, named) in changes.items():
             with self.subTest(label):
-                package = earlier(self.root / label.replace(' ', '-'))
+                package = emit(self.root / label.replace(' ', '-'))
                 if relative == 'manifest.json':
                     manifest = json.loads((package / 'manifest.json').read_text(encoding='utf-8'))
                     manifest['schema'] = 'interface-package/9'
@@ -445,33 +421,6 @@ class ReplayTests(PackageCase):
         self.assertEqual((emitted['artifacts'], gate['passed']), ([], False), gate)
         self.assertEqual(gate['rejected'], [{'package': 'package',
                                              'reason': "the package carries a runtime other than this kit's"}])
-
-
-class EarlierPackageTests(PackageCase):
-    def test_05_B5_emit_check_replays_the_earlier_package_on_the_installed_runtime(self):
-        checked = check(earlier(self.root), self.root)
-        self.assertEqual((checked['integrity_ok'], checked['runtime_current'], checked['replay_status']),
-                         (True, False, 'passed'), checked)
-
-    def test_05_B5_a_managed_session_over_the_earlier_package_measures_the_stand_in_device(self):
-        from generative_driver import stand_in_device
-        with stand_in_device.serving() as binding:
-            opened, executed = self.session(earlier(self.root), binding)
-        self.assertTrue(opened['ok'], opened)
-        self.assertEqual((executed['ok'], executed['outputs']), (True, {'temperature': 21.5}), executed)
-
-    def test_05_B5_fresh_reuse_is_served_the_earlier_catalog_unchanged_and_a_generated_tool_runs(self):
-        from generative_driver import stand_in_device
-        with stand_in_device.serving() as binding:
-            seen, events = fresh_reuse(self.root, earlier(self.root), binding)
-        catalog = json.loads((EARLIER / 'mcp-tools.json').read_text(encoding='utf-8'))
-        self.assertEqual(seen['tools'], catalog['tools'])
-        [package] = seen['inputs']
-        self.assertEqual((package / 'mcp-tools.json').read_bytes(), (EARLIER / 'mcp-tools.json').read_bytes())
-        served = [event['data'] for event in events if event['kind'] == 'mcp.catalog_served']
-        self.assertEqual([entry['catalog_sha256'] for entry in served], [sha256(EARLIER / 'mcp-tools.json')])
-        self.assertEqual((seen['result'].get('ok'), seen['result'].get('outputs')), (True, {'temperature': 21.5}),
-                         seen['result'])
 
 
 if __name__ == '__main__':

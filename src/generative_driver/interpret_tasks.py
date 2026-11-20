@@ -7,6 +7,11 @@ configurator assembles from the fragments. A repair re-runs only the handler tas
 contradicted, then assembles and cross-checks again. The task mode is opt-in (`interpretation: tasks`) and needs the
 kit analysis; what it cannot do falls back to the single worker.
 
+A fragment's operation is the operation as it stands in the model, with what it means beside its wire steps
+(docs/adr/0010-a-package-is-data-in-one-format.md, decision 3). A precondition spans operations and a handler sees
+one, so the assembly takes each operation without preconditions and the cross-check, which sees the whole model,
+writes them. The configurator writes the model's one format tag itself.
+
 The configurator calls `choose` from its interpret preparation and `run` from its stage launch; the attempt's output is
 left in the sealed workspace prepared for the single worker, and the interpret check collects it from there."""
 import copy
@@ -29,9 +34,9 @@ FOLDER = 'interpret-tasks'
 MAX_COMMANDS = 64
 # What the configurator observed in acquisition, which the single worker gets and the inventory gets too.
 EVIDENCE = ('serial-listen.json', 'BINDING_CONTEXT.json')
-# What a handler task and the cross-check get of the single worker's kit: the model document, the contract guide and
-# tool, and the validator and qualifier with the runtime they import.
-KIT = ('INTERFACE_MODEL.md', 'CONTRACT.md', 'contract.py', 'validate.py', 'qualify.py', '_toolkit')
+# What a handler task and the cross-check get of the single worker's kit: the model document, and the validator and
+# qualifier with the runtime they import.
+KIT = ('INTERFACE_MODEL.md', 'validate.py', 'qualify.py', '_toolkit')
 FRAGMENT_SCHEMA = 'interpret-fragment/1'
 RECORD_SCHEMA = 'interpret-task-record/1'
 
@@ -170,7 +175,7 @@ class _Attempt:
     def handlers(self, inventory):
         """Run a handler task per command, one at a time, the identity command's first, and return the usable
         fragments by command (06-B7)."""
-        frame = {key: inventory.get(key) for key in ('schema', 'device', 'channel', 'framing')}
+        frame = {'schema': _schema(), **{key: inventory.get(key) for key in ('device', 'channel', 'framing')}}
         fragments, identity = {}, None
         for command in _identity_first(inventory):
             fragment, why = self.handler(command, frame, identity)
@@ -178,7 +183,7 @@ class _Attempt:
                 if fragment is None:
                     raise _Fallback('The identity command ' + command['name'] + "'s task wrote no usable fragment ("
                                     + why + ')')
-                identity = {'operation': fragment['operation'], 'model': fragment['model']}
+                identity = {'operation': fragment['operation'], 'model': _operation(fragment)}
             elif fragment is None:
                 self.notes.append('The handler task for ' + command['name'] + ' wrote no usable fragment (' + why
                                   + '); its command is left out of the assembly.')
@@ -210,11 +215,12 @@ class _Attempt:
             'fragments/' + str(len(self.results)) + '-' + _safe(command) + '.json', fragment)}
 
     def assemble(self, inventory, fragments):
-        """model.json, replies.json and contract.json assembled from the inventory and the fragments, by name, and the
-        whole model's validation (06-B8). A fragment that does not validate on its own, or whose operation name is
-        taken, is left out; the identity command's sends the attempt to the single worker."""
+        """model.json and replies.json assembled from the inventory and the fragments, by name, and the whole model's
+        validation (06-B8). Each kept fragment's operation is taken with its meanings and without preconditions. A
+        fragment that does not validate on its own, or whose operation name is taken, is left out; the identity
+        command's sends the attempt to the single worker."""
         identity = fragments[inventory['identity']]
-        frame = {'schema': inventory['schema'], 'device': inventory['device'], 'channel': inventory['channel'],
+        frame = {'schema': _schema(), 'device': inventory['device'], 'channel': inventory['channel'],
                  'identity': {'operation': identity['operation']}}
         kept = []
         for command, fragment in fragments.items():
@@ -233,11 +239,7 @@ class _Attempt:
         model = _model(frame, kept)
         replies = {'schema': 'interface-replies/1',
                    'operations': {fragment['operation']: fragment['replies'] for fragment in kept}}
-        contract = {'schema': 'driver-contract/1', 'device': model['device'], 'identity': model['identity'],
-                    'operations': {fragment['operation']: fragment['contract'] for fragment in kept},
-                    'provenance': model['provenance']}
-        return {'model.json': model, 'replies.json': _replies_schema(replies), 'contract.json': contract}, \
-            _validation(model)
+        return {'model.json': model, 'replies.json': _replies_schema(replies)}, _validation(model)
 
     def repair(self):
         """A repair from the previous attempt's final, cross-checked model: the handler task of each operation a
@@ -250,10 +252,10 @@ class _Attempt:
         self.kept = {'inventory': record['inventory'], 'fragments': dict(record['fragments'])}
         final = Path(previous['model'])
         files = {name: json.loads((final / name).read_text(encoding='utf-8'))
-                 for name in ('model.json', 'replies.json', 'contract.json') if (final / name).is_file()}
+                 for name in ('model.json', 'replies.json') if (final / name).is_file()}
         model, differences = files['model.json'], self.plan.get('differences') or []
         named = _named_operations(differences)
-        frame = {'schema': model.get('schema'), 'device': model.get('device'), 'channel': model.get('channel'),
+        frame = {'schema': _schema(), 'device': model.get('device'), 'channel': model.get('channel'),
                  'framing': inventory.get('framing')}
         identity = (model.get('identity') or {}).get('operation')
         operations = model.get('operations') or {}
@@ -270,7 +272,7 @@ class _Attempt:
             if fragment is not None and fragment['operation'] != name:
                 why = 'it names the operation ' + fragment['operation'] + ' in place of ' + name
             elif fragment is not None:
-                alone = {**{key: model.get(key) for key in ('schema', 'device', 'channel')},
+                alone = {'schema': _schema(), **{key: model.get(key) for key in ('device', 'channel')},
                          'identity': {'operation': identity}}
                 parts = [fragment] if name == identity else [_from_model(model, identity), fragment]
                 defects = _validation(_model(alone, parts))['defects']
@@ -282,7 +284,7 @@ class _Attempt:
             replaced[name] = fragment
             self.keep_fragment(command['name'], fragment)
             if name == identity:
-                operations = {**operations, name: fragment['model']}
+                operations = {**operations, name: _operation(fragment)}
         self.notes.append('This repair re-ran the handler tasks of ' + (', '.join(c['name'] for c in rerun) or 'no '
                           'command') + '; every other operation and the channel come from the previous final model.')
         assembled = _replaced(files, replaced)
@@ -301,7 +303,7 @@ class _Attempt:
             **{'notes/' + name + '.md': text for name, text in self.task_notes.items()},
             'TASKS.json': self.tasks_json, **self.kit(), **(repair or {}), **documents,
             'TASK.json': {'schema': 'interpret-task/1', 'kind': 'cross-check', 'repair': bool(repair),
-                          'writes': ['model.json', 'replies.json', 'contract.json', 'NOTES.md'], **entry}},
+                          'writes': ['model.json', 'replies.json', 'NOTES.md'], **entry}},
             editable=assembled, with_seal=True)
         try:
             defects = _validation(json.loads((workspace / 'model.json').read_text(encoding='utf-8')))['defects']
@@ -371,8 +373,8 @@ class _Attempt:
                           for task, result in self.results]}
 
     def kit(self):
-        """The model document, the contract guide and tool, the validator and the qualifier with the runtime they use,
-        as the single worker's workspace has them."""
+        """The model document, the validator and the qualifier with the runtime they use, as the single worker's
+        workspace has them."""
         return {name: self.source / name for name in KIT}
 
     def documents(self, commands=None):
@@ -413,9 +415,15 @@ class _Attempt:
         return (workspace, sealed) if with_seal else workspace
 
 
+def _schema():
+    """The one format tag of an interface model, which the configurator writes into the frame a handler gets and into
+    the assembled model. An inventory names no format, and a `schema` a worker still writes there is ignored."""
+    from interface_runtime.engine import SCHEMA
+    return SCHEMA
+
+
 def _read_inventory(path):
     """An inventory task's inventory.json and None, or None and why it cannot be used."""
-    from interface_runtime.engine import SCHEMAS
     from interface_runtime.transports import validate_channel
     try:
         inventory = json.loads(Path(path).read_text(encoding='utf-8'))
@@ -432,8 +440,6 @@ def _read_inventory(path):
     problem = None
     if len(commands) > MAX_COMMANDS:
         problem = 'it lists %d commands, more than the model\'s %d' % (len(commands), MAX_COMMANDS)
-    elif inventory.get('schema') not in SCHEMAS:
-        problem = 'its schema is not an interface-model tag the kit knows'
     elif (not isinstance(inventory.get('device'), dict)
           or not isinstance(inventory['device'].get('name'), (str, type(None)))):
         problem = 'its device has no name or null'
@@ -455,7 +461,8 @@ def _read_inventory(path):
 
 
 def _read_fragment(path):
-    """A handler task's fragment.json and None, or None and why it cannot be used."""
+    """A handler task's fragment.json and None, or None and why it cannot be used. A fragment holds its operation, the
+    operation as it stands in the model, its provenance and its replies; anything else a worker writes is ignored."""
     try:
         fragment = json.loads(Path(path).read_text(encoding='utf-8'))
     except FileNotFoundError:
@@ -464,7 +471,7 @@ def _read_fragment(path):
         return None, 'fragment.json cannot be read: ' + type(error).__name__ + ': ' + str(error)[:200]
     if not isinstance(fragment, dict) or fragment.get('schema') != FRAGMENT_SCHEMA:
         return None, 'fragment.json is not an ' + FRAGMENT_SCHEMA + ' object'
-    shapes = {'operation': str, 'model': dict, 'provenance': list, 'replies': dict, 'contract': dict}
+    shapes = {'operation': str, 'model': dict, 'provenance': list, 'replies': dict}
     missing = [key for key, shape in shapes.items() if not isinstance(fragment.get(key), shape)]
     if missing or not fragment['operation']:
         return None, 'fragment.json lacks ' + ', '.join(missing or ['operation'])
@@ -475,9 +482,15 @@ def _identity_first(inventory):
     return sorted(inventory['commands'], key=lambda command: command['name'] != inventory['identity'])
 
 
+def _operation(fragment):
+    """A fragment's operation as the assembly takes it: with its meanings and without preconditions, which only the
+    cross-check writes."""
+    return {key: value for key, value in fragment['model'].items() if key != 'preconditions'}
+
+
 def _model(frame, fragments):
     """A model of `frame` (schema, device, channel and identity) with the operations and provenance of `fragments`."""
-    return {**frame, 'operations': {fragment['operation']: fragment['model'] for fragment in fragments},
+    return {**frame, 'operations': {fragment['operation']: _operation(fragment) for fragment in fragments},
             'provenance': [entry for fragment in fragments for entry in fragment['provenance']]}
 
 
@@ -493,19 +506,19 @@ def _about(entry, name):
 
 
 def _replaced(files, fragments):
-    """The previous final files with each re-run operation's model entry, provenance, replies and contract entry in
-    place of its own."""
+    """The previous final files with each re-run operation's model entry, provenance and replies in place of its own.
+    The operation comes with its meanings, under the preconditions the previous final model has for it."""
     files = copy.deepcopy(files)
     model = files['model.json']
     for name, fragment in fragments.items():
-        model['operations'][name] = fragment['model']
+        previous = model['operations'].get(name)
+        kept = {'preconditions': previous['preconditions']} \
+            if isinstance(previous, dict) and 'preconditions' in previous else {}
+        model['operations'][name] = {**_operation(fragment), **kept}
         model['provenance'] = ([entry for entry in model['provenance'] if not _about(entry, name)]
                                + fragment['provenance'])
         if isinstance((files.get('replies.json') or {}).get('operations'), dict):
             files['replies.json']['operations'][name] = fragment['replies']
-        if isinstance((files.get('contract.json') or {}).get('operations'), dict):
-            files['contract.json']['operations'][name] = fragment['contract']
-            files['contract.json']['provenance'] = model['provenance']
     if 'replies.json' in files:
         files['replies.json'] = _replies_schema(files['replies.json'])
     return files

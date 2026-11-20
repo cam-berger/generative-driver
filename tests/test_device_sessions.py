@@ -9,7 +9,8 @@ import threading
 from pathlib import Path
 import unittest
 
-from test_driver_contract import emit_fixture, controlled_model, rewrite_document
+from test_driver_contract import (ARMED, RANGE, STEP, controlled_model, described_model, emit_fixture, guarded_model,
+                                  unknown, warned)
 from test_package import example_model, example_replay
 
 
@@ -52,6 +53,94 @@ def demonstration_device(state=None):
         finally:
             server.shutdown()
             thread.join(5)
+
+
+def reachable(model):
+    """`model` on the TCP channel of the demonstration device, each write waiting for the device's acknowledgement."""
+    model['channel'] = {'type': 'tcp'}
+    model['operations']['set_level']['steps'][0]['rx'] = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}
+    return model
+
+
+class ModelRuleSessionTests(unittest.TestCase):
+    """A managed session and a live test of a package take the driver's public rules from its interface model
+    (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B5_a_managed_session_checks_the_value_and_observes_each_precondition_fresh(self):
+        from generative_driver.client import call
+        from generative_driver.sdk import ManagedDriver
+        state = {'writes': 0, 'armed': 0}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(described_model()))
+            home = root/'owner'
+            try:
+                device = ManagedDriver.open(package, binding=binding, home=home, effects=('write',))
+                state['readings'] = [b'T:30.5\n']
+                hot = device.invoke('measure', request_id='hot')
+                self.assertEqual((hot['ok'], hot['error']['code'], hot['error']['fault']),
+                                 (False, 'output_schema_violation', 'model'), hot)
+                self.assertEqual((hot['invalid_outputs'], hot['outputs']), ({'temperature': 30.5}, {}))
+                self.assertEqual(hot['warnings'], [warned(RANGE, 'operations.measure')])
+                refused = device.invoke('set_level', {'level': 37}, request_id='not-armed')
+                self.assertEqual(refused['error']['code'], 'precondition_failed', refused)
+                self.assertFalse(refused['requested_command_dispatched'])
+                self.assertEqual(refused['warnings'], [
+                    warned(STEP, 'operations.set_level.parameters.level'),
+                    warned(ARMED, 'operations.read_armed.outputs.armed'),
+                    warned(unknown('Output armed'), 'operations.read_armed.outputs.armed')])
+                self.assertEqual(state['writes'], 0)
+                # Each call observes the device again: armed, the command is sent; disarmed, the next one is not.
+                state['armed'] = 1
+                sent = device.invoke('set_level', {'level': 37}, request_id='armed')
+                self.assertTrue(sent['ok'], sent)
+                self.assertEqual(state['writes'], 1)
+                state['armed'] = 0
+                again = device.invoke('set_level', {'level': 38}, request_id='disarmed')
+                self.assertEqual(again['error']['code'], 'precondition_failed', again)
+                self.assertEqual(state['writes'], 1)
+            finally:
+                call('shutdown', home=home, autostart=False)
+
+    def test_02_B5_emit_test_live_checks_the_value_and_observes_each_precondition(self):
+        from generative_driver.toolkit import call_tool
+        state = {'writes': 0, 'armed': 0, 'readings': [b'T:30.5\n']}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(described_model()))
+
+            def tested(operation, **more):
+                result = call_tool('emit_test_live', {'run_dir': str(root / 'live'), 'package_dir': str(package),
+                                                      'binding': binding, 'operations': [operation], **more})
+                return result, result['results'][0]
+            hot, reading = tested('measure')
+            self.assertEqual((hot['ok'], hot['verdict']), (False, 'fail'), hot)
+            self.assertEqual((reading['error_code'], reading['fault']), ('output_schema_violation', 'model'), reading)
+            level = {'parameters': {'set_level': {'level': 37}}, 'allow_effects': ['write']}
+            unarmed, refused = tested('set_level', **level)
+            self.assertEqual((unarmed['ok'], refused['error_code']), (False, 'precondition_failed'), unarmed)
+            self.assertEqual(state['writes'], 0)
+            state['armed'] = 1
+            armed, sent = tested('set_level', **level)
+            self.assertEqual((armed['ok'], armed['verdict'], sent['ok']), (True, 'pass', True), armed)
+            self.assertEqual(state['writes'], 1)
+
+    def test_02_B6_describe_of_a_managed_session_gives_the_contract_view_of_the_model(self):
+        from generative_driver.client import call
+        from generative_driver.sdk import ManagedDriver
+        from interface_runtime.contracts import contract_view
+        with tempfile.TemporaryDirectory() as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
+            model = reachable(described_model())
+            package, _ = emit_fixture(root, model)
+            home = root/'owner'
+            try:
+                device = ManagedDriver.open(package, binding=binding, home=home)
+                self.assertEqual(device.describe()['contract'], contract_view(model))
+                self.assertEqual(device.contract, contract_view(model))
+                self.assertEqual(json.loads((package/'driver/contract.json').read_text()), contract_view(model))
+            finally:
+                call('shutdown', home=home, autostart=False)
 
 
 class DeviceSessionTests(unittest.TestCase):
@@ -129,14 +218,8 @@ class DeviceSessionTests(unittest.TestCase):
         state = {'writes': 0, 'armed': 1, 'reset_on_reconnect': True}
         with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
             root = Path(directory).resolve()
-            model = controlled_model(); model['channel'] = {'type': 'tcp'}
+            model = guarded_model(); model['channel'] = {'type': 'tcp'}
             package, _ = emit_fixture(root, model)
-            contract = json.loads((package/'driver/contract.json').read_text())
-            contract['operations']['set_level']['preconditions'] = [{
-                'id': 'armed_required', 'description': 'Device must be armed before changing level.',
-                'observation': {'operation': 'read_armed', 'parameters': {}, 'output': 'armed'},
-                'operator': 'eq', 'expected': 1}]
-            rewrite_document(package, 'driver/contract.json', contract)
             home = root/'owner'
             try:
                 device = ManagedDriver.open(package, binding=binding, home=home, effects=('write',))
@@ -238,14 +321,8 @@ class DeviceSessionTests(unittest.TestCase):
         state = {'writes': 0, 'armed': 0}
         with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
             root = Path(directory).resolve()
-            model = controlled_model(); model['channel'] = {'type': 'tcp'}
+            model = guarded_model(); model['channel'] = {'type': 'tcp'}
             package, _ = emit_fixture(root, model)
-            contract = json.loads((package/'driver/contract.json').read_text())
-            contract['operations']['set_level']['preconditions'] = [{
-                'id': 'armed_required', 'description': 'Device must be armed before changing level.',
-                'observation': {'operation': 'read_armed', 'parameters': {}, 'output': 'armed'},
-                'operator': 'eq', 'expected': 1}]
-            rewrite_document(package, 'driver/contract.json', contract)
             home = root/'owner'
             try:
                 opened = call('device_open', {'package_dir': str(package), 'binding': binding,

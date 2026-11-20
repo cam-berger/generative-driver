@@ -10,9 +10,9 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from package_env import package_env
 
-from test_driver_contract import emit_fixture, controlled_model
+from test_driver_contract import GUARD, RANGE, controlled_model, described_model, emit_fixture, warned
 from test_package import example_model
-from test_device_sessions import demonstration_device
+from test_device_sessions import demonstration_device, reachable
 
 
 class DeviceMcpTests(unittest.TestCase):
@@ -58,6 +58,38 @@ class DeviceMcpTests(unittest.TestCase):
                     self.assertFalse(saved['uncertain_effect'])
             finally:
                 owner.close()
+
+    def test_02_B5_a_generated_tool_call_checks_the_value_and_observes_the_precondition(self):
+        # The rules of a generated tool are the ones the package's interface model states.
+        from generative_driver.client import call
+        state = {'writes': 0, 'armed': 0, 'readings': [b'T:30.5\n']}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(described_model()))
+            home = root/'owner'
+            try:
+                opened = call('device_open', {'package_dir': str(package), 'binding': binding,
+                                             'effects': ['write']}, home)
+
+                def tool(name, **arguments):
+                    return asyncio.run(self.call_connected(package, home, opened['session_id'], name, arguments))
+                hot = tool('device_measure', _request_id='hot')
+                self.assertTrue(hot.is_error, hot)
+                self.assertEqual((hot.structured_content['error']['code'], hot.structured_content['error']['fault']),
+                                 ('output_schema_violation', 'model'))
+                self.assertEqual(hot.structured_content['invalid_outputs'], {'temperature': 30.5})
+                self.assertEqual(hot.structured_content['warnings'], [warned(RANGE, 'operations.measure')])
+                refused = tool('device_set_level', level=37, _request_id='not-armed')
+                self.assertTrue(refused.is_error, refused)
+                self.assertEqual(refused.structured_content['error']['code'], 'precondition_failed')
+                self.assertEqual(refused.structured_content['error']['precondition']['id'], GUARD['id'])
+                self.assertEqual(state['writes'], 0)
+                state['armed'] = 1
+                sent = tool('device_set_level', level=37, _request_id='armed')
+                self.assertFalse(sent.is_error, sent)
+                self.assertEqual(state['writes'], 1)
+            finally:
+                call('shutdown', home=home, autostart=False)
 
     def test_unknown_tool_is_a_protocol_parameter_error(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -113,7 +145,6 @@ class DeviceMcpTests(unittest.TestCase):
     def test_bounded_byte_argument_has_a_valid_json_tool_schema(self):
         # Catches leaking the engine's non-JSON "bytes" type into MCP.
         model = controlled_model()
-        model['schema'] = 'interface-model/6'
         model['operations']['send_block'] = {'effect': 'write',
             'parameters': {'payload': {'type': 'bytes', 'min_length': 1, 'max_length': 4}},
             'steps': [{'op': 'exchange', 'tx': [{'arg': 'payload', 'format': 'raw'}],

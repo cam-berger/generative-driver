@@ -14,12 +14,10 @@ from . import core
 SKILLS = os.path.join(core.BENCH, "toolchain", "skills")
 REPOSITORY = os.path.dirname(core.BENCH)
 
-# Schema document per front end, newest first; the workspace copy keeps the neutral name. Every front end writes an
-# executable interface model and gets the shared runtime as its kit.
-# interpret-interface stays on schema 5: its brief names schemas 4 and 5 and nothing newer.
-MODEL_DOCS = {"interpret-interface": ("INTERFACE_MODEL_V5.md", "INTERFACE_MODEL_V4.md", "INTERFACE_MODEL_V3.md"),
-              "interpret-selfdescribing": ("INTERFACE_MODEL_V6.md",)}
-FRONT_ENDS = set(MODEL_DOCS)
+# Every front end writes an executable interface model in the one format, so each gets the same model document and the
+# shared runtime as its kit (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
+FRONT_ENDS = {"interpret-interface", "interpret-selfdescribing"}
+MODEL_DOC = "INTERFACE_MODEL.md"
 # Personal agent directories may contain caller files, instructions and other sessions' transcripts.
 SCRATCH_TREES = tuple(str(Path.home() / name) for name in (".claude", ".codex"))
 RESERVED = {"BRIEF.md", "INTERFACE_MODEL.md", "INPUT_HASHES.json", "validate.py", "qualify.py",
@@ -59,7 +57,7 @@ def _output_present(workspace):
         model = json.loads(Path(workspace, "model.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(model, dict) and model.get("schema") in _engine()[0].SCHEMAS
+    return _engine()[0].format_refusal(model) is None
 
 
 def _attempt_no(attempt):
@@ -164,27 +162,33 @@ def _actions(events):
 def model_validate(model_dir, **_):
     """Structural check of a model. No ground truth and no device knowledge: an interface model is asked only to be
     well formed and to declare its evidence, and nothing is written beside it. Experimental schema-2 evidence goes to
-    `firmware_validate`; any other schema is a defect that names it."""
+    `firmware_validate`; any other schema is a defect that names it.
+
+    Beside the result of an interface model comes `advice`: what a model that validates leaves undocumented. It
+    changes neither `ok` nor the exit status, and it is empty for a model that does not validate."""
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
     mp = os.path.join(md, "model.json")
     if not os.path.exists(mp):
-        return {"ok": False, "defects": [{"where": "model.json", "what": "missing"}], "_exit": 1}
+        return {"ok": False, "defects": [{"where": "model.json", "what": "missing"}], "advice": [], "_exit": 1}
     try:
         from .interface import load
         model, _sha = load(md)
     except Exception as e:
-        return {"ok": False, "defects": [{"where": "model.json", "what": f"not valid JSON: {e}"}], "_exit": 1}
-    if isinstance(model, dict) and model.get("schema") in _engine()[0].SCHEMAS:
+        return {"ok": False, "defects": [{"where": "model.json", "what": f"not valid JSON: {e}"}], "advice": [],
+                "_exit": 1}
+    refusal = _engine()[0].format_refusal(model)
+    if refusal is None:
+        from interface_runtime.meanings import advice
         from interface_runtime.qualify import validate_candidate
         result = validate_candidate(model)
-        return {**result, "_exit": 0 if result["ok"] else 1}
+        return {**result, "advice": advice(model) if result["ok"] else [], "_exit": 0 if result["ok"] else 1}
     if not isinstance(model, dict):
-        return {"ok": False, "defects": [{"where":"model.json", "what":"model must be an object"}], "_exit":1}
+        return {"ok": False, "defects": [{"where":"model.json", "what":"model must be an object"}], "advice": [],
+                "_exit":1}
     if model.get("schema") == "interface-model/2-experimental":
         from .firmware import firmware_validate
         return firmware_validate(run_dir=_.get("run_dir", "scratch"), model_dir=md)
-    return {"ok": False, "defects": [{"where": "schema", "what":
-        f"unsupported schema {model.get('schema')!r}; select a supported model validator"}], "_exit": 1}
+    return {"ok": False, "defects": [{"where": "schema", "what": refusal}], "advice": [], "_exit": 1}
 
 
 def _refusal(front_end, mode):
@@ -285,10 +289,9 @@ def interpret_run(run_dir, front_end, inputs, attempt=1, defects=None,
     skill = Path(SKILLS, str(front_end), "SKILL.md")
     if not refused and not skill.is_file():
         refused = f"no skill {front_end!r}"
-    model_doc = None
-    if not refused:
-        model_doc = next((n for n in MODEL_DOCS[front_end] if Path(core.BENCH, "docs", n).is_file()), None)
-        refused = None if model_doc else f"schema document docs/{MODEL_DOCS[front_end][0]} is missing"
+    model_doc = MODEL_DOC
+    if not refused and not Path(core.BENCH, "docs", model_doc).is_file():
+        refused = f"model document docs/{model_doc} is missing"
     sources = {}
     for name, src in (inputs or {}).items():
         refused = refused or _input_name(name)
@@ -429,7 +432,7 @@ def _validation(md):
     except (OSError, ValueError) as exc:
         return {"schema": None, "validated": False, "defects": [{"where": "model.json", "what": str(exc)}]}
     schema = model.get("schema") if isinstance(model, dict) else None
-    if schema not in engine.SCHEMAS:
+    if engine.format_refusal(model) is not None:
         return {"schema": schema, "validated": None, "defects": [],
                 "validation_note": "not an executable interface model; check it with model_validate"}
     result = engine.validate_model(model)
@@ -451,7 +454,7 @@ def _qualification(md):
     try:
         model, out["model_sha256"] = evidence.read_json_hashed(model_path, 1048576)
         replies, out["replies_sha256"] = evidence.read_json_hashed(replies_path, 4194304)
-        if not (isinstance(model, dict) and model.get("schema") in engine.SCHEMAS):
+        if engine.format_refusal(model) is not None:
             return {"status": "absent", "source": "host", "reason": "not an executable interface model",
                     "agent_reported": claimed}
         report = qualify(model, replies)

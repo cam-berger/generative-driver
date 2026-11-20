@@ -138,7 +138,7 @@ class InventoryTests(TaskCase):
         self.assertEqual([record['task'] for record in seen(folder)], ['acquire', 'inventory'])
 
 
-KIT = {'TASKS.json', 'INTERFACE_MODEL.md', 'CONTRACT.md', 'contract.py', 'validate.py', 'qualify.py'}
+KIT = {'TASKS.json', 'INTERFACE_MODEL.md', 'validate.py', 'qualify.py'}
 
 
 class HandlerTests(TaskCase):
@@ -150,7 +150,7 @@ class HandlerTests(TaskCase):
         self.assertEqual(len({record['workspace'] for record in handlers} | {r['workspace'] for r in seen(folder)}),
                          len(seen(folder)))
         identify, measure = handlers
-        frame = {key: INVENTORY[key] for key in ('schema', 'device', 'channel', 'framing')}
+        frame = {'schema': 'interface-model/7', **{key: INVENTORY[key] for key in ('device', 'channel', 'framing')}}
         for record, command in ((identify, INVENTORY['commands'][1]), (measure, INVENTORY['commands'][0])):
             with self.subTest(command=command['name']):
                 self.assertTrue(KIT | {'MODEL_FRAME.json', 'COMMAND.json', 'CODE.c', 'STRINGS.json', 'HANDLER.md',
@@ -214,13 +214,13 @@ def handed_off(result, revision=None):
     return {path.name: read(path) for path in folder.iterdir() if path.is_file()}
 
 
-ASSEMBLED = {'schema': 'interface-model/3', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
+ASSEMBLED = {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
              'identity': {'operation': 'identify'}, 'operations': {'identify': IDENTIFY, 'measure': MEASURE},
              'provenance': FRAGMENTS['identify']['provenance'] + FRAGMENTS['measure']['provenance']}
 
 
 class AssemblyTests(TaskCase):
-    def test_06_B8_the_configurator_assembles_the_fragments_into_the_model_its_replies_and_its_contract(self):
+    def test_06_B8_the_configurator_assembles_the_fragments_into_the_model_and_its_replies(self):
         controller, run, _, folder = self.tasks_run()
         result = stopped(controller, run)
         self.assertEqual(result['status'], 'completed', result)
@@ -228,10 +228,6 @@ class AssemblyTests(TaskCase):
         self.assertEqual(files['model.json'], ASSEMBLED)
         self.assertEqual(files['replies.json'], {'schema': 'interface-replies/1', 'operations': {
             'identify': {'steps': [['DEMO-42']]}, 'measure': {'steps': [['T:21.5']]}}})
-        self.assertEqual(files['contract.json'], {
-            'schema': 'driver-contract/1', 'device': {'name': 'DEMO-42'}, 'identity': {'operation': 'identify'},
-            'operations': {name: FRAGMENTS[name]['contract'] for name in ('identify', 'measure')},
-            'provenance': ASSEMBLED['provenance']})
         self.assertEqual(interpretation(result)['mode'], 'tasks')
         self.assertNotIn('single', [record['task'] for record in seen(folder)])
 
@@ -254,7 +250,6 @@ class AssemblyTests(TaskCase):
                 files = handed_off(result)
                 self.assertEqual(sorted(files['model.json']['operations']), kept)
                 self.assertEqual(sorted(files['replies.json']['operations']), kept)
-                self.assertEqual(sorted(files['contract.json']['operations']), kept)
                 self.assertEqual(files['model.json']['operations']['identify'], IDENTIFY)
                 self.assertTrue(any(why in note for note in interpretation(result)['notes']), interpretation(result))
 
@@ -278,7 +273,7 @@ class CrossCheckTests(TaskCase):
         self.assertEqual(result['status'], 'completed', result)
         self.assertEqual([record['task'] for record in seen(folder)][-1], 'cross-check')
         check, = seen(folder, 'cross-check')
-        self.assertTrue(KIT | {'model.json', 'replies.json', 'contract.json', 'VALIDATION.json', 'inventory.json',
+        self.assertTrue(KIT | {'model.json', 'replies.json', 'VALIDATION.json', 'inventory.json',
                                'ANALYSIS_INDEX.json', 'HANDLERS.c', 'CROSS_CHECK.md', 'TASK.json',
                                'notes/inventory.md', 'notes/handler-identify.md', 'notes/handler-measure.md'}
                         <= set(check['files']), check['files'])
@@ -304,7 +299,7 @@ class CrossCheckTests(TaskCase):
         self.assertEqual(result['status'], 'completed', result)
         files = handed_off(result)
         self.assertEqual(files['model.json'], ASSEMBLED)
-        self.assertEqual(sorted(files['contract.json']['operations']), ['identify', 'measure'])
+        self.assertEqual(sorted(files['replies.json']['operations']), ['identify', 'measure'])
         note, = [note for note in interpretation(result)['notes'] if 'cross-check' in note]
         self.assertIn('assembled', note)
         self.assertIn(note, files['NOTES.md'])
@@ -394,7 +389,7 @@ class RepairTests(TaskCase):
         self.assertEqual(handler['PREVIOUS_OPERATION.json'], {'operation': 'measure', 'model': MEASURE})
         self.assertEqual(handler['DIFFERENCES.json'], MEASURE_DIFF)
         self.assertEqual(handler['IDENTITY.json'], {'operation': 'identify', 'model': IDENTIFY})
-        self.assertEqual(handler['MODEL_FRAME.json'], {'schema': 'interface-model/3', 'device': {'name': 'DEMO-42'},
+        self.assertEqual(handler['MODEL_FRAME.json'], {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'},
                                                        'channel': {'type': 'tcp'}, 'framing': INVENTORY['framing']})
         # The cross-check runs again with the previous final model and every difference.
         check = seen(folder, 'cross-check')[-1]
@@ -467,6 +462,127 @@ class RepairTests(TaskCase):
                          [('handler', 'measure'), ('handler', 'measure'), ('cross-check', None)])
         self.assertEqual(handed_off(result, 1)['model.json']['operations']['measure'], MEASURE_FIXED)
         self.assertEqual(len(launches(ghidra)), 1)
+
+
+# The temperature reading with the meanings a handler wrote, and a status reading a precondition can observe.
+DESCRIBED = {**MEASURE, 'description': 'Read the temperature of the probe.',
+             'uncertainties': [{'code': 'range_unverified', 'message': 'The code bounds no reading.',
+                                'evidence_refs': ['handle_measure at 08000340']}],
+             'outputs': {'temperature': {**MEASURE['outputs']['temperature'], 'unit': 'Cel',
+                                         'description': 'Temperature of the probe.',
+                                         'value': {'type': 'number', 'minimum': -40, 'maximum': 125}}}}
+READY = {'id': 'ready', 'description': 'The device measures only while its status is ok.',
+         'observation': {'operation': 'status', 'parameters': {}, 'output': 'status'},
+         'operator': 'eq', 'expected': 'S:ok'}
+STATUS_COMMAND = {'name': 'status', 'handlers': ['08000500'], 'evidence': ['menu case 0x1 at 08000530']}
+WITH_STATUS = {**INVENTORY, 'commands': INVENTORY['commands'] + [STATUS_COMMAND]}
+
+
+def model_of(**operations):
+    """The model the configurator assembles from the canned fragments of `operations`, by name."""
+    return {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
+            'identity': {'operation': 'identify'}, 'operations': operations,
+            'provenance': [{'item': 'operations.' + name, 'source': 'handler code of ' + name} for name in operations]}
+
+
+class OneFormatTaskTests(TaskCase):
+    """Task mode writes meanings into the model (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B10_a_fragment_holds_its_meanings_in_the_model_and_a_contract_it_still_writes_is_ignored(self):
+        still = {**fragment('measure', DESCRIBED, ['T:21.5']), 'contract': {'description': 'A worker still wrote one.'}}
+        controller, run, _, folder = self.tasks_run({'inventory': WITH_STATUS, 'single': SINGLE_MODEL, 'fragments': {
+            'identify': fragment('identify', IDENTIFY, ['DEMO-42']), 'measure': still,
+            'status': fragment('status', STATUS, ['S:ok'])}})
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        # A fragment without a contract is usable, so the attempt ran as tasks.
+        self.assertEqual(interpretation(result)['mode'], 'tasks', interpretation(result))
+        files = handed_off(result)
+        self.assertEqual(files['model.json'], model_of(identify=IDENTIFY, measure=DESCRIBED, status=STATUS))
+        self.assertEqual(files['replies.json']['operations'], {
+            'identify': {'steps': [['DEMO-42']]}, 'measure': {'steps': [['T:21.5']]}, 'status': {'steps': [['S:ok']]}})
+        # The assembly writes the model and its replies, and nothing of a contract.
+        self.assertNotIn('contract.json', files)
+        self.assertNotIn('worker still wrote', json.dumps(files))
+
+    def test_02_B10_a_handlers_precondition_is_left_out_and_the_cross_check_writes_them(self):
+        guarded = model_of(identify=IDENTIFY, measure={**DESCRIBED, 'preconditions': [READY]}, status=STATUS)
+        controller, run, _, folder = self.tasks_run({'inventory': WITH_STATUS, 'single': SINGLE_MODEL, 'fragments': {
+            'identify': fragment('identify', IDENTIFY, ['DEMO-42']),
+            'measure': fragment('measure', {**DESCRIBED, 'preconditions': [READY]}, ['T:21.5']),
+            'status': fragment('status', STATUS, ['S:ok'])}, 'cross_check': guarded})
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(interpretation(result)['mode'], 'tasks', interpretation(result))
+        # The assembly took the handler's operation without the precondition it wrote ...
+        check, = seen(folder, 'cross-check')
+        self.assertEqual(check['model.json'], model_of(identify=IDENTIFY, measure=DESCRIBED, status=STATUS))
+        # ... and the cross-check, which sees the whole model, wrote it.
+        self.assertEqual(handed_off(result)['model.json'], guarded)
+
+    def test_02_B10_the_inventory_names_no_format_and_the_configurator_writes_the_one_tag(self):
+        for index, (case, inventory) in enumerate((('no schema', INVENTORY),
+                                                   ('a schema a worker still writes',
+                                                    {**INVENTORY, 'schema': 'interface-model/4'}))):
+            with self.subTest(inventory=case):
+                root = self.root / str(index)
+                controller, run, _, folder = self.tasks_run({'inventory': inventory, 'single': SINGLE_MODEL,
+                                                             'fragments': FRAGMENTS}, root=root, home=root / 'home')
+                result = stopped(controller, run)
+                self.assertEqual(interpretation(result)['mode'], 'tasks', interpretation(result))
+                frame = {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
+                         'framing': INVENTORY['framing']}
+                self.assertEqual([record['MODEL_FRAME.json'] for record in seen(folder, 'handler')], [frame, frame])
+                self.assertEqual(handed_off(result)['model.json']['schema'], 'interface-model/7')
+
+    def test_02_B10_no_task_gets_a_contract_guide_a_contract_tool_or_a_contract_file(self):
+        from worker_texts import earlier_names, model_document, texts_of
+        controller, run, _, folder = self.tasks_run()
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        records = seen(folder, 'inventory') + seen(folder, 'handler') + seen(folder, 'cross-check')
+        self.assertEqual(len(records), 4)
+        for record in records:
+            with self.subTest(task=record['task'], command=record['command']):
+                self.assertFalse({'CONTRACT.md', 'contract.py', 'contract.json'} & set(record['files']))
+                texts = texts_of(record['workspace'])
+                self.assertEqual(earlier_names({**texts, 'the prompt': record['prompt']}), [])
+                if record['task'] != 'inventory':
+                    self.assertEqual(texts['INTERFACE_MODEL.md'].encode('utf-8'), model_document().read_bytes())
+        check = records[-1]
+        self.assertEqual(check['TASK.json']['writes'], ['model.json', 'replies.json', 'NOTES.md'])
+        self.assertTrue({'model.json', 'replies.json'} <= set(check['files']))
+        # The handler's guide: meanings are fields of the model, and a needed precondition goes into the notes.
+        guide = ' '.join(texts_of(records[1]['workspace'])['HANDLER.md'].split())
+        self.assertIn('Write no precondition', guide)
+        self.assertIn('name it in `NOTES.md`', guide)
+        self.assertNotIn('contract', guide)
+
+    def test_02_B10_a_repair_takes_the_rerun_operation_with_its_meanings_and_keeps_the_previous_preconditions(self):
+        guarded = model_of(identify=IDENTIFY, measure={**DESCRIBED, 'preconditions': [READY]}, status=STATUS)
+        fixed = {**DESCRIBED, 'description': 'Read the temperature the probe reports after T=.',
+                 'outputs': {'temperature': {**DESCRIBED['outputs']['temperature'], 'prefix': 'T='}}}
+        other = {**READY, 'id': 'a_handler_wrote_this', 'expected': 'S:busy'}
+        controller, run, _, folder = self.tasks_run({
+            'inventory': WITH_STATUS, 'single': SINGLE_MODEL, 'cross_check': guarded,
+            'fragments': {'identify': fragment('identify', IDENTIFY, ['DEMO-42']),
+                          'measure': fragment('measure', DESCRIBED, ['T:21.5']),
+                          'status': fragment('status', STATUS, ['S:ok'])},
+            'repair_fragments': {'measure': fragment('measure', {**fixed, 'preconditions': [other]}, ['T=21.5'])}},
+            diffs=lambda revision: MEASURE_DIFF if revision == 0 else None)
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(handed_off(result, 0)['model.json'], guarded)
+        self.assertEqual(interpretation(result, 1)['mode'], 'tasks', interpretation(result, 1))
+        # The re-run operation replaces its own with its meanings, under the preconditions the previous final model
+        # has for it; what the handler wrote of a precondition is left out.
+        check = seen(folder, 'cross-check')[-1]
+        repaired = {**fixed, 'preconditions': [READY]}
+        self.assertEqual(check['model.json']['operations'], {'identify': IDENTIFY, 'measure': repaired,
+                                                             'status': STATUS})
+        self.assertEqual(check['replies.json']['operations']['measure'], {'steps': [['T=21.5']]})
+        self.assertFalse({'contract.json', 'previous-model/contract.json'} & set(check['files']))
+        self.assertEqual(handed_off(result, 1)['model.json']['operations']['measure'], repaired)
 
 
 if __name__ == '__main__':

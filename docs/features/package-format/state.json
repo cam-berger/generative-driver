@@ -4,7 +4,7 @@
   "branch": "mdk/package-format",
   "stage": "spec",
   "awaiting": null,
-  "current": "02",
+  "current": "03",
   "features": [
     {
       "id": "01",
@@ -15,8 +15,8 @@
     {
       "id": "02",
       "slug": "driver-document",
-      "status": "pending",
-      "base": null
+      "status": "done",
+      "base": "0b3456bb90756a0a6a2c8d281fed7406d24af410"
     },
     {
       "id": "03",

@@ -447,7 +447,7 @@ CATALOG = {'schema': 'development-conditions/1', 'conditions': [{'id': 'low'}, {
 def gauge_model():
     """A line model of the gauge: its identity, and one operation for each task of the hand-written mission."""
     number = lambda prefix, unit: {'from': 'reply', 'kind': 'ascii_number', 'prefix': prefix, 'unit': unit}
-    return {'schema': 'interface-model/3', 'device': {'name': 'GAUGE-1'}, 'channel': {'type': 'tcp'},
+    return {'schema': 'interface-model/7', 'device': {'name': 'GAUGE-1'}, 'channel': {'type': 'tcp'},
             'identity': {'operation': 'identify'},
             'operations': {
                 'identify': {'effect': 'read', 'parameters': {}, 'outputs': {},

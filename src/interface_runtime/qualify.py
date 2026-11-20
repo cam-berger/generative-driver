@@ -2,7 +2,7 @@
 
 The model's own engine and stream adapter run over a fake serial source that delivers every reply
 complete and in fixed-size fragments, under LF and CRLF framing, and then under synthetic faults.
-Binary replies (interface-replies/2, for interface-model/5 frame steps) are delivered the same way under
+Binary replies (interface-replies/2, for frame steps) are delivered the same way under
 one BINARY framing, with faults built from the model's own frame declaration: a corrupted check, a wrong
 sync byte, an impossible length, a truncated frame, an error frame and a well-formed unrelated frame.
 On a usb channel every reply, control reads included, is one whole transfer through the real USB adapter

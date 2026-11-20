@@ -131,7 +131,7 @@ async def _emit(tools, task, workspace):
 async def _reuse(tools, task, workspace):
     package = next(Path(path) for path in task['inputs'] if (Path(path) / 'manifest.json').is_file())
     catalog = json.loads((package / 'mcp-tools.json').read_text(encoding='utf-8'))
-    identity = json.loads((package / 'driver/contract.json').read_text(encoding='utf-8'))['identity']['operation']
+    identity = json.loads((package / 'driver/model.json').read_text(encoding='utf-8'))['identity']['operation']
     name = sorted(tool for tool, operation in catalog['operations'].items() if operation != identity)[0]
     await tools.call(name, {})
     return 'Called ' + name + ' through the generated catalog', []
@@ -141,34 +141,12 @@ _STAGE_WORK = {'acquire': _acquire, 'probe': _probe, 'ground': _probe, 'emit': _
 
 
 def _interpret(workspace):
+    """Write the stand-in model, which says what `measure` means and that the stand-in device states no unit for its
+    temperature. The model is all the worker hands on."""
     from .toolkit import resources_root
     model = workspace / 'model.json'
     shutil.copyfile(resources_root() / 'smoke/model.json', model)
-    _contract(workspace)
-    return 'Wrote the stand-in model and its driver contract', [_artifact(model, 'model'),
-                                                                _artifact(workspace / 'contract.json', 'contract')]
-
-
-def _contract(workspace):
-    """Write contract.json with the workspace's contract.py, as CONTRACT.md asks: draft it, describe `measure`, say that
-    the stand-in device states no unit for its temperature, and check it."""
-    import subprocess
-
-    def tool(command):
-        done = subprocess.run([sys.executable, 'contract.py', command], cwd=workspace, capture_output=True,
-                              encoding='utf-8', errors='replace', timeout=_CALL_TIMEOUT)
-        if done.returncode != 0:
-            raise _StepFailed('contract.py ' + command + ' failed: ' + (done.stdout + done.stderr).strip())
-    tool('draft')
-    path = workspace / 'contract.json'
-    contract = json.loads(path.read_text(encoding='utf-8'))
-    measure = contract['operations']['measure']
-    measure['description'] = 'Read the temperature the stand-in device reports.'
-    measure['outputs']['temperature'].update(unit=None, uncertainties=[{
-        'code': 'unit_not_stated', 'message': "The stand-in device's reply T:21.5 states no unit.",
-        'evidence_refs': ['stand-in device reply T:21.5']}])
-    path.write_text(json.dumps(contract, indent=2) + '\n', encoding='utf-8')
-    tool('check')
+    return 'Wrote the stand-in model', [_artifact(model, 'model')]
 
 
 async def _work(stage, task, workspace, gateway, enabled, record, hang=False):

@@ -160,7 +160,7 @@ class AcquisitionPipelineTests(unittest.TestCase):
 
     def test_native_usb_reads_need_no_serial_listen_or_reset_grant(self):
         descriptor = '120100020000004034127856000100000000'
-        model = {'schema': 'interface-model/3', 'device': {'name': 'Synthetic USB device'},
+        model = {'schema': 'interface-model/7', 'device': {'name': 'Synthetic USB device'},
                  'channel': {'type': 'usb'}, 'identity': {'operation': 'identify'},
                  'operations': {'identify': {'effect': 'read', 'parameters': {}, 'steps': [{
                      'op': 'usb_control', 'setup': {'request_type': 0x80, 'request': 6, 'value': 0x100, 'index': 0},

@@ -129,7 +129,7 @@ def bus_model(directory):
                 'capture': 'reply', **more}
     directory.mkdir(parents=True)
     (directory / 'model.json').write_text(json.dumps({
-        'schema': 'interface-model/3', 'device': {'name': 'fictional bus device'},
+        'schema': 'interface-model/7', 'device': {'name': 'fictional bus device'},
         'channel': {'type': 'i2c', 'address_7bit': 0x40, 'speed_hz': 100000}, 'identity': {'operation': 'identify'},
         'operations': {'identify': {'effect': 'read', 'parameters': {}, 'outputs': {},
                                     'steps': [exchange('00', expect={'equals_hex': '12'})]},

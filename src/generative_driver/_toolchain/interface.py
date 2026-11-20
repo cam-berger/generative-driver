@@ -1,4 +1,4 @@
-"""Schema-3 integration of the shared runtime into the original pipeline.
+"""The tools that run an interface model and its package on the shared runtime.
 
 The kit runs a package through its own installed runtime over the package's data, never through the copy the package
 carries (docs/adr/0008-run-the-installed-runtime-over-package-data.md)."""
@@ -14,7 +14,7 @@ import tempfile
 from . import core
 
 import interface_runtime
-from interface_runtime.engine import SCHEMAS, validate_model
+from interface_runtime.engine import format_refusal, validate_model
 from interface_runtime.evidence import (read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES,
                                         probe_coverage, COVERAGE_SCOPE, ReplayFactory, _evidence_bound)
 from interface_runtime.package import digest, package_files, verify_package, inspect_package
@@ -58,12 +58,11 @@ def load(model_dir):
 
 
 def unknown_format(model):
-    """Why the kit refuses `model` for its format, naming the schema found, or None when the installed runtime knows the
-    schema. A tool asks this before it reads any other file: a model is data the installed runtime executes, so a
-    format the runtime does not know is refused and nothing of its directory is loaded
+    """Why the kit refuses `model` for its format, naming the schema found and the one the installed runtime reads, or
+    None for that one format. A tool asks this before it reads any other file: a model is data the installed runtime
+    executes, so a model of another format is refused and nothing of its directory is loaded
     (docs/adr/0010-a-package-is-data-in-one-format.md)."""
-    found = model.get('schema') if type(model) is dict else None
-    return None if found in SCHEMAS else 'model format is not one this kit knows: ' + repr(found)[:120]
+    return format_refusal(model)
 
 
 @core.tool('interface_describe')
@@ -142,7 +141,7 @@ def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=
         if unknown_format(model):
             raise ValueError(unknown_format(model))
         if operation is None:
-            raise ValueError('schema 3 probe requires an explicit operation name')
+            raise ValueError('a probe requires an explicit operation name')
         if type(n) is not int or not 1 <= n <= 100:
             raise ValueError('sample count must be integer 1..100')
         checked = validate_model(model)
@@ -267,7 +266,10 @@ def coverage_reference(model, evidence):
 
 def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
     """Build the package of a model and the probe record it wrote, in a new folder of the run's emit directory. A model
-    of a format the runtime does not know is refused before the probe is read, and no folder is made."""
+    of a format the runtime does not know is refused before the probe is read, and no folder is made.
+
+    The package holds the model byte for byte. Its contract, its protocol and its tools are what the runtime computes
+    from that model, so nothing else in the model directory is read."""
     model, sha = load(model_dir)
     if unknown_format(model):
         return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'_exit':1}
@@ -275,17 +277,8 @@ def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
     checked = check_probe(model, evidence, sha)
     if not checked['ok']:
         return {**checked,'_exit':1}
-    from interface_runtime.contracts import from_model, compile_contract
-    authored = [(path(model_dir)/name).is_file() for name in ('contract.json', 'protocol.json')]
-    if any(authored) and not all(authored):
-        raise ValueError('Authored contract.json and protocol.json must be supplied together')
-    contract, protocol = from_model(model)
-    if (path(model_dir)/'contract.json').is_file():
-        contract = read_json(path(model_dir)/'contract.json', 1048576)
-    if (path(model_dir)/'protocol.json').is_file():
-        protocol = read_json(path(model_dir)/'protocol.json', 1048576)
-    if compile_contract(contract, protocol) != model:
-        raise ValueError('Authored contract/protocol differ from the probed model projection')
+    from interface_runtime.contracts import contract_view, protocol_view
+    contract, protocol = contract_view(model), protocol_view(model)
     parent = Path(core.resolve_run(run_dir))/'emit'; parent.mkdir(parents=True, exist_ok=True)
     pkg = Path(tempfile.mkdtemp(prefix='interface-package-', dir=parent))
     shutil.copytree(TEMPLATE, pkg/'driver', ignore=shutil.ignore_patterns('__pycache__'))
@@ -387,11 +380,6 @@ def _copy(pkg, sha, expected_manifest_sha256, temporary):
     if not verified['ok']:
         _read_back(copy)
         return None, None, {**verified,'_exit':1}
-    model = read_json(copy/'driver/model.json', 1048576)
-    if type(model) is not dict or model.get('schema') not in SCHEMAS:
-        found = model.get('schema') if type(model) is dict else model
-        what = 'model format is not one this kit knows: ' + repr(found)[:120]
-        return None, None, {'ok':False,'defects':[{'where':'driver/model.json','what':what}],'_exit':1}
     return copy, verified['manifest'], None
 
 
@@ -642,9 +630,12 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
 
 
 def model_qualify(run_dir, model_dir, replies, **_):
-    """Offline qualification of a schema-3/4 stream model against supplied replies; never opens hardware."""
+    """Offline qualification of a model against supplied replies; never opens hardware. A model of a format the
+    runtime does not know is refused before the replies are read."""
     from interface_runtime.qualify import QualifyError, qualify, summary
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'model_sha256':sha,'_exit':1}
     try:
         report = qualify(model, read_json(path(replies), 4194304))
     except QualifyError as exc:

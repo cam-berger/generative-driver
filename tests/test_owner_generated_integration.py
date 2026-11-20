@@ -79,17 +79,11 @@ class OwnerGeneratedTests(unittest.TestCase):
 
     def test_finish_distinguishes_a_preopen_refusal_from_live_guard_reads(self):
         from unittest.mock import patch
-        from test_driver_contract import rewrite_document
+        from test_driver_contract import guarded_model
         with tempfile.TemporaryDirectory() as temporary, demonstration_device({'writes': 0, 'armed': 0}) as binding:
             root = Path(temporary)
-            model = controlled_model(); model['channel'] = {'type': 'tcp'}
+            model = guarded_model(); model['channel'] = {'type': 'tcp'}
             package, _ = emit_fixture(root, model)
-            contract = json.loads((package/'driver/contract.json').read_text())
-            contract['operations']['set_level']['preconditions'] = [{
-                'id': 'armed_required', 'description': 'Device must be armed.',
-                'observation': {'operation': 'read_armed', 'parameters': {}, 'output': 'armed'},
-                'operator': 'eq', 'expected': 1}]
-            rewrite_document(package, 'driver/contract.json', contract)
             owner = Controller(root/'owner')
             self.addCleanup(owner.close)
             opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding, 'effects': ['write']})
@@ -137,31 +131,51 @@ class OwnerGeneratedTests(unittest.TestCase):
             self.assertEqual(row['parameters'],{'level':37})
             self.assertEqual(row['mcp'],{'dispatch_id':'12'})
 
-    def test_authored_contract_pair_survives_benchmark_adaptation_and_rejects_projection_mismatch(self):
+    def test_02_B13_a_run_on_a_supplied_device_keeps_the_meanings_and_reads_no_handed_contract_or_protocol(self):
+        # The model wired to the supplied device differs from the interpreted one only in its channel, whatever else
+        # the interpret handoff carries.
         from generative_driver.supplied.stages import adapt
-        from interface_runtime.contracts import from_model, compile_contract
+        from generative_driver.toolkit import call_tool
+        from test_driver_contract import GUARD, RANGE, described_model, exchange, replay_of
+        interpreted = described_model()
+        self.assertEqual(interpreted['channel']['type'], 'uart')
+        beside = {'the model alone': {},
+                  'a contract and a protocol of another driver': {
+                      'contract.json': json.dumps({'schema': 'driver-contract/1', 'operations': {}}),
+                      'protocol.json': json.dumps({'schema': 'driver-protocol/1', 'operations': {}})},
+                  'a lone contract that is no JSON': {'contract.json': 'not JSON'},
+                  'a lone protocol of an unknown format': {'protocol.json': '{"schema": "driver-protocol/9"}'}}
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); candidate=root/'candidate';candidate.mkdir()
-            contract, protocol=from_model(controlled_model())
-            contract['operations']['set_level']['preconditions']=[{'id':'armed','description':'Must be armed',
-                'observation':{'operation':'read_armed','parameters':{},'output':'armed'},'operator':'eq','expected':1}]
-            model=compile_contract(contract,protocol)
-            for name, document in [('model.json',model),('contract.json',contract),('protocol.json',protocol)]:
-                (candidate/name).write_text(json.dumps(document))
-            accepted=[{'stage':'interpret','artifacts':[{'path':str(p),'sha256':digest(p)} for p in candidate.iterdir()]}]
-            ws=root/'probe';ws.mkdir()
-            result=adapt(root,ws,accepted,{'device':{'binding':{'host':'localhost','port':42}}})
-            self.assertIn('binding',result)
-            self.assertEqual(json.loads((ws/'model/contract.json').read_text()),contract)
-            adapted_protocol=json.loads((ws/'model/protocol.json').read_text())
-            self.assertEqual(adapted_protocol['channel'],{'type':'tcp'})
-            self.assertEqual(compile_contract(contract,adapted_protocol),json.loads((ws/'model/model.json').read_text()))
-            protocol['operations']['set_level']['steps'][0]['tx'][0]={'hex':'57524f4e47'}
-            (candidate/'protocol.json').write_text(json.dumps(protocol))
-            accepted[0]['artifacts']=[{'path':str(p),'sha256':digest(p)} for p in candidate.iterdir()]
-            mismatch = adapt(root,root/'bad-probe',accepted,{'device':{'binding':{'host':'localhost','port':42}}})
-            self.assertIn('unwired_model', mismatch)
-            self.assertIn('projection', mismatch['unwired_model']['reason'])
+            for index, (case, extra) in enumerate(beside.items()):
+                with self.subTest(handed=case):
+                    root = Path(temporary) / str(index)
+                    candidate = root / 'candidate'; candidate.mkdir(parents=True)
+                    (candidate / 'model.json').write_text(json.dumps(interpreted))
+                    for name, text in extra.items():
+                        (candidate / name).write_text(text)
+                    accepted = [{'stage': 'interpret', 'artifacts': [{'path': str(p), 'sha256': digest(p)}
+                                                                     for p in sorted(candidate.iterdir())]}]
+                    ws = root / 'probe'; ws.mkdir()
+                    result = adapt(root, ws, accepted, {'device': {'binding': {'host': 'localhost', 'port': 42}}})
+                    # Neither file stops the probe, and neither is handed on.
+                    self.assertEqual(result, {'binding': {'host': 'localhost', 'port': 42}})
+                    self.assertEqual(sorted(path.name for path in (ws / 'model').iterdir()),
+                                     ['adaptation.json', 'model.json'])
+                    wired = json.loads((ws / 'model/model.json').read_text())
+                    self.assertEqual(wired, {**interpreted, 'channel': {'type': 'tcp'}})
+                    # So the package's tools show the meanings the worker wrote.
+                    (root / 'replay.json').write_text(json.dumps(replay_of(exchange(b'T\n', b'T:21.5\n'))))
+                    run = {'run_dir': str(root / 'run'), 'model_dir': str(ws / 'model')}
+                    probe = call_tool('probe_run', {**run, 'operation': 'measure', 'n': 1,
+                                                    'replay': str(root / 'replay.json')})
+                    emitted = call_tool('emit_package', {**run, 'probe': probe['probe']})
+                    self.assertTrue(emitted.get('ok'), emitted)
+                    catalog = json.loads((Path(emitted['package_dir']) / 'mcp-tools.json').read_text())
+                    tools = {tool['name']: tool['description'].split('\n') for tool in catalog['tools']}
+                    self.assertEqual(tools['device_measure'],
+                                     ['Read the temperature of the probe.', 'Warning: ' + RANGE['message']])
+                    self.assertEqual(tools['device_set_level'],
+                                     ['Set the output level.', 'Precondition armed_required: ' + GUARD['description']])
 
     def test_device_rpc_waits_for_long_operation_and_never_resends_lost_reply(self):
         from generative_driver import client

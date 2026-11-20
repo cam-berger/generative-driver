@@ -199,10 +199,10 @@ NOT_TEXT = b'%PDF-1.4\n\xe2\xe3\xcf\xd3 a protocol source that is neither split 
 def model(name='DEMO-42', expect='DEMO-42\n'):
     """A line model of the canned device: identify, and measure the temperature."""
     from interpret_task_fixtures import IDENTIFY, MEASURE
-    identify = json.loads(json.dumps(IDENTIFY))
+    identify, measure = json.loads(json.dumps(IDENTIFY)), json.loads(json.dumps(MEASURE))
     identify['steps'][0]['expect'] = {'equals_hex': expect.encode().hex()}
-    return {'schema': 'interface-model/3', 'device': {'name': name}, 'channel': {'type': 'tcp'},
-            'identity': {'operation': 'identify'}, 'operations': {'identify': identify, 'measure': MEASURE},
+    return {'schema': 'interface-model/7', 'device': {'name': name}, 'channel': {'type': 'tcp'},
+            'identity': {'operation': 'identify'}, 'operations': {'identify': identify, 'measure': measure},
             'provenance': [{'item': 'operations.identify', 'source': 'documents/1-datasheet/002.txt'},
                            {'item': 'operations.measure', 'source': 'documents/1-datasheet/003.txt'}]}
 
@@ -481,12 +481,6 @@ class DeviceFirstChoiceTests(RunCase):
         self.assertEqual(self.events('task.started'), [])
 
 
-def contract_for(written):
-    """The contract a worker writes for `written` with the workspace's contract.py, as CONTRACT.md asks."""
-    from interface_runtime.contracts import from_model
-    return from_model(written)[0]
-
-
 class DeviceFirstWorkerTests(RunCase):
     """07-B6: the device-first worker's sealed inputs, tools, instructions and output."""
 
@@ -502,7 +496,6 @@ class DeviceFirstWorkerTests(RunCase):
             worker.write('model.json', model())
             worker.write('replies.json', {'schema': 'interface-replies/1', 'operations': {
                 'identify': {'steps': [['DEMO-42']]}, 'measure': {'steps': [['T:21.5']]}}})
-            worker.write('contract.json', contract_for(model()))
             worker.write('NOTES.md', 'Ran identify and measure on the device.\n')
         (self.root / 'notes.md').write_text('The temperature reply is in degrees Celsius.\n', encoding='utf-8')
         with line_device(DEVICE) as served:
@@ -512,8 +505,8 @@ class DeviceFirstWorkerTests(RunCase):
         [assignment] = self.assigned('interpret')
         workspace = Path(assignment['workspace'])
         sealed = {Path(path).relative_to(workspace).as_posix() for path in assignment['inputs']}
-        for name in ('DEVICE_FIRST.md', 'TASKS.json', 'INTERFACE_MODEL.md', 'CONTRACT.md', 'contract.py',
-                     'validate.py', 'qualify.py', 'DOCUMENTS.json', 'documents/1-supplied/001.txt'):
+        for name in ('DEVICE_FIRST.md', 'TASKS.json', 'INTERFACE_MODEL.md', 'validate.py', 'qualify.py',
+                     'DOCUMENTS.json', 'documents/1-supplied/001.txt'):
             self.assertIn(name, sealed)
         for name in ('image.bin', 'ANALYSIS_TOOLS.json', 'ghidra_run.py', 'ExportDecomp.java', 'SeedCortexM.java',
                      'image_map_check.py', 'ANALYSIS_INDEX.json'):
@@ -529,15 +522,14 @@ class DeviceFirstWorkerTests(RunCase):
         self.assertIn("The device's replies are the truth", seen['tasks']['documents']['instructions'])
         # Its own instructions and prompt, never the interpret prompt that says the worker has no device access.
         self.assertIsNotNone(seen['instructions'])
-        for name in ('model.json', 'replies.json', 'NOTES.md', 'contract.json', 'interface_execute', 'not_exercised'):
+        for name in ('model.json', 'replies.json', 'NOTES.md', 'interface_execute', 'not_exercised'):
             self.assertIn(name, seen['instructions'])
         self.assertIn('DEVICE_FIRST.md', seen['prompt'])
         self.assertNotIn('no access to the device', seen['prompt'])
         # Collected and checked as an interpret worker's output, and handed off as the stage's one handoff.
         [handoff] = self.handoffs(result, 'interpret')
         [frozen] = [Path(artifact['path']) for artifact in handoff['artifacts']]
-        self.assertLessEqual({'model.json', 'replies.json', 'contract.json', 'NOTES.md'},
-                             {path.name for path in frozen.iterdir()})
+        self.assertLessEqual({'model.json', 'replies.json', 'NOTES.md'}, {path.name for path in frozen.iterdir()})
         checks = {check['name']: check['passed'] for check in handoff['checks']}
         self.assertEqual(checks, {'sealed_model_collection': True, 'executable_model_contract': True})
         [probe] = self.assigned('probe')
@@ -559,6 +551,85 @@ class DeviceFirstWorkerTests(RunCase):
         self.assertEqual(seen['BINDING_CONTEXT.json']['runtime_channel'],
                          {'type': 'uart', 'baudrate': 115200, 'resets_on_open': True})
         self.assertEqual(interpretation(self.controller.call('result', self.run))['mode'], 'device')
+
+
+class OneFormatWorkerTests(RunCase):
+    """What the interpret worker of a generic run is given and told, now that the interface model is the one statement
+    of a driver (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def interpreted(self, **params):
+        """What the interpret worker of a generic run of `params` was given: every text of its workspace, the names
+        at its root, its prompt, its TASKS.json and the descriptions of its tools. The run gets one supplied
+        document, and its firmware image when `params` name one."""
+        seen = {}
+        (self.root / 'notes.md').write_text('The temperature reply is in degrees Celsius.\n', encoding='utf-8')
+
+        def acquire(worker):
+            for path in worker.task['inputs']:
+                if path.endswith('.bin'):
+                    worker.tool('acquire_firmware_artifact', source_path=path, origin='provided_binary',
+                                expected_sha256=sha256(Path(path).read_bytes()))
+                else:
+                    worker.tool('acquire_document', name=Path(path).name)
+
+        def interpret(worker):
+            from worker_texts import texts_of
+            tools = worker.controller.call('tools', worker.identity)['tools'] if worker.identity else []
+            seen.update(texts=texts_of(worker.workspace), names={path.name for path in worker.workspace.iterdir()},
+                        prompt=worker.request.prompt, tools={tool['name']: tool['description'] for tool in tools},
+                        tasks=json.loads((worker.workspace / 'TASKS.json').read_text(encoding='utf-8')))
+            worker.write('model.json', model())
+        inputs = {'notes.md': str(self.root / 'notes.md'), **params.pop('inputs', {})}
+        self.run_with({'acquire': acquire, 'interpret': interpret}, inputs=inputs, **params)
+        self.assertTrue(seen, 'the interpret worker never ran')
+        return seen
+
+    def from_firmware(self):
+        (self.root / 'firmware.bin').write_bytes(b'\x00firmware stand-in\xff')
+        return self.interpreted(inputs={'firmware.bin': str(self.root / 'firmware.bin')})
+
+    def from_the_device(self):
+        from line_device import line_device
+        with line_device(DEVICE) as served:
+            return self.interpreted(binding=served, effects=['read', 'write'])
+
+    def assert_one_document(self, seen):
+        from worker_texts import ASK, earlier_names, model_document
+        self.assertTrue(model_document().is_file(), 'the tool has no one model document')
+        self.assertEqual(seen['texts']['INTERFACE_MODEL.md'].encode('utf-8'), model_document().read_bytes())
+        self.assertEqual(seen['names'] & {'CONTRACT.md', 'contract.py'}, set())
+        self.assertIn(ASK, seen['texts']['BRIEF.md'])
+        # No file, prompt or tool description the worker gets names an earlier format or a contract it writes.
+        self.assertEqual(earlier_names({**seen['texts'], 'the prompt': seen['prompt'],
+                                        **{'the tool ' + name: text for name, text in seen['tools'].items()}}), [])
+
+    def test_02_B8_a_generic_run_gives_its_interpret_worker_the_one_model_document_and_no_contract_tool(self):
+        seen = self.from_firmware()
+        self.assertIn('image.bin', seen['names'])
+        self.assert_one_document(seen)
+
+    def test_02_B8_a_device_first_run_gives_its_worker_the_one_model_document_and_no_contract_tool(self):
+        seen = self.from_the_device()
+        self.assertIn('DEVICE_FIRST.md', seen['names'])
+        self.assertEqual(sorted(seen['tools']), sorted(DEVICE_FIRST_TOOLS))
+        self.assert_one_document(seen)
+
+    def test_02_B11_the_device_first_worker_marks_what_it_did_not_run_in_the_model_and_writes_three_files(self):
+        seen = self.from_the_device()
+        told = seen['tasks']['device_first']['instructions']
+        self.assertIn('an uncertainty with the code not_exercised on that operation in model.json', told)
+        guide = ' '.join(seen['texts']['DEVICE_FIRST.md'].split())
+        self.assertIn('an uncertainty with the code `not_exercised` on that operation in `model.json`', guide)
+        self.assertIn('Write `model.json`, `replies.json` and `NOTES.md` at the workspace root', guide)
+        self.assertIn('Write model.json, replies.json and NOTES.md at the workspace root', seen['prompt'])
+        for text in (told, guide, seen['prompt']):
+            self.assertNotIn('contract', text)
+
+    def test_02_B11_a_worker_with_documents_records_a_disagreement_in_the_notes_and_in_the_model(self):
+        for name, seen in (('from firmware', self.from_firmware()), ('from the device', self.from_the_device())):
+            with self.subTest(interpretation=name):
+                self.assertIn('record the disagreement in NOTES.md and as an uncertainty of the operation in '
+                              'model.json', seen['tasks']['documents']['instructions'])
 
 
 def effectful_model(no_effect=False):
@@ -778,7 +849,6 @@ class DeviceFirstRunTests(RunCase):
 
         def interpret(worker):
             worker.write('model.json', model())
-            worker.write('contract.json', contract_for(model()))
         with line_device(DEVICE) as served:
             result = self.run_with({'interpret': interpret, 'probe': probe_each, 'ground': probe_each, 'emit': emit,
                                     'reuse': reuse}, binding=served)
@@ -796,6 +866,39 @@ class DeviceFirstRunTests(RunCase):
                          model())
         [reused] = self.assigned('reuse')
         self.assertEqual(list(reused['inputs'].values()), [package['sha256']])
+
+
+class EmitNotesTests(RunCase):
+    """02-B14: the emit notes of a generic run list what the model given to the emit worker leaves undocumented."""
+
+    def emit_notes(self, written):
+        """The configurator's part of the emit notes of a run whose interpret worker wrote `written`."""
+        from line_device import line_device
+
+        def interpret(worker):
+            worker.write('model.json', written)
+        with line_device(DEVICE) as served:
+            result = self.run_with({'interpret': interpret, 'probe': probe_each, 'ground': probe_each, 'emit': emit,
+                                    'reuse': reuse}, binding=served)
+        [handoff] = self.handoffs(result, 'emit')
+        self.assertTrue(handoff['artifacts'], result['reason'])
+        return handoff['notes']['inline']['configurator']
+
+    def test_02_B14_the_emit_notes_list_each_operation_parameter_and_output_without_a_description(self):
+        written = model()
+        written['operations']['measure']['description'] = 'Read the temperature.'
+        notes = self.emit_notes(written)
+        self.assertEqual(notes.get('undocumented'), ['operations.identify', 'operations.measure.outputs.temperature'])
+        self.assertNotIn('driver_contract', notes)
+
+    def test_02_B14_a_model_that_describes_everything_leaves_the_key_out(self):
+        written = model()
+        written['operations']['identify']['description'] = 'Check that the device is a DEMO-42.'
+        written['operations']['measure']['description'] = 'Read the temperature.'
+        written['operations']['measure']['outputs']['temperature']['description'] = 'Temperature of the probe.'
+        notes = self.emit_notes(written)
+        self.assertNotIn('undocumented', notes)
+        self.assertNotIn('driver_contract', notes)
 
 
 if __name__ == '__main__':

@@ -275,7 +275,7 @@ class AssistiveHandoffTests(unittest.TestCase):
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage == 'interpret':
                 model = workspace / 'model'; model.mkdir()
-                (model / 'model.json').write_text('{"schema": "scripted-model"}')
+                (model / 'model.json').write_text('{"schema": "interface-model/7"}')
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             if stage == 'probe':
                 return probed(workspace, assignment)
@@ -420,7 +420,7 @@ def thermometer_model(name='Scripted thermometer', *, steps=True):
     def until(command, capture, **extra):
         return {'op': 'exchange', 'tx': [{'text': command}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
                 'timeout_ms': 1000, 'capture': capture, **extra}
-    return {'schema': 'interface-model/3', 'device': {'name': name}, 'channel': {'type': 'tcp'},
+    return {'schema': 'interface-model/7', 'device': {'name': name}, 'channel': {'type': 'tcp'},
             'identity': {'operation': 'identify'},
             'operations': {
                 'identify': {'effect': 'read', 'parameters': {}, 'outputs': {},
@@ -464,7 +464,7 @@ class DeviceRepairTests(unittest.TestCase):
                   artifacts={probe('interface-1.json'): 'probe-10-sha'}),
             event('11', 'probe_run', False, {'ok': False, 'fault': 'operator', 'reason': 'Explicit write effect grant required', '_exit': 4}),
             event('12', 'probe_run', False, {'ok': False, 'fault': 'host', 'error_code': 'open', 'results': [], '_exit': 4}),
-            event('15', 'probe_run', False, {'ok': False, 'error': 'schema 3 probe requires an explicit operation name', '_exit': 1}),
+            event('15', 'probe_run', False, {'ok': False, 'error': 'a probe requires an explicit operation name', '_exit': 1}),
             event('16', 'probe_run', True, {'ok': True, 'evidence_kind': 'live', 'probe': probe('interface-2.json'), '_exit': 0}),
             event('19', 'interface_execute', False, {**failed, 'evidence_kind': 'live', '_exit': 1}),
             event('20', 'interface_execute', False, {**before_open('validation_error', 'operation requires explicit effect grant'),
@@ -949,6 +949,36 @@ class DeviceRepairTests(unittest.TestCase):
                                  [(name, reason) for name, _, reason in refusals])
                 self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
 
+    def test_02_B2_the_gateway_refuses_a_device_call_of_a_model_with_an_earlier_tag(self):
+        # The runtime reads one driver format. A model that names an earlier tag is refused at the gateway like any
+        # format the runtime does not know: the tool never starts, no transport opens and no effect is left uncertain.
+        from unittest.mock import patch
+        tags = ('interface-model/3', 'interface-model/4', 'interface-model/5', 'interface-model/6')
+        expected = [(name, tag) for tag in tags for name in ('probe_run', 'interface_execute')]
+        for grants in (None, ['read', 'write']):
+            refusals, returned, opened = [], [], []
+            with self.subTest(grants=grants), tempfile.TemporaryDirectory() as directory, \
+                    patch('interface_runtime.evidence.open_transport', lambda channel, binding: opened.append(binding)):
+                def work(call, assigned, workspace):
+                    for tag in tags:
+                        variant = workspace / ('earlier-' + tag[-1]); variant.mkdir()
+                        (variant / 'model.json').write_text(json.dumps(dict(self.writing_thermometer(), schema=tag)))
+                        for name in ('probe_run', 'interface_execute'):
+                            try:
+                                returned.append((name, tag, call(name, model_dir=str(variant), operation='set_rate')))
+                            except ValueError as refusal:
+                                refusals.append((name, tag, str(refusal)))
+                result, events, _, calls = self.run_device_stage(Path(directory) / 'home', work, None,
+                    real=('probe_run', 'interface_execute'), effects=grants)
+                self.assertEqual(returned, [])
+                self.assertEqual([(name, tag) for name, tag, _ in refusals], expected)
+                for name, tag, reason in refusals:
+                    self.assertIn('interface-model/7', reason)
+                    self.assertTrue(reason.endswith('nothing was dispatched: ' + repr(tag)), reason)
+                self.assertEqual((calls, opened), ([], []))
+                self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished') for e in events))
+                self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+
     def test_a_model_the_worker_rewrites_during_a_call_runs_as_the_gateway_read_it(self):
         # The gateway reads a model to classify and hash a dispatch, and the tool reads it again. A worker that rewrites
         # its model in between, here turning a heater query labelled read into a heater command labelled write, which
@@ -1220,12 +1250,22 @@ class DeviceRepairTests(unittest.TestCase):
                         if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'interpret']
             self.assertEqual(sorted(Path(p).relative_to(second).as_posix() for p in assigned[1]['inputs']
                                     if Path(p).relative_to(second).parts[0] != '_toolkit'),
-                             ['ANALYSIS_TOOLS.json', 'BRIEF.md', 'CONTRACT.md', 'ExportDecomp.java',
+                             ['ANALYSIS_TOOLS.json', 'BRIEF.md', 'ExportDecomp.java',
                               'INTERFACE_MODEL.md', 'REPAIR_CONTEXT.json', 'SeedCortexM.java', 'TASKS.json',
-                              'contract.py', 'defects.json',
+                              'defects.json',
                               'ghidra_run.py', 'image.bin', 'image_map_check.py', 'previous-model/model.json',
                               'qualify.py', 'validate.py'])
             self.assertEqual(assigned[1]['collection']['expected_seal_sha256'], digest(Path(assigned[1]['collection']['run_dir']) / 'interpret/attempt1.seal.json'))
+
+    def test_02_B8_the_repair_workspace_of_a_generic_run_holds_the_one_model_document_and_names_no_contract(self):
+        from worker_texts import earlier_names, model_document, texts_of
+        with self.repaired() as (controller, run, result, sealed, probes, home):
+            repair = sealed[1]
+            self.assertEqual((repair / 'INTERFACE_MODEL.md').read_bytes(), model_document().read_bytes())
+            for name in ('CONTRACT.md', 'contract.py', 'previous-model/contract.json'):
+                self.assertFalse((repair / name).exists(), name)
+            # REPAIR_CONTEXT.json and TASKS.json among them: no text names an earlier format or a contract to write.
+            self.assertEqual(earlier_names(texts_of(repair)), [])
 
     def test_repair_context_names_every_sealed_repair_input_and_editing_one_stops_for_integrity(self):
         # The repair agent is told which inputs are sealed and what changing one does; the configurator holds it to that.
@@ -1239,7 +1279,7 @@ class DeviceRepairTests(unittest.TestCase):
                 with self.repaired(edit) as (controller, run, result, sealed, probes, home):
                     context, = contexts
                     self.assertEqual(context['sealed_inputs'], ['image.bin', 'ghidra_run.py', 'ExportDecomp.java',
-                        'SeedCortexM.java', 'ANALYSIS_TOOLS.json', 'TASKS.json', 'CONTRACT.md', 'contract.py',
+                        'SeedCortexM.java', 'ANALYSIS_TOOLS.json', 'TASKS.json',
                         'previous-model/', 'defects.json', 'REPAIR_CONTEXT.json'])
                     for words in ('read them and leave them unchanged', 'changing any sealed input stops the run'):
                         self.assertIn(words, context['instructions'])
@@ -1255,7 +1295,7 @@ class DeviceRepairTests(unittest.TestCase):
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage == 'interpret':
                 model = workspace / 'model'; model.mkdir()
-                (model / 'model.json').write_text(json.dumps({'schema': 'scripted-model', 'revision': assignment['revision']}))
+                (model / 'model.json').write_text(json.dumps({'schema': 'interface-model/7', 'revision': assignment['revision']}))
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             if stage == 'probe':
                 return {**probed(workspace, assignment), 'device_diff': diff}
@@ -1301,7 +1341,7 @@ def driver_package(root, name='package', operations=None, channel=None):
     (package / 'driver').mkdir(parents=True)
     (package / 'manifest.json').write_text(json.dumps({'schema': 'interface-package/1', 'name': 'scripted'}))
     operations = operations or {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}
-    (package / 'driver' / 'model.json').write_text(json.dumps({'schema': 'interface-model/3', 'identity': {'operation': 'identify'},
+    (package / 'driver' / 'model.json').write_text(json.dumps({'schema': 'interface-model/7', 'identity': {'operation': 'identify'},
         **({'channel': channel} if channel is not None else {}),
         'operations': {name: {'steps': [{'op': 'exchange', 'tx': [{'text': name}]}], **operation}
                        for name, operation in operations.items()}}))
@@ -2893,6 +2933,35 @@ class RealToolVerdictTests(unittest.TestCase):
                 # The device received nothing after fresh reuse began, and no file of the register folder ran.
                 self.assertEqual(len(seen), before[0])
                 self.assertFalse(marker.exists(), 'a file of a refused package was imported or run')
+
+    def test_02_B2_the_gateway_refuses_a_live_test_of_a_package_whose_model_has_an_earlier_tag(self):
+        """A package emitted before the one driver format holds a model with an earlier tag. The gateway refuses its
+        live test by that name: emit_test_live never starts and the device receives nothing."""
+        from interface_runtime.package import package_files
+        for tag in ('interface-model/3', 'interface-model/6'):
+            seen, ran, before = [], [], []
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as directory:
+                def reuse(call, package, workspace):
+                    before.append(len(seen))
+                    earlier = workspace / 'earlier'
+                    shutil.copytree(package, earlier)
+                    model = json.loads((earlier / 'driver' / 'model.json').read_text())
+                    (earlier / 'driver' / 'model.json').write_text(json.dumps(dict(model, schema=tag)))
+                    manifest = json.loads((earlier / 'manifest.json').read_text())
+                    files = package_files(earlier)
+                    manifest.update(files=files, model_sha256=files['driver/model.json'])
+                    (earlier / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+                    pin = hashlib.sha256((earlier / 'manifest.json').read_bytes()).hexdigest()
+                    (earlier / 'manifest.sha256').write_text(pin + '\n')
+                    ran.append(call('emit_test_live', package_dir=str(earlier), operations=['set_rate']))
+                result, events = self.run_generic(Path(directory) / 'home', reuse, effects=['read', 'write'], seen=seen,
+                    model=DeviceRepairTests.writing_thermometer(), replies={**self.DEVICE, b'R': b'OK\n'})
+                self.assertEqual([type(refusal) for refusal in ran], [ValueError], ran)
+                self.assertIn('interface-model/7', str(ran[0]))
+                self.assertTrue(str(ran[0]).endswith('nothing was dispatched: ' + repr(tag)), ran[0])
+                self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished')
+                                     and e['data']['name'] == 'emit_test_live' for e in events))
+                self.assertEqual(len(seen), before[0])
                 self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
 
     def test_a_package_the_worker_swaps_in_during_a_live_test_never_runs(self):
@@ -3362,13 +3431,13 @@ class ConfiguratorTests(unittest.TestCase):
             try:
                 for name, collected, validated, model_json, handed in (
                         ('invalid model', {'ok': True, 'sealed_inputs_unchanged': True},
-                         {'ok': False, 'defects': [{'where': 'operations', 'what': 'missing'}]}, '{"schema": "interface-model/5"}', True),
+                         {'ok': False, 'defects': [{'where': 'operations', 'what': 'missing'}]}, '{"schema": "interface-model/7"}', True),
                         ('unsupported schema', {'ok': False, 'sealed_inputs_unchanged': True, 'reason': 'no model.json with a supported schema'},
                          {'ok': False, 'defects': [{'where': 'schema', 'what': 'unsupported'}]}, '{"schema": "notes"}', True),
                         ('nothing written', {'ok': False, 'sealed_inputs_unchanged': True, 'reason': 'no model.json with a supported schema'},
                          None, None, False),
                         ('broken seal', {'ok': False, 'sealed_inputs_unchanged': False, 'reason': 'sealed inputs changed during the run: [image.bin]'},
-                         None, '{"schema": "interface-model/5"}', None)):
+                         None, '{"schema": "interface-model/7"}', None)):
                     with self.subTest(name=name):
                         work = root / name.replace(' ', '-'); model = work / 'record'; model.mkdir(parents=True)
                         if model_json:
@@ -3765,7 +3834,7 @@ class ConfiguratorTests(unittest.TestCase):
                     run, assignment = self._serial_run(controller, effects=('read', 'reset'))
                     request = {**run, 'assignment_id': assignment['id']}
                     model_dir = Path(assignment['workspace']) / 'model'; model_dir.mkdir(parents=True)
-                    (model_dir / 'model.json').write_text(json.dumps({'schema': 'interface-model/3',
+                    (model_dir / 'model.json').write_text(json.dumps({'schema': 'interface-model/7',
                         'channel': {'type': 'uart', 'baudrate': 115200}, 'operations': {'read': {'effect': 'read'}}}))
                     controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
                     with self.assertRaisesRegex(ValueError, 'omits resets_on_open'):
@@ -3924,7 +3993,7 @@ class ConfiguratorTests(unittest.TestCase):
                 request = {**run, 'assignment_id': assignment['id']}
                 controller.call('tool', {**request, 'name': 'acquire_serial_listen', 'arguments': {}})
                 model_dir = Path(assignment['workspace']) / 'model'; model_dir.mkdir(parents=True)
-                (model_dir / 'model.json').write_text(json.dumps({'schema': 'interface-model/3', 'channel': {'type': 'usb'},
+                (model_dir / 'model.json').write_text(json.dumps({'schema': 'interface-model/7', 'channel': {'type': 'usb'},
                                                                    'operations': {'read': {'effect': 'read'}}}))
                 with self.assertRaisesRegex(ValueError, 'reset grant'):
                     controller.call('tool', {**request, 'name': 'interface_execute',

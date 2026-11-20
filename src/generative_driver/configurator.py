@@ -312,11 +312,11 @@ def _refuse_unknown_format(model):
     before it classifies the call by the model's effects, so a model of another format is refused whatever the run
     grants: the tool never starts, and nothing is marked uncertain.
     """
-    from interface_runtime.engine import SCHEMAS
-    found = model.get('schema') if isinstance(model, dict) else None
-    if not isinstance(found, str) or found not in SCHEMAS:
-        raise ValueError('The model format is not one the runtime knows, so it would refuse it before opening the '
-                         'device; nothing was dispatched: ' + repr(found)[:120])
+    from interface_runtime.engine import SCHEMA, format_refusal
+    if format_refusal(model) is not None:
+        found = model.get('schema') if isinstance(model, dict) else None
+        raise ValueError('The model format is not one the runtime knows (it reads ' + SCHEMA + '), so it would refuse '
+                         'it before opening the device; nothing was dispatched: ' + repr(found)[:120])
 
 
 def _refuse_invalid_model(model_dir):
@@ -542,14 +542,15 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     return diff
 
 
-def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), interpretation=None):
+def _notes(result, checked, outcome, *, refusals=(), missing=(), undocumented=(), interpretation=None):
     """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
 
     `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
     The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it, and
-    its `driver_contract` notes say which operations a generic emit packages with the contract the kit imports. A
-    generic interpret stage's `interpretation` says whether the kit analysis was made, or why not, and whether the stage
-    interpreted as tasks, with the hashes of the records they kept.
+    its `undocumented` list names each operation, parameter and output without a description in the model a generic
+    emit worker is given; the key is left out when the list is empty. A generic interpret stage's `interpretation`
+    says whether the kit analysis was made, or why not, and whether the stage interpreted as tasks, with the hashes of
+    the records they kept.
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
@@ -567,9 +568,26 @@ def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), in
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
                              'records': observed.get('records', []),
                              'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff'),
-                             **({'driver_contract': list(contract)} if contract else {}),
+                             **({'undocumented': list(undocumented)} if undocumented else {}),
                              **({'interpretation': interpretation} if interpretation else {})},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
+
+
+def _undocumented(inputs):
+    """The path of each operation, parameter and output without a description in the interpreted model among an emit
+    stage's copied `inputs`, such as `operations.measure.outputs.temperature`. A stage with no model, or with a model
+    the runtime does not validate, lists nothing: emit refuses that model."""
+    from interface_runtime import meanings
+    from interface_runtime.engine import validate_model
+    from interface_runtime.evidence import read_json
+    folder = next((Path(path) for path in inputs if (Path(path) / 'model.json').is_file()), None)
+    if folder is None:
+        return []
+    try:
+        model = read_json(folder / 'model.json', 1048576)
+        return meanings.undocumented(model) if validate_model(model)['ok'] else []
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        return []
 
 
 def _notes_bytes(notes):
@@ -1764,7 +1782,7 @@ class Controller:
                         prepared['interpretation'] = {**prepared['interpretation'], 'device_calls': device_first.calls(
                             self._started(run_id, assignment), self._finished(run_id, assignment))}
                     notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()),
-                                   contract=prepared.get('driver_contract', ()),
+                                   undocumented=prepared.get('undocumented', ()),
                                    interpretation=prepared.get('interpretation'))
                     if outcome.kind == 'revise':
                         # The partial handoff, the new revision and the route to interpret commit together.
@@ -2077,7 +2095,7 @@ class Controller:
                         }, indent=1), encoding='utf-8')
                         inputs['BINDING_CONTEXT.json'] = str(binding_context)
             # The supplementary documents the acquire handoff carries (07-B3), from the calls that wrote them.
-            from . import driver_contract, supplementary_documents
+            from . import supplementary_documents
             calls = [call for call in self._finished(run_dir.name, {'id': acquisition['assignment_id']})
                      if call.get('ok')] if acquisition and acquisition.get('assignment_id') else []
             documents = supplementary_documents.sealed_inputs(run_dir / 'preparation' / workspace.name / 'context',
@@ -2092,12 +2110,11 @@ class Controller:
                 'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
                 'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                     'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
-                    'relabel effects outside the grants. ' + driver_contract.TASK,
+                    'relabel effects outside the grants.',
                 **({'kit_analysis': kit_analysis.task_entry(analysis)} if analysis and analysis['made'] else {}),
                 **({'documents': supplementary_documents.task_entry()} if documents else {})}, indent=1),
                 encoding='utf-8')
             inputs['TASKS.json'] = str(tasks)
-            inputs.update(driver_contract.interpret_inputs())
             if device:
                 inputs.update(device_first.sealed_inputs())
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
@@ -2128,7 +2145,7 @@ class Controller:
                                     'supplied in this workspace: read them and leave them unchanged; changing any sealed '
                                     'input stops the run. Write the revised model.json, and replies.json when BRIEF.md '
                                     'asks for it, at the workspace root, and record which evidence each correction '
-                                    'addresses in NOTES.md. ' + driver_contract.REPAIR}, indent=1), encoding='utf-8')
+                                    'addresses in NOTES.md.'}, indent=1), encoding='utf-8')
                 inputs['REPAIR_CONTEXT.json'] = str(context)
             prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface','inputs':inputs,
                 **({'defects':defects} if defects else {}),'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
@@ -2184,10 +2201,8 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
-        contract_notes = []
-        if stage == 'emit':
-            from . import driver_contract
-            contract_notes = driver_contract.emit_inputs(inputs)
+        # What the model given to a generic emit worker leaves undocumented, for the stage's notes.
+        undocumented = _undocumented(inputs) if stage == 'emit' else []
         context = {'stage': stage, 'acceptance': ('Report evidence and checks for this stage honestly. Observed tool '
                    'evidence is handed on; every report is kept as notes and the run continues.')}
         if spec.get('binding'):
@@ -2212,7 +2227,7 @@ class Controller:
         prepared = {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
                 'allowed_tools': STAGE_TOOLS[stage], 'context': context,
                 **({'input_notes': missing} if missing else {}),
-                **({'driver_contract': contract_notes} if contract_notes else {})}
+                **({'undocumented': undocumented} if undocumented else {})}
         return self._generated_reuse(prepared) if stage == 'reuse' else prepared
 
     def _task(self, run_id, assignment, task, workspace, prompt, deadline, config, cancel):

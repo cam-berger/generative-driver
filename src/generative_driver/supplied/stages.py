@@ -115,39 +115,11 @@ def _observed(artifacts, checks, dropped=(), scope='Truth-free stage evidence; n
             'notes': {'checks': checks, 'dropped_artifacts': list(dropped)}}
 
 
-def _contract_pair(handoff, destination=None, *, channel=None):
-    """Preserve an authored pair from one verified handoff, checking its executable projection."""
-    from interface_runtime.contracts import compile_contract
-    names = ('contract.json', 'protocol.json')
-    pair = {name: _artifact(handoff, name) for name in names}
-    if not any(pair.values()):
-        return []
-    if not all(pair.values()):
-        raise ValueError('Authored contract and protocol must be handed on together')
-    raw = {name: _verified(pair[name], 'contract pair') for name in names}
-    contract, protocol = (json.loads(raw[name]) for name in names)
-    model = _artifact(handoff, 'model.json')
-    if model is None or compile_contract(contract, protocol) != json.loads(_verified(model, 'model projection')):
-        raise ValueError('Authored contract/protocol projection differs from model.json')
-    if destination is None:
-        return [pair[name][0] for name in names]
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    if channel is not None:
-        protocol['channel'] = channel
-        raw['protocol.json'] = (json.dumps(protocol, indent=2)+'\n').encode()
-    for name in names:
-        (destination/name).write_bytes(raw[name])
-    if compile_contract(contract, protocol) != json.loads((destination/'model.json').read_text()):
-        raise ValueError('Adapted contract/protocol projection differs from model.json')
-    return [destination/name for name in names]
-
-
 def _candidate_files(accepted, model_sha=None):
     """The interpreted candidate's own replies and notes, hash-verified, from one interpret handoff only: the one whose
     model.json is `model_sha` (the model probed), else the latest that carries a model.json."""
     handoff, files = _handoff_with(accepted, ('interpret',), 'model.json', model_sha), {}
-    for name in ('replies.json', 'NOTES.md', 'contract.json', 'protocol.json'):
+    for name in ('replies.json', 'NOTES.md'):
         found = _artifact(handoff, name)
         if found is not None:
             _verified(found, 'interpretation')
@@ -165,9 +137,7 @@ def adapt(run_dir, ws, accepted, options):
     if found is None:
         return {'skip': 'Probe skipped: no interpreted model available'}
     _verified(found, 'interpretation')
-    handoff = _handoff_with(accepted, ('interpret',), 'model.json', found[1])
     try:
-        _contract_pair(handoff)
         adaptation = adapt_model(found[0], ws/'model')
     except IntegrityError:
         raise
@@ -182,7 +152,6 @@ def adapt(run_dir, ws, accepted, options):
                 'unwired_model': {'path': str(found[0]), 'sha256': found[1], 'reason': reason}}
     if adaptation['original_model_sha256'] != found[1]:
         raise IntegrityError('Accepted interpretation bytes changed while adapting the model')
-    _contract_pair(handoff, ws/'model', channel={'type': 'tcp'})
     binding = _binding(options)
     if binding is None:
         return {'blocked': NO_DEVICE}
@@ -243,7 +212,6 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
         prepared = device_evidence(accepted, ws, readings=readings)
         if prepared.get('skip'):
             return prepared
-        _contract_pair(_handoff_with(accepted, ('probe',), 'model.json'), ws/'model')
         if _binding(options) is None:
             return {'blocked': NO_DEVICE}
         from .candidate_context import task_contract
@@ -262,7 +230,6 @@ def prepare_stage(stage, run_dir, workspace, accepted=None, options=None, *, fir
         content = _verified(found, 'probe')
         (ws/'model').mkdir(exist_ok=True)
         (ws/'model/model.json').write_bytes(content)
-        _contract_pair(_handoff_with(accepted, ('probe',), 'model.json', found[1]), ws/'model')
         model_sha = hashlib.sha256(content).hexdigest()
         # The latest successful probe record a worker made of this model, from probe or ground.
         for handoff in reversed(accepted or []):
@@ -441,7 +408,8 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
                    **({} if present else {'reason': 'No model.json behind an intact seal'})},
                   {'name': 'predicted_reply_qualification', 'passed': bool(qualified),
                    **{key: qualification[key] for key in ('status', 'uncovered') if key in qualification}}]
-        kept = [p for p in sorted(out.glob('*')) if intact and p.is_file() and p.name in ('model.json', 'contract.json', 'protocol.json', 'NOTES.md', 'replies.json')]
+        kept = [p for p in sorted(out.glob('*'))
+                if intact and p.is_file() and p.name in ('model.json', 'NOTES.md', 'replies.json')]
         return _observed(kept, checks, scope='Sealed-input integrity, executable model contract and the candidate\'s '
                          'own predicted-reply qualification; meaning rests on the device')
     if stage in ('probe', 'ground'):
@@ -452,11 +420,10 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
             model = Path(state['adapted_model_dir'])/'model.json'
             if hashlib.sha256(model.read_bytes()).hexdigest() != state['adaptation']['adapted_model_sha256']:
                 raise IntegrityError('Probe changed the accepted model')
-            artifacts += [path for path in (model, model.parent/'adaptation.json', model.parent/'contract.json', model.parent/'protocol.json') if path.is_file()]
+            artifacts += [path for path in (model, model.parent/'adaptation.json') if path.is_file()]
             files['model.json'], original = model, state['adaptation'].get('original_model_sha256')
         elif stage == 'ground' and (ws/'model/model.json').is_file():
             files['model.json'] = ws/'model/model.json'
-            artifacts += [p for p in (ws/'model/contract.json', ws/'model/protocol.json') if p.is_file()]
             try:
                 original = json.loads((ws/'model/adaptation.json').read_text(encoding='utf-8')).get('original_model_sha256')
             except (OSError, ValueError, AttributeError):
@@ -502,7 +469,6 @@ def observe_stage(stage, run_dir, workspace, report, accepted=None, options=None
             files['live-observations.jsonl'] = live
         # The replies and notes of the candidate whose model this stage ran, never of another revision.
         files.update(_candidate_files(accepted, original))
-        files.update({p.name: p for p in artifacts if p.name in ('contract.json', 'protocol.json')})
         files.update({f'probe-{i}.json': Path(p) for i, p in enumerate(options.get('observed_records', []), 1)})
         # The candidate's own files and the device evidence of its runs, kept for a later repair; nothing graded.
         remember(run_dir, stage, files, report, workspace=ws)

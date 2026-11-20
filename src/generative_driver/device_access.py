@@ -1,4 +1,8 @@
-"""Configurator-owned leases and dispatch records for stages and package sessions."""
+"""Configurator-owned leases and dispatch records for stages and package sessions.
+
+What an operation of a package does is read from the package's interface model, `driver/model.json`, the one statement
+of its driver (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
+"""
 from contextlib import contextmanager
 import hashlib
 import json
@@ -188,9 +192,7 @@ class DeviceAccess:
                     raise ValueError(str(refused))
                 if manifest['schema'] != 'interface-package/2':
                     raise ValueError('Managed package use requires a driver-contract package')
-                contract = read_json(snapshot/'driver/contract.json')
-                protocol = read_json(snapshot/'driver/protocol.json')
-                validate_binding(protocol['channel'], binding)
+                validate_binding(read_json(snapshot/'driver/model.json')['channel'], binding)
                 spec = {'configuration': configuration, 'package_dir': str(snapshot),
                         'manifest_sha256': pin, 'contract_sha256': manifest['contract_sha256'],
                         'binding': binding, 'effects': grants}
@@ -242,12 +244,12 @@ class DeviceAccess:
             if previous is not None:
                 return previous
             package = Path(spec['package_dir'])
-            contract = read_json(package/'driver/contract.json')
+            model = read_json(package/'driver/model.json')
             operation = params['operation']
-            if operation not in contract['operations']:
+            if operation not in model['operations']:
                 raise ValueError('Unknown public operation')
-            effect = contract['operations'][operation]['effect']
-            effectful = self._effectful(effect, read_json(package/'driver/protocol.json')['channel'], spec['effects'])
+            effect = model['operations'][operation]['effect']
+            effectful = self._effectful(effect, model['channel'], spec['effects'])
             dispatch = self.begin(session_id, kind='session', actor='client',
                                   name=operation, effectful=effectful,
                                   request_id=request_id, request_payload=request_payload)
@@ -305,7 +307,8 @@ class DeviceAccess:
             raise ValueError('Tool is not assigned to this worker')
         operation = catalog['operations'][name]
         arguments = params.get('arguments', {})
-        effect = read_json(package/'driver/contract.json')['operations'][operation]['effect']
+        model = read_json(package/'driver/model.json')
+        effect = model['operations'][operation]['effect']
         if effect != 'read' and effect not in assignment['effects']:
             raise ValueError('Operation requires an effect grant the operator has not supplied')
         request_id = params.get('request_id')
@@ -313,7 +316,7 @@ class DeviceAccess:
         if previous is not None:
             return previous
         from .configurator import _is_serial_binding
-        channel = read_json(package/'driver/protocol.json')['channel']
+        channel = model['channel']
         effectful = self._effectful(effect, channel, assignment['effects'])
         binding = assignment.get('binding')
         if not binding:
@@ -380,6 +383,7 @@ class DeviceAccess:
             return response
 
     def describe(self, params):
+        from interface_runtime.contracts import contract_view
         from interface_runtime.evidence import read_json
         from interface_runtime.package import verify_package, digest
         _, spec = self._session(params['session_id'])
@@ -387,7 +391,7 @@ class DeviceAccess:
         checked = verify_package(package)
         if not checked['ok'] or digest(package/'manifest.json') != spec['manifest_sha256']:
             raise ValueError('Managed session package has changed')
-        return {**self.status(params), 'contract': read_json(package/'driver/contract.json'),
+        return {**self.status(params), 'contract': contract_view(read_json(package/'driver/model.json')),
                 'catalog': read_json(package/'mcp-tools.json')}
 
     def stop(self, params, *, close=False):

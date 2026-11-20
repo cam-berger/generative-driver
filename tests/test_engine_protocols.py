@@ -171,5 +171,64 @@ class ScriptedStoreConnectionTests(unittest.TestCase):
         self.assertEqual(device.opens, 6)
 
 
+def one_format_model():
+    """One model that uses, together, what the four earlier formats kept apart: a `lines` exchange, a `frame` exchange
+    with a transmitted `check`, a `bytes` parameter sent `raw` and an integer decoder with a `mask`."""
+    lines = {"mode": "lines", "max_bytes": 64, "end": {"line_equals": "READY"}}
+    guard = {"final_line_equals": "READY", "reject_line_prefix": ["ERR:"]}
+    frame = {"mode": "frame", "sync_hex": "7a35", "length": {"offset": 2, "size": 1, "byteorder": "little", "add": 6},
+             "max_bytes": 32, "check": {"algorithm": "crc16_ccitt_false", "from": 2, "byteorder": "big"}}
+    operations = {
+        "identify": {"effect": "read", "parameters": {}, "outputs": {}, "steps": [{
+            "op": "exchange", "tx": [{"text": "ID\n"}], "rx": lines, "timeout_ms": 1000, "capture": "identity",
+            "expect": {**guard, "contains_line": "FAMILY:TOY-ALL"}}]},
+        "status": {"effect": "read", "parameters": {}, "steps": [{
+            "op": "exchange", "rx": frame, "timeout_ms": 1000, "capture": "status",
+            "tx": [{"hex": "357a"}, {"hex": "0231"},
+                   {"check": "crc16_ccitt_false", "over_parts": [1, 2], "byteorder": "big"}],
+            "expect": {"prefix_hex": "7a350291"}}],
+            "outputs": {"mode": {"from": "status", "kind": "integer", "offset": 4, "size": 2, "byteorder": "little",
+                                 "signed": False, "mask": 7}}},
+        "label": {"effect": "write", "parameters": {"text": {"type": "bytes", "min_length": 1, "max_length": 8}},
+                  "outputs": {}, "steps": [{
+                      "op": "exchange", "tx": [{"text": "LABEL "}, {"arg": "text", "format": "raw"}, {"text": "\n"}],
+                      "rx": lines, "timeout_ms": 1000, "expect": guard}]},
+    }
+    return {"schema": "interface-model/7", "device": {"name": "TOY-ALL"}, "channel": {"type": "tcp"},
+            "identity": {"operation": "identify"}, "operations": operations,
+            "provenance": [{"item": "operations." + name, "source": "independent public toy fixture"}
+                           for name in operations]}
+
+
+class OneFormatTests(unittest.TestCase):
+    def test_02_B1_one_format_holds_every_wire_feature_and_each_operation_replays(self):
+        from interface_runtime.evidence import run_samples
+        model = one_format_model()
+        checked = validate_model(model)
+        self.assertEqual(checked, {"ok": True, "defects": [], "checks_run": ["interface-model/7"]})
+        operations = model["operations"]
+        lines, frame = operations["identify"]["steps"][0]["rx"], operations["status"]["steps"][0]["rx"]
+
+        def exchange(tx, rx, reply):
+            return {"tx_hex": tx.hex(), "rx_hex": reply.hex(), "rx": rx, "timeout_ms": 1000}
+        identity = exchange(b"ID\n", lines, b"FAMILY:TOY-ALL\nREADY\n")
+        request = b"\x02\x31"
+        body = b"\x02\x91\x8b\x00"
+        status = exchange(b"\x35\x7a" + request + binascii.crc_hqx(request, 0xffff).to_bytes(2, "big"), frame,
+                          b"\x7a\x35" + body + binascii.crc_hqx(body, 0xffff).to_bytes(2, "big"))
+        label = exchange(b"LABEL ALPHA-3\n", lines, b"READY\n")
+        cases = {"identify": (None, [identity], {}),
+                 "status": (None, [identity, status], {"mode": 3}),
+                 "label": ({"text": b"ALPHA-3".hex()}, [identity, label], {})}
+        for operation, (parameters, transactions, outputs) in cases.items():
+            with self.subTest(operation=operation):
+                played = run_samples(model, operation, parameters, allow_effects=["write"],
+                                     replay={"schema": "interface-replay/1", "transactions": transactions})
+                self.assertTrue(played["ok"], played)
+                self.assertEqual(played["evidence_kind"], "replay")
+                self.assertEqual(played["results"][0]["outputs"], outputs)
+                self.assertEqual(played["transactions"], transactions)
+
+
 if __name__ == "__main__":
     unittest.main()

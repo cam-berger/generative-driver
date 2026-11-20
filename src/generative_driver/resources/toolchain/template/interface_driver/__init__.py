@@ -1,4 +1,8 @@
-"""Generated named-operation interface; live bindings are always caller supplied."""
+"""Generated named-operation interface; live bindings are always caller supplied.
+
+The package states its driver once, in `driver/model.json`. This module reads that model, as every other reader does,
+and describes the driver with the contract the runtime computes from it.
+"""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,24 +14,19 @@ def _load():
     checked = verify_package(ROOT)
     if not checked['ok']:
         raise ValueError(str(checked['defects']))
-    if checked['manifest']['schema'] == 'interface-package/2':
-        from interface_runtime.contracts import compile_contract
-        model = compile_contract(read_json(ROOT/'driver/contract.json'), read_json(ROOT/'driver/protocol.json'))
-    else:
-        model = read_json(ROOT/'driver/model.json', 1048576)
-    return model, checked['manifest']
+    return read_json(ROOT/'driver/model.json', 1048576), checked['manifest']
 
 
 def describe():
     from interface_runtime.transports import capabilities
+    from interface_runtime.contracts import contract_view
     from interface_runtime.evidence import read_json, probe_coverage, COVERAGE_SCOPE
     model, manifest = _load()
     return {'schema':model['schema'],'device':model['device'],'channel':model['channel'],
             'identity':model['identity'],'operations':model['operations'],
             'capabilities':capabilities(),'source_evidence_kind':manifest['source_evidence_kind'],
             'probe_coverage':probe_coverage(model,read_json(ROOT/'probe.json')),'coverage_scope':COVERAGE_SCOPE,
-            **({'contract':read_json(ROOT/'driver/contract.json')}
-               if manifest['schema'] == 'interface-package/2' else {})}
+            **({'contract':contract_view(model)} if manifest['schema'] == 'interface-package/2' else {})}
 
 
 def execute(operation, parameters=None, *, binding=None, allow_effects=(), replay=None):

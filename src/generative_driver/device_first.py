@@ -13,8 +13,6 @@ model."""
 import hashlib
 import json
 
-from . import driver_contract
-
 _MODE = 'device'
 TOOLS = ('model_qualify', 'interface_describe', 'interface_execute', 'probe_run')
 _INSTRUCTIONS = 'DEVICE_FIRST.md'
@@ -50,7 +48,7 @@ def tasks(goal, grants):
     return {'schema': 'candidate-task-contract/1', 'tasks': {'requested': {'meaning': goal}}, 'effect_grants': grants,
             'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                             'decoders and units from the device\'s replies and the supplied evidence. Report '
-                            'unsupported behavior. ' + driver_contract.TASK,
+                            'unsupported behavior.',
             'device_first': {
                 'firmware': None,
                 'instructions': 'There is no firmware: this run acquired no single firmware image, so write the model '
@@ -58,8 +56,8 @@ def tasks(goal, grants):
                                 'and the documents. ' + _RUNS_ONLY_READS + 'Probe and ground then test the model on '
                                 'the device under the run\'s grants (' + named + '). Declare a write or actuate '
                                 'operation only where the documents or the device\'s read replies support it, and give '
-                                'each one a contract uncertainty with code not_exercised saying interpretation did not '
-                                'exercise it.',
+                                'each one an uncertainty with the code not_exercised on that operation in model.json, '
+                                'saying interpretation did not exercise it.',
                 'run_effects': effects(grants), 'probe_and_ground_grants': grants}}
 
 
@@ -89,9 +87,9 @@ def prompt(workspace):
             'query any USB, serial or network device or service yourself, and do not search the web. Do not read '
             'personal instructions, memory files, other repositories, other runs, passwords or evaluator-owned files. '
             'If REPAIR_CONTEXT.json is supplied, this is a repair: read it first. Every file supplied in this '
-            'workspace is a sealed input: read it and leave it unchanged. Write model.json, replies.json, NOTES.md and '
-            'contract.json at the workspace root, and report in one paragraph what you produced and what the evidence '
-            'left ambiguous.')
+            'workspace is a sealed input: read it and leave it unchanged. Write model.json, replies.json and NOTES.md '
+            'at the workspace root, and report in one paragraph what you produced and what the evidence left '
+            'ambiguous.')
 
 
 def refusal(model, operation, effects_found):

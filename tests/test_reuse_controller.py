@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from generative_driver.configurator import Controller
-from suite_fixtures import write_scripted_case_worker
+from worker_script import write_scripted_worker
 
 
 SIX_STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
@@ -29,7 +29,7 @@ class FreshReuseControllerTests(unittest.TestCase):
         The gates validate only fixture artifacts; they make no benchmark claim.
         The real generic reuse preparation supplies the emitted package in isolation.
         """
-        command = write_scripted_case_worker(root)
+        command = write_scripted_worker(root)
         controller = Controller(root / 'home')
         original_prepare = controller._prepare
 

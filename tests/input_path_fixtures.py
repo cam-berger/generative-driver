@@ -1,4 +1,4 @@
-"""Fixtures for the input paths (docs/features/kit-fixes/07-input-paths.md).
+"""Fixtures for the input paths.
 
 - In-process generic runs whose stage workers are scripted functions of the test: each stage's real preparation and
   check run, and a worker calls the real tools through the configurator's gateway. No model and no Codex run.

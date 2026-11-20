@@ -44,11 +44,11 @@ The firmware's shared landmark is its dispatcher, the switch or handler table ev
 
 The parameter store shows the cost of treating a refusal as a failed operation. A `FAIL=` reply fails the runtime call, which forces:
 
-- nine-condition rejection inference in [emulated_actions.py](../../src/generative_driver/benchmark_support/emulated_actions.py) (`operation_rejected`);
+- nine-condition rejection inference in emulated_actions.py (`operation_rejected`);
 - byte-level rejection witnesses (`_check_rejection_evidence` in `behavior.py`);
 - a required rejection scenario among six reset-delimited scenarios, 891 checks per trial (`validate_phase` in `parameter_store.py`);
 - a hand-written reuse progress tracker (`reuse_passed`);
-- multiline-bound repairs and the [expected-refusal follow-up](../benchmark-lifecycle/issues/03-expected-refusal-repair.md).
+- multiline-bound repairs and the expected-refusal follow-up.
 
 The evaluator's reference state machine (`expected_state`, about 30 lines) could grade every step directly.
 
@@ -62,4 +62,4 @@ The evaluator's reference state machine (`expected_state`, about 30 lines) could
 6. Mapper-library format and admission.
 7. Nondeterminism: repeat count and how an unknown is reported.
 
-Related: branch `claude/angry-morse-e784f5` (pushed, no PR) makes the gateway execute a configurator-owned copy of the model, documents the remaining limit and pins the `emit_test_live` manifest.
+Related: branch `claude/angry-morse-e784f5` became pull request 24. It makes the gateway execute a configurator-owned copy of the model, documents the remaining limit and pins the `emit_test_live` manifest.

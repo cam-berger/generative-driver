@@ -1,4 +1,4 @@
-"""Interpretation as tasks (docs/features/kit-fixes/06-interpret-tasks.md, 06-B5 to 06-B11).
+"""Interpretation as tasks.
 
 One interpret worker reads the whole firmware analysis and writes the whole model in one growing context. In task mode
 each interpret attempt is instead a few fresh workers with small inputs, run one at a time: an inventory of the
@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 from . import analysis_index, supplementary_documents
-from .benchmark_support.integrity import IntegrityError
+from .integrity import IntegrityError
 
 # The values of the `interpretation` start parameter; the first is the default.
 MODES = ('single', 'tasks')

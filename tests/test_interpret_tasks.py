@@ -1,5 +1,5 @@
 """Interpretation as tasks: the inventory, the handler tasks, the assembly, the cross-check, how each task is recorded
-and the repair (docs/features/kit-fixes/06-interpret-tasks.md, 06-B5 to 06-B11).
+and the repair.
 
 The configurator in a temporary home, a stand-in analyzer and scripted task workers that recognise their task from
 their workspace's instructions; no Ghidra, Java, model or device."""
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from interpret_task_fixtures import (FRAGMENTS, IDENTIFY, INVENTORY, MEASURE, SINGLE_MODEL, STATUS, RunCase,
                                      cortex_m_image, events, fragment, gone, interpret_notes, launches, scripted_worker,
-                                     seen, stand_in_ghidra, stopped)
+                                     seen, stopped)
 
 
 def interpretation(result, revision=None):
@@ -467,58 +467,6 @@ class RepairTests(TaskCase):
                          [('handler', 'measure'), ('handler', 'measure'), ('cross-check', None)])
         self.assertEqual(handed_off(result, 1)['model.json']['operations']['measure'], MEASURE_FIXED)
         self.assertEqual(len(launches(ghidra)), 1)
-
-
-class BenchmarkTests(unittest.TestCase):
-    def test_06_B12_a_benchmark_run_prepares_runs_and_checks_interpretation_as_today(self):
-        from generative_driver.configurator import Controller
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name).resolve()
-        ghidra, java = stand_in_ghidra(root)
-        folder = root / 'worker'
-        prepared, observed = [], []
-
-        def prepare_stage(case_id, stage, run_dir, workspace, accepted, options):
-            prepared.append((case_id, stage, options))
-            if stage != 'interpret':
-                return {'skip': 'Not part of this test'}
-            return {'inputs': [], 'allowed_tools': [], 'objective': 'Interpret the case', 'context': {'case': 'tq9'}}
-
-        def observe_stage(case_id, stage, run_dir, workspace, report, accepted, options):
-            observed.append(stage)
-            return {'ok': True, 'artifacts': [], 'checks': []}
-
-        with patch('generative_driver.benchmark.prepare_stage', prepare_stage), \
-                patch('generative_driver.benchmark.observe_stage', observe_stage):
-            controller = Controller(root / 'home')
-            try:
-                spec = {'goal': 'A benchmark run with the analysis named and tasks asked for', 'case': 'tq9',
-                        'executor_config': {'command': scripted_worker(folder, inventory=INVENTORY)},
-                        'ghidra_home': ghidra, 'java_home': java, 'interpretation': 'tasks'}
-                run = controller.call('start', spec)
-                result = stopped(controller, run)
-            finally:
-                controller.close()
-        self.assertNotIn(result['status'], ('failed',), result)
-        # No kit analysis, no index, no tasks.
-        self.assertFalse(events(controller, run, 'kit_analysis.started', 'kit_analysis.finished', 'task.started',
-                                'task.finished'))
-        self.assertEqual(launches(ghidra), [])
-        self.assertEqual([record['task'] for record in seen(folder)], ['interpret'])
-        # The interpret worker got what the benchmark prepared, nothing more.
-        worker, = seen(folder)
-        task = json.loads(worker['prompt'].partition('\n')[2])
-        self.assertEqual((task['objective'], task['inputs']), ('Interpret the case', []))
-        self.assertEqual(set(task['context']) - {'prior_notes'}, {'case'})
-        self.assertFalse([name for name in worker['files'] if 'ANALYSIS_INDEX' in name or name.startswith('analysis/')])
-        interpret = [options for _, stage, options in prepared if stage == 'interpret']
-        self.assertEqual(len(interpret), 1)
-        self.assertEqual(observed, ['interpret'])
-        handoff, = [h for h in result['accepted_handoffs'] if h['stage'] == 'interpret']
-        self.assertNotIn('interpretation', handoff['notes']['inline']['configurator'])
-        self.assertFalse((controller.home / 'runs' / run['run_id'] / 'kit-analysis').exists())
-        self.assertFalse((controller.home / 'runs' / run['run_id'] / 'interpret-tasks').exists())
 
 
 if __name__ == '__main__':

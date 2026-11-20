@@ -121,14 +121,14 @@ class CompleteRejectionTests(unittest.TestCase):
 
     def test_generic_deployment_repairs_the_contract_without_contacting_a_device(self):
         from generative_driver.client import call
-        from suite_fixtures import write_scripted_case_worker
+        from worker_script import write_scripted_worker
         import time
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             home = root / "home"
             source = root / "source.bin"
             source.write_bytes(b"independent synthetic framing fixture")
-            command = write_scripted_case_worker(root)
+            command = write_scripted_worker(root)
             script = Path(command[1])
             replacement = "    candidate=json.loads(" + repr(json.dumps(line_model(max_lines=1))) + ")\n"
             replacement += """    if pathlib.Path('defects.json').is_file():
@@ -137,7 +137,7 @@ class CompleteRejectionTests(unittest.TestCase):
         candidate['operations']['apply']['steps'][0]['rx']['max_lines']=2
     pathlib.Path('model.json').write_text(json.dumps(candidate))
 """
-            original = "    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')\n"
+            original = "    shutil.copy2(resources_root()/'smoke/model.json','model.json')\n"
             text = script.read_text()
             self.assertIn(original, text)
             script.write_text(text.replace(original, replacement))
@@ -202,15 +202,15 @@ class CompleteRejectionTests(unittest.TestCase):
 
     def test_managed_write_with_an_impossible_reply_is_refused_before_contact_and_repairs(self):
         from generative_driver.client import call
-        from suite_fixtures import write_scripted_case_worker
+        from worker_script import write_scripted_worker
         from line_device import line_device
         import time
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve();home = root / "home"
             source = root / "source.bin";source.write_bytes(b"scripted managed framing fixture")
-            command = write_scripted_case_worker(root);script = Path(command[1])
+            command = write_scripted_worker(root);script = Path(command[1])
             text = script.read_text()
-            original = "    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')\n"
+            original = "    shutil.copy2(resources_root()/'smoke/model.json','model.json')\n"
             replacement = "    candidate=json.loads(" + repr(json.dumps(line_model(1))) + ")\n"
             replacement += """    if pathlib.Path('defects.json').is_file():
         candidate['operations']['apply']['steps'][0]['rx']['max_lines']=2

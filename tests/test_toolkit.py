@@ -12,14 +12,14 @@ from pathlib import Path
 
 class ToolkitTests(unittest.TestCase):
     def test_advertised_probe_diff_argument_compares_saved_replay_evidence(self):
-        from generative_driver.toolkit import call_tool, list_tools, resources_root
+        from generative_driver.toolkit import call_tool, list_tools
+        from test_package import example_model, example_replay
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             model = root / "model"
             model.mkdir()
-            fixture = resources_root() / "bench/cases/setup-smoke"
-            shutil.copy2(fixture / "model.json", model / "model.json")
-            shutil.copy2(fixture / "replay.json", root / "replay.json")
+            (model / "model.json").write_text(json.dumps(example_model()), encoding="utf-8")
+            (root / "replay.json").write_text(json.dumps(example_replay()), encoding="utf-8")
             arguments = {"run_dir": str(root / "run"), "model_dir": str(model)}
             observed = call_tool("probe_run", {**arguments, "operation": "measure", "n": 1,
                                                "replay": str(root / "replay.json")})

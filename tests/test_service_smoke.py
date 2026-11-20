@@ -1,5 +1,5 @@
 """`generative-driver smoke`: one whole run through the background service, a scripted worker and a stand-in device,
-with no model, no Codex and no hardware (docs/features/kit-fixes/03-service-smoke.md).
+with no model, no Codex and no hardware.
 
 Each test runs the command as a child process in folders of its own: its system temporary directory, its home
 directory and its operator homes are new folders the test removes."""
@@ -493,27 +493,6 @@ class SmokeTests(SmokeCase):
                 self.assertEqual(launch['pythonpath'], None)
                 self.assertEqual(Path(launch['package']).resolve(),
                                  (copy / 'generative_driver' / '__init__.py').resolve())
-
-
-class SmokeChecksTests(unittest.TestCase):
-    """Where the smoke runs besides a test of its own: the software checks and the CI job for the installed wheel."""
-
-    ROOT = Path(__file__).resolve().parents[1]
-
-    def test_03_B8_the_software_checks_run_the_smoke(self):
-        document = (self.ROOT / 'docs' / 'verification.md').read_text(encoding='utf-8')
-        section = document.split('## Reproduce software checks', 1)[1].split('\n## ', 1)[0]
-        commands = [line.strip() for block in section.split('```')[1::2] for line in block.splitlines()]
-        self.assertIn('python -m generative_driver smoke', commands)
-
-    def test_03_B8_the_installed_wheel_job_runs_the_smoke(self):
-        workflow = self.ROOT / '.github' / 'workflows' / 'test.yml'
-        if not workflow.is_file():
-            self.skipTest('The source archive carries no CI workflow')
-        text = workflow.read_text(encoding='utf-8')
-        step = text.split('- name: Test outside the checkout', 1)[1].split('\n      - name:', 1)[0]
-        self.assertIn("[sys.executable, '-m', 'generative_driver', 'smoke']", step)
-        self.assertIn('check=True', [line for line in step.splitlines() if "'smoke']" in line][0])
 
 
 if __name__ == '__main__':

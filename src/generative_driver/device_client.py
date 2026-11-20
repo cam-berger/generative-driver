@@ -1,16 +1,20 @@
-"""The configurator's handle on a device the bench harness provides: its status, instrument readings, the
-paused-between-calls window, replacement and release, over the harness's private control endpoint.
+"""The configurator's handle on a device a client supplies: its status, instrument readings, the
+paused-between-calls window, replacement and release, over the client's private control endpoint.
 
 It holds no password, recipe or truth and imports nothing that decrypts one. A reading is device evidence, as a real
-device's reading would be, never a grade. Stop and shutdown belong to the harness (the owner endpoint), never here."""
+device's reading would be, never a grade. Stopping the device belongs to the client that owns it, never here. The
+descriptor is `device-descriptor/2`, in the tool's own terms."""
 import contextlib
 import json
+import re
 import threading
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client
 from pathlib import Path
 
-DESCRIPTOR = 'device-descriptor/1'
+DESCRIPTOR = 'device-descriptor/2'
+# The parts a descriptor may have. The tool knows no other, so any other is a fault.
+PARTS = ('schema', 'control', 'session_id', 'binding', 'firmware_sha256', 'instrument', 'development_conditions')
 
 
 class DeviceUnavailable(RuntimeError):
@@ -26,31 +30,52 @@ def reading(observed):
 
 def offers_readings(device):
     """Whether a device, as its descriptor describes it, offers workers instrument readings: its `instrument.units` name
-    some. A description with no `instrument` offers them, as it always has; a generated device names none (Feature 03,
-    generated trials)."""
+    some. A description with no `instrument` offers them, as it always has; a device whose units name none offers
+    none."""
     if not isinstance(device, dict) or 'instrument' not in device:
         return True
     return bool((device['instrument'] or {}).get('units'))
 
 
+def _catalog_ok(catalog):
+    """Whether `catalog` is a catalog of development conditions: an object whose `conditions` is a list of at least
+    one object, each with an `id` that is text, not empty and unlike the others."""
+    conditions = catalog.get('conditions') if isinstance(catalog, dict) else None
+    if not isinstance(conditions, list) or not conditions:
+        return False
+    ids = [condition.get('id') if isinstance(condition, dict) else None for condition in conditions]
+    return all(isinstance(name, str) and name for name in ids) and len(set(ids)) == len(ids)
+
+
 def descriptor_errors(device):
-    """What is wrong with a `device-descriptor/1` of a provided emulator; empty when it can be used."""
-    if not isinstance(device, dict) or device.get('schema') != DESCRIPTOR or device.get('kind') != 'provided-emulator':
-        return ['not a device-descriptor/1 of a provided emulator']
+    """The faults of the device descriptor `device` as a list of sentences, empty for a `device-descriptor/2` the
+    tool can use. A descriptor of another schema gives one fault, and so does each part the tool does not know."""
+    if not isinstance(device, dict) or device.get('schema') != DESCRIPTOR:
+        return ['not a device-descriptor/2']
+    errors = ['a device-descriptor/2 has no part named ' + str(name) for name in device if name not in PARTS]
     control = device.get('control')
-    errors = [] if isinstance(control, dict) and isinstance(control.get('endpoint_file'), str) and control['endpoint_file'] \
-        else ['no control endpoint file']
+    if (not isinstance(control, dict) or not isinstance(control.get('endpoint_file'), str)
+            or not control['endpoint_file']):
+        errors.append('no control endpoint file')
     if not isinstance(device.get('session_id'), str) or not device['session_id']:
         errors.append('no session_id')
     if not isinstance(device.get('binding'), dict) or not device['binding']:
         errors.append('no binding')
-    if not isinstance(device.get('image_sha256'), str):
-        errors.append('no image_sha256')
+    image = device.get('firmware_sha256')
+    if not isinstance(image, str) or not re.fullmatch('[0-9a-f]{64}', image):
+        errors.append('no firmware_sha256')
+    if 'instrument' in device:
+        instrument = device['instrument']
+        if (not isinstance(instrument, dict) or set(instrument) != {'units'}
+                or not isinstance(instrument['units'], dict)):
+            errors.append('instrument is an object with exactly units')
+    if 'development_conditions' in device and not _catalog_ok(device['development_conditions']):
+        errors.append('development_conditions holds a list of conditions with distinct ids')
     return errors
 
 
 class DeviceClient:
-    """Control requests to one provided device. Every failure to reach it, and every refusal, is DeviceUnavailable."""
+    """Control requests to one supplied device. Every failure to reach it, and every refusal, is DeviceUnavailable."""
 
     def __init__(self, endpoint_file, timeout=60):
         self.endpoint_file, self.timeout = Path(endpoint_file), timeout
@@ -115,13 +140,13 @@ class DeviceClient:
                           evidence_ids=list(evidence_ids), dispatch_ids=list(dispatch_ids), deadline_seconds=wait)
 
     def release(self, session_id):
-        """Pause the device and give up control of this session; only the harness can stop it."""
+        """Pause the device and give up control of this session; only the client that owns it can stop it."""
         return self._call('release', session_id=session_id)
 
 
 def open_device(descriptor):
-    """The client of a provided device, from its descriptor; a malformed descriptor is a ValueError."""
+    """The handle on a supplied device, from its descriptor; a descriptor with a fault is a ValueError."""
     errors = descriptor_errors(descriptor)
     if errors:
-        raise ValueError('Invalid provided device descriptor: ' + '; '.join(errors))
+        raise ValueError('Invalid device descriptor: ' + '; '.join(errors))
     return DeviceClient(descriptor['control']['endpoint_file'])

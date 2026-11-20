@@ -1,5 +1,5 @@
 """What a run's `status` adds for whoever watches it: the service's log, the deadline, the repairs used and allowed and
-the running worker's last sign of life (docs/features/kit-fixes/04-service-diagnostics.md, 04-B3, 04-B5 and 04-B6).
+the running worker's last sign of life.
 
 Scripted workers and temporary homes only; no model and no hardware."""
 import asyncio
@@ -9,7 +9,6 @@ import sys
 import tempfile
 import time
 import unittest
-import unittest.mock
 from pathlib import Path
 
 from package_env import package_env
@@ -155,19 +154,6 @@ class DeadlineAndRepairsTests(StatusCase):
         self.assertEqual([read[name]['deadline'] for name in saved], [None, None, 1600.0, 1600.0, 1600.0])
         self.assertEqual([read[name]['repairs'] for name in saved],
                          [None, {'used': 1, 'budget': None}, None, None, None])
-
-    def test_04_B5_a_suite_reply_built_from_a_childs_status_stays_as_it_was(self):
-        from generative_driver.configurator import Controller
-        controller = self.controller()
-        run, status = self.blocked(controller)
-        # A suite's reply to its harness that passes its child's status on, as a resumed child's does.
-        with unittest.mock.patch.object(Controller, '_suite_call', return_value={**status, 'duplicate': True}):
-            reply = controller.call('suite_resume_child', {'suite_id': 'suite-x'})
-        self.assertEqual(set(reply), {'ok', 'status', 'stage', 'reason', 'created', 'updated', 'outcome_category',
-                                      'run_id', 'uncertain_effect', 'stopping', 'equivalence', 'stage_notes',
-                                      'duplicate'})
-        self.assertEqual(reply, {key: value for key, value in status.items() if key in reply} | {'duplicate': True})
-
 
 class WorkerTests(StatusCase):
     # A worker that prints one line each time the test makes the next of its two files, then waits.

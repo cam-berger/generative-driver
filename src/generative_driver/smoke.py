@@ -1,5 +1,5 @@
 """`generative-driver smoke`: one whole run through the background service, its worker launch and the tool gateway on
-this machine, with no model, no Codex and no hardware (docs/features/kit-fixes/03-service-smoke.md).
+this machine, with no model, no Codex and no hardware.
 
 It starts its own service with a new temporary folder as its home, configures the scripted worker as the run's Codex
 command and binds the stand-in device it serves on 127.0.0.1. It checks the kit's machinery, not a model, a firmware

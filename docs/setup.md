@@ -2,7 +2,7 @@
 
 [Install first](../README.md). Below, `python` means your installation’s executable: `.venv/bin/python` on macOS or `.venv\Scripts\python.exe` on Windows. Quote paths containing spaces. No activation is required. With uv, use `uv run` in place of `python` from the checkout, for example `uv run python -m generative_driver doctor`; clients that need an absolute interpreter path take the same `.venv` executable.
 
-For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings can invalidate benchmark hashes.
+For an older Windows checkout created before `.gitattributes`, use a fresh clone: converted line endings change bytes that the tool hashes.
 
 ## Configure Codex
 
@@ -47,13 +47,38 @@ uv sync --extra dev --extra hardware --extra docs
 uv run generative-driver doctor
 ```
 
-USB drivers, permissions, Ghidra, Java and Renode are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
+USB drivers, permissions, Ghidra and Java are separate installations. Follow vendor instructions and check [supported paths](support.md). Optional analysis tools may run in [Podman](https://podman.io/) containers, which `doctor` reports; native core operation does not require containers or provide container USB forwarding.
 
-Supply the objective, exact serial/USB/FTDI binding and allowed effects. Reads are the default; discovery does not authorize a device. For approved noninteractive tools, set `scoped_tool_approval` to `"bound-device"` or `"emulator"`. The configurator enforces assigned tools, binding and effects without changing global Codex settings. Resume with `--approve-bound-device-tools` or `--approve-emulator-tools` when authorization is already established.
+Supply the objective, exact serial/USB/FTDI binding and allowed effects. Reads are the default; discovery does not authorize a device. For approved noninteractive tools, set `scoped_tool_approval` to `"bound-device"`. The configurator enforces assigned tools, binding and effects without changing global Codex settings. Resume with `--approve-bound-device-tools` when authorization is already established. The value `"emulator"` and `--approve-emulator-tools` apply only to a run on a supplied device, which a client of the [client interface](client-interface.md) starts.
 
 UART can bind by USB identity from doctor’s `serial_ports`: `{"vendor_id":4292,"product_id":60000,"serial_number":"..."}`. Resolve it each run; missing/ambiguous matches are operator faults. Grants are `read`, `write`, `actuate`, `reset`. Acquisition listens for 500 ms; unsolicited output marks reset-on-open. Such a binding needs `reset` before connecting; ESP flash resets only with that grant.
 
 Firmware runs accept optional absolute `ghidra_home`/`java_home` in run JSON or `driver_start`. The interpreter gets the sealed analysis kit and `ANALYSIS_TOOLS.json`; workers infer architecture/mapping. Missing optional analysis is reported.
+
+## Read STM32 firmware through a debug probe
+
+A run can read the flash of an STM32 through an ST-LINK debug probe. The read starts `STM32_Programmer_CLI`, the command-line program of STM32CubeProgrammer, which is a separate installation from ST. Save its command once:
+
+```sh
+python -m generative_driver configure-program --program stm32-programmer --command "/absolute/path/to/STM32_Programmer_CLI"
+```
+
+Use the `.exe` path on Windows. A path that is not absolute is refused, and so is a `.bat` or `.cmd` file. Pass arguments that stand before the tool's own with repeated `--argument` flags. `doctor` reports the program under `dependencies.stm32_programmer` and never starts it. A run keeps the command it started with.
+
+Declare the probe in the run's binding, alone or beside the device's serial, USB or FTDI binding:
+
+```json
+{"binding": {"debug_probe": {"kind": "stlink", "serial_number": "..."}}}
+```
+
+Give `serial_number` when more than one probe is attached; otherwise leave it out. The acquire worker then has `acquire_stm32_flash`. It reads from `0x08000000` the flash size the program reports and hands the image to interpretation. It only reads: it never writes or erases.
+
+- Without the `reset` grant the tool neither resets nor halts the chip. With it the chip is reset to connect and again after the read.
+- A read that the configurator stops under the `reset` grant (a cancel, a shutdown, a spent budget or the limit of a tool call) can leave the chip halted until it is reset.
+- One run with a declared probe runs at a time. A second is refused until the first has ended.
+- A read-protected chip is not read. The run goes on without an image.
+- On many STM32 families, attaching a probe to a read-protected chip stops its application until the next power cycle. This has not been checked on a chip.
+- A run on a supplied device takes no probe.
 
 ## Recovery
 
@@ -66,8 +91,6 @@ python -m generative_driver resume RUN_ID --budget-seconds 21600 --budget-reason
 ```
 
 This sets six hours total, not six additional hours. The maximum is seven days; repeating a total adds nothing. MCP uses `budget_seconds` and `budget_reason`. Extensions retain start time, attempts and evidence and record a `run.budget_extended` event.
-
-A detached bench harness drives suites; resume relaunches it and retains the current child. Suites use the same owner. Save `suite_id` and use suite status/events/result/cancel/resume. Suite and child budgets are separate; extend each explicitly. Keep CLI `--home` and MCP `GENERATIVE_DRIVER_HOME` consistent; conflicting `options.home` is refused. See [suite commands](../bench/README.md#run-a-repeated-suite).
 
 ## Developer command line
 

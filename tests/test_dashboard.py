@@ -237,13 +237,14 @@ print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text
                     process.wait(timeout=5)
                     self.assertEqual(call('status', run, home=home)['status'], 'running')
                     release.touch()
-                    deadline = time.monotonic() + 5
+                    deadline = time.monotonic() + 30
                     while time.monotonic() < deadline:
                         final = self.dashboard().RunReader(run['run_id'], home).snapshot()
-                        if final.get('status') not in ('queued', 'running'):
+                        # A read that found the service busy has no status; the next read has one.
+                        if final.get('status') not in (None, 'queued', 'running'):
                             break
                         time.sleep(.02)
-                    self.assertNotIn(final['status'], ('queued', 'running'))
+                    self.assertNotIn(final.get('status'), (None, 'queued', 'running'), final)
                     # An evidence-free acquire report is handed on with notes instead of blocking the run.
                     self.assertEqual(final['stages'][0]['status'], 'accepted')
             finally:

@@ -1,8 +1,8 @@
 """Report tools pinned to a GitHub release that trail their latest upstream release.
 
 A pin is a link to https://github.com/<owner>/<repo>/releases/download/<tag>/... or
-.../releases/tag/<tag> in a watched file: the workflows under .github/workflows and the native
-reference setup in bench/README.md. Needs an authenticated GitHub CLI (gh).
+.../releases/tag/<tag> in a watched file: the workflows under .github/workflows. Needs an
+authenticated GitHub CLI (gh).
 
     python .github/scripts/tool_releases.py                # print each pinned tool: current or behind
     python .github/scripts/tool_releases.py --open-issues  # also open one issue per new release
@@ -21,7 +21,7 @@ import sys
 from urllib.parse import quote, unquote
 
 ROOT = Path(__file__).resolve().parents[2]
-WATCHED = (".github/workflows/*.yml", ".github/workflows/*.yaml", "bench/README.md")
+WATCHED = (".github/workflows/*.yml", ".github/workflows/*.yaml")
 PIN = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/releases/(?:download|tag)/([^/\s)\"'<>#?]+)")
 
 
@@ -49,9 +49,8 @@ class Alert:
         release = f"https://github.com/{self.repo}/releases/tag/{quote(self.latest, safe='')}"
         return (f"{self.repo} published [{self.latest}]({release}).\n\n"
                 f"Pinned here:\n{pinned}\n\n"
-                "Upgrading changes benchmark evidence. Update every pin above together with any SHA-256 beside it, "
-                "search the repository for the old version to find unlinked mentions, run the affected workflows, "
-                "and re-run native calibration before comparing results across versions.\n\n"
+                "Update every pin above together with any SHA-256 beside it, search the repository for the old "
+                "version to find unlinked mentions, and run the affected workflows.\n\n"
                 "Close this issue once decided. The weekly check does not reopen it for this release.\n")
 
 

@@ -1,4 +1,4 @@
-"""Stage 1. Import a document the operator passed with a run (docs/features/kit-fixes/07-input-paths.md, 07-B1).
+"""Stage 1. Import a document the operator passed with a run.
 
 A file passed with a run is copied into the acquire workspace's `inputs/` folder, where it went no further. This tool
 turns one of those files into page text with an index of its pages, as a datasheet's pages are, so that the acquire

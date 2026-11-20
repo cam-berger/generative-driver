@@ -1,4 +1,4 @@
-"""The input paths (docs/features/kit-fixes/07-input-paths.md): documents acquired beside the firmware reach
+"""The input paths: documents acquired beside the firmware reach
 interpretation, and a generic run with no single image but a device binding interprets device first.
 
 In-process runs with scripted workers that call the real tools through the configurator's gateway; temporary homes
@@ -13,7 +13,7 @@ from input_path_fixtures import RunCase, have_pypdf, pdf_bytes, sha256
 
 
 def digest(path):
-    from generative_driver.benchmark_support.integrity import digest as tree_digest
+    from generative_driver.integrity import digest as tree_digest
     return tree_digest(path)
 
 
@@ -715,7 +715,7 @@ def probe_each(worker):
 def emit(worker):
     """An emit worker that packages its model with a probe record and reports the package; with neither it does
     nothing."""
-    from generative_driver.benchmark_support.integrity import digest as tree_digest
+    from generative_driver.integrity import digest as tree_digest
     record = next((Path(path) for path in worker.task['inputs'] if Path(path).suffix == '.json'), None)
     if given_model(worker) is None or record is None:
         return None
@@ -796,77 +796,6 @@ class DeviceFirstRunTests(RunCase):
                          model())
         [reused] = self.assigned('reuse')
         self.assertEqual(list(reused['inputs'].values()), [package['sha256']])
-
-
-# The sha256 of every tool description but acquire_document's, as the base commit of Feature 07 listed them.
-BASE_TOOLS_SHA256 = '16b20a898c1024e0c77601ab9c14eba3dd99f707eb7d111d0cce8531be02d7d6'
-SENSOR_BINDING = {'url': 'ftdi://scripted/1'}
-
-
-class BenchmarkUnchangedTests(RunCase):
-    """07-B9: benchmark runs acquire, prepare, run and check interpretation exactly as before Feature 07."""
-
-    def sensor_run(self, acquire):
-        """The interpret worker's launch and workspace files (None when none launched) and the run's result, for a
-        physical benchmark run whose acquire worker does `acquire(worker)`: it names a binding and acquires no image."""
-        seen = {}
-
-        def interpret(worker):
-            seen.update(tools=list(worker.request.allowed_tools), files=sorted(
-                p.relative_to(worker.workspace).as_posix() for p in worker.workspace.rglob('*') if p.is_file()))
-        result = self.run_with({'acquire': acquire, 'interpret': interpret}, case='bme280', binding=SENSOR_BINDING,
-                               effects=['read', 'write'])
-        return seen or None, result
-
-    @unittest.skipUnless(have_pypdf(), 'pypdf is not installed')
-    def test_07_B9_a_benchmark_run_gets_no_new_acquire_tool_and_its_interpreter_no_documents(self):
-        from input_path_fixtures import network
-        acquired = {}
-
-        def acquire(worker):
-            acquired.update(tools=worker.tools(), document=worker.tool('acquire_document', name='datasheet.pdf'),
-                            datasheet=worker.tool('acquire_datasheet', url=DATASHEET_URL,
-                                                  expected_sha256=sha256(pdf_bytes(DATASHEET_PAGES))))
-        # The stand-in datasheet is the one the benchmark's registry pins, for this run.
-        with network({DATASHEET_URL: pdf_bytes(DATASHEET_PAGES)}), \
-                patch('generative_driver.benchmark_support.physical._datasheet_sha256',
-                      lambda: sha256(pdf_bytes(DATASHEET_PAGES))):
-            seen, result = self.sensor_run(acquire)
-        self.assertEqual(acquired['tools'], ['acquire_datasheet'])
-        self.assertIsInstance(acquired['document'], ValueError)
-        self.assertIn('not assigned', str(acquired['document']))
-        self.assertIs(acquired['datasheet'].get('available'), True, acquired['datasheet'])
-        # The benchmark's own datasheet interpreter, without documents or device-first instructions.
-        self.assertIsNotNone(seen, result['reason'])
-        self.assertEqual(seen['tools'], [])
-        for name in ('DOCUMENTS.json', 'DEVICE_FIRST.md', 'TASKS.json'):
-            self.assertNotIn(name, seen['files'])
-        self.assertFalse([name for name in seen['files'] if name.startswith('documents/')])
-        [assignment] = self.assigned('interpret')
-        self.assertEqual(assignment['effects'], ['read', 'write'])
-        self.assertNotIn('device_first', assignment)
-        self.assertIsNone(interpretation(result))
-
-    def test_07_B9_a_benchmark_run_that_names_a_binding_and_acquires_no_image_never_interprets_device_first(self):
-        seen, result = self.sensor_run(lambda worker: None)
-        self.assertIsNone(seen)
-        [skipped] = [e['data'] for e in self.events('stage.skipped') if e['data']['stage'] == 'interpret']
-        self.assertIn('no acquired official datasheet', json.dumps(skipped))
-
-    def test_07_B9_an_emulated_benchmark_acquire_worker_gets_its_one_tool_as_before(self):
-        acquired = {}
-
-        def acquire(worker):
-            acquired['tools'] = worker.tools()
-        self.run_with({'acquire': acquire}, case='tq9')
-        self.assertEqual(acquired['tools'], ['acquire_firmware_artifact'])
-
-    def test_07_B9_every_existing_tool_description_is_unchanged(self):
-        import hashlib
-        from generative_driver.toolkit import list_tools
-        existing = [tool for tool in list_tools() if tool['name'] != 'acquire_document']
-        canonical = json.dumps(existing, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
-        self.assertEqual(hashlib.sha256(canonical.encode('utf-8')).hexdigest(), BASE_TOOLS_SHA256)
 
 
 if __name__ == '__main__':

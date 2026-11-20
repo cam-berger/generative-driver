@@ -4,7 +4,7 @@ The dashboard is a local observer of one configurator run. It shows the six stag
 
 ## Open it
 
-Use the same Python environment and state home that started the run. Take `RUN_ID` from the run-start result in Codex or the CLI. For a benchmark suite, use `active_child_id` from `driver_benchmark_suite_status` to follow that child run.
+Use the same Python environment and state home that started the run. Take `RUN_ID` from the run-start result in Codex or the CLI.
 
 ```sh
 python -m generative_driver dashboard RUN_ID
@@ -30,8 +30,6 @@ The page reports disconnection and reconnects when the service becomes reachable
 
 Every stage hands off its artifacts with notes: the worker's checks, the configurator's truth-free checks and open questions. The page shows each stage's latest notes. A failed check is recorded in the notes, not used as a gate: the stage still hands off, and a device difference or a model the configurator's validation rejects returns the run to interpretation as a model repair within the repair budget. A stage counts as accepted once its handoff is recorded; a finished worker shows “checking” while the configurator checks and records its handoff. The final equivalence verdict appears with its basis once recorded. A repair returns progress to the current revision; superseded stages cease to count as accepted. Blockers and unresolved device effects remain visible.
 
-The run log retains the latest 200 configurator events. Uncheck “Follow” to read earlier entries without automatic scrolling. Agent activity shows the latest 12 progress messages and command/tool status entries from the current worker. Full command arguments, outputs and evaluator payloads stay in their original run artifacts.
+The run log retains the latest 200 configurator events. Uncheck “Follow” to read earlier entries without automatic scrolling. Agent activity shows the latest 12 progress messages and command/tool status entries from the current worker. Full command arguments and outputs stay in their original run artifacts.
 
 Use the Codex or CLI run tools to respond, resume or cancel.
-
-See [recorded dashboard verification](verification.md#analysis-client-and-protocol-evidence) for the measured browser/run observation and its limits.

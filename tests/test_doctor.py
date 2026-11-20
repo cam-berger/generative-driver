@@ -1,8 +1,7 @@
 """What `doctor` reports about the worker runtime and the optional packages.
 
-Feature 01 of the kit fixes (docs/features/kit-fixes/01-doctor-identity.md): a start uses only the configured Codex
-command, so `doctor` asks that command what it is. A script the test writes stands in for the runtime; no test runs a
-real Codex or anything named `codex` on `PATH`.
+A start uses only the configured Codex command, so `doctor` asks that command what it is. A script the test writes
+stands in for the runtime; no test runs a real Codex or anything named `codex` on `PATH`.
 """
 import asyncio
 import json
@@ -190,8 +189,7 @@ class DoctorCodexTests(unittest.TestCase):
                     self.assertIn(CONFIGURE, entry['reason'])
                     self.assertEqual(sorted(report), ['core', 'dependencies', 'extras', 'home', 'plugin',
                                                       'serial_ports', 'serial_ports_available'])
-                    self.assertEqual(sorted(report['dependencies']),
-                                     ['arm-none-eabi-gcc', 'codex', 'java', 'podman', 'renode'])
+                    self.assertEqual(sorted(report['dependencies']), ['codex', 'java', 'podman', 'stm32_programmer'])
                     self.assertTrue(report['core']['ok'])
             with self.subTest('a string is a command a start accepts'):
                 config.write_text(json.dumps({'executors': {'codex': {'command': sys.executable}}}), encoding='utf-8')

@@ -316,7 +316,7 @@ class ServiceLifecycleTests(unittest.TestCase):
                 call('shutdown', {}, home)
 
     def test_04_B7_shutdown_stops_an_accepted_tool_call_at_once_and_then_confirms_exit(self):
-        # Before the kit fixes' Feature 04 a shutdown waited for an accepted tool, which had no deadline, so a tool that
+        # A shutdown once waited for an accepted tool, which had no deadline, so a tool that
         # never returned kept the service from stopping. The service now stops the call's process, answers the call
         # as abandoned and only then confirms its exit.
         from generative_driver.client import call

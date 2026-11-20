@@ -1,5 +1,4 @@
-"""The kit analysis: the firmware analysis the configurator makes once per run, before interpretation
-(docs/features/kit-fixes/06-interpret-tasks.md, 06-B1 and 06-B2).
+"""The kit analysis: the firmware analysis the configurator makes once per run, before interpretation.
 
 An interpret worker that runs Ghidra itself spends its context on what the analyzer prints, and a repair's new worker
 runs it all again. The configurator therefore decides how to load the acquired image, runs the existing Ghidra helper
@@ -16,7 +15,7 @@ import time
 from pathlib import Path
 
 from . import analysis_index, tool_process
-from .benchmark_support.integrity import IntegrityError, digest
+from .integrity import IntegrityError, digest
 
 # The helper's own limit (`ghidra_run.run`'s default), passed to it so that a test may shorten it. The child process is
 # stopped GRACE_SECONDS after it, should the helper not stop itself.

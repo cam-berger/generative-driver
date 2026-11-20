@@ -1,4 +1,4 @@
-"""Fixtures for the kit analysis and the interpret tasks (docs/features/kit-fixes/06-interpret-tasks.md).
+"""Fixtures for the kit analysis and the interpret tasks.
 
 - A stand-in analyzer: a `ghidra_home` whose headless launcher writes a canned export, records each launch and can
   fail or hang, with a `java_home` the helper's checks accept. No Ghidra or Java runs.

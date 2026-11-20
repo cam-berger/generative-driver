@@ -6,7 +6,7 @@ stage's steps in order. `{"write": name}` copies the candidate file `name` into 
 file there. `{"call": tool, "arguments": {...}}` calls an assigned gateway tool; an argument `{"$context": key}` is the
 assignment context's value and `{"$result": key}` that key of the latest earlier result of the stage that has it.
 
-The worker reads nothing but the candidate and its assignment: no groundtruth, evaluator record or case source. It
+The worker reads nothing but the candidate and its assignment. It
 reaches the toolchain and the device only through the gateway, which the configurator observes and records. Its results
 are replay, never model runs."""
 import argparse
@@ -16,12 +16,10 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
-# The evaluator uses these too, so they are defined in a module of its own and imported here under their old names.
-from .benchmark_support.labels import RUNTIME, execution_label
-
+# The runtime name a run records for the replay executor.
+RUNTIME = 'replay'
 SCHEMA = 'replay-candidate/1'
 SCRIPT = 'replay.json'
 STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
@@ -68,7 +66,7 @@ def load_candidate(directory):
     if not root.is_absolute() or root.is_symlink() or not root.is_dir():
         raise ValueError('A replay candidate is an absolute directory path: ' + str(directory))
     if _inside(root.resolve(), resources_root()):
-        raise ValueError('A replay candidate is saved worker output, never the installed case sources or groundtruth')
+        raise ValueError('A replay candidate is saved worker output, never a folder of the installed resources')
     script = root / SCRIPT
     if script.is_symlink() or not script.is_file():
         raise ValueError('A replay candidate holds ' + SCRIPT + ': ' + str(root))
@@ -98,57 +96,20 @@ def load_candidate(directory):
     return value
 
 
-def candidate_config(config, *, bench=None):
+def candidate_config(config):
     """The replay runtime's configuration: the candidate's absolute path and the sha256 of its files, checked against
-    one recorded before. It names no command: the installed replay worker runs every replay. A candidate never lies in
-    the bench home `bench`, which holds evaluator records."""
+    one recorded before. It names no command: the installed replay worker runs every replay."""
     from .configurator import digest
     if not isinstance(config, dict) or set(config) - {'runtime', 'candidate', 'candidate_sha256'}:
         raise ValueError('The replay executor takes only its saved candidate: executor_config {"candidate": <directory>}')
     if not isinstance(config.get('candidate'), str) or not config['candidate']:
         raise ValueError('The replay executor needs a saved candidate: executor_config {"candidate": <directory>}')
     root = Path(config['candidate'])
-    if bench is not None and root.is_absolute() and _inside(root.resolve(), bench):
-        raise ValueError('A replay candidate never lies in the bench home, which holds evaluator records: ' + str(root))
     load_candidate(root)
     sha256 = digest(root)
     if config.get('candidate_sha256') not in (None, sha256):
         raise ValueError('The replay candidate changed since its hash was recorded: ' + str(root))
     return {'runtime': RUNTIME, 'candidate': str(root.resolve()), 'candidate_sha256': sha256}
-
-
-def suite_candidates(cases, candidates, *, bench=None):
-    """The checked configuration of each case's candidate of a replay suite (options.replay_candidates): exactly one
-    saved candidate per case of its manifest."""
-    if not isinstance(candidates, dict) or set(candidates) != set(cases):
-        raise ValueError('A replay suite takes one saved candidate per case: options.replay_candidates '
-                         '{case: directory} for ' + ', '.join(sorted(cases)))
-    return {case: candidate_config({'candidate': candidates[case]}, bench=bench) for case in sorted(cases)}
-
-
-def stored_candidate(config, store):
-    """The candidate of `config`, stored under `store` by its sha256, where a suite keeps the candidates it froze: the
-    stored copy's configuration. Every child of the suite replays those bytes, whatever happens to the saved candidate."""
-    from .configurator import digest
-    store = Path(store)
-    target = store / config['candidate_sha256']
-    if not target.is_dir():
-        store.mkdir(parents=True, exist_ok=True)
-        temporary = Path(tempfile.mkdtemp(prefix='.candidate-', dir=store))
-        try:
-            shutil.copytree(config['candidate'], temporary / 'copy')
-            if digest(temporary / 'copy') != config['candidate_sha256']:
-                raise ValueError('The replay candidate changed while it was stored: ' + config['candidate'])
-            try:
-                os.rename(temporary / 'copy', target)
-            except OSError:
-                if not target.is_dir():
-                    raise
-        finally:
-            shutil.rmtree(temporary, ignore_errors=True)
-    if digest(target) != config['candidate_sha256']:
-        raise ValueError('The stored replay candidate changed: ' + str(target))
-    return {'runtime': RUNTIME, 'candidate': str(target), 'candidate_sha256': config['candidate_sha256']}
 
 
 def _context(prompt):

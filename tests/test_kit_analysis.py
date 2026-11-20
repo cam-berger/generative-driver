@@ -1,5 +1,5 @@
 """The kit analysis: the firmware analysis the configurator makes once per run before interpretation, its fallback, its
-index and what the single interpret worker gets of it (docs/features/kit-fixes/06-interpret-tasks.md, 06-B1 to 06-B4).
+index and what the single interpret worker gets of it.
 
 A stand-in analyzer, canned images and scripted workers in temporary homes; no Ghidra, Java, model or device."""
 import hashlib

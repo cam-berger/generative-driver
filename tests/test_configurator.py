@@ -3549,7 +3549,7 @@ class ConfiguratorTests(unittest.TestCase):
             controller=Controller(Path(directory))
             try:
                 binding={'url':'ftdi://fixture-no-device/1'}
-                run=controller.call('start',{'goal':'No hardware contract','case':'bme280','binding':binding,'effects':['write'],
+                run=controller.call('start',{'goal':'No hardware contract','binding':binding,'effects':['write'],
                     'scoped_tool_approval':'bound-device','executor_config':{'command':['missing-contract-runtime']}})
                 until=time.monotonic()+5
                 while time.monotonic()<until and controller.call('status',run)['status']!='blocked': time.sleep(.01)
@@ -3573,36 +3573,8 @@ class ConfiguratorTests(unittest.TestCase):
                     controller.call('start',{**params,'binding':{'port':'COM9'},'effects':[]})
                 run=controller.call('start',{**params,'binding':{'port':'COM9'}})
                 self.assertEqual(controller.call('result',run)['scoped_tool_approval'],'bound-device')
-                with self.assertRaisesRegex(ValueError,'conflicting'):
+                with self.assertRaisesRegex(ValueError,'start takes no case_options'):
                     controller.call('start',{**params,'binding':{'port':'COM9'},'case_options':{'binding':{'port':'COM10'}}})
-            finally:
-                controller.close()
-
-    def test_emulator_approval_is_explicit_persisted_and_cannot_authorize_physical_runs(self):
-        from generative_driver.configurator import Controller
-        with tempfile.TemporaryDirectory() as directory:
-            controller=Controller(Path(directory))
-            try:
-                params={'goal':'Approval contract only','case':'tq9','executor_config':{'command':['missing-contract-runtime']}}
-                run=controller.call('start',params)
-                until=time.monotonic()+5
-                while time.monotonic()<until and controller.call('status',run)['status']!='blocked': time.sleep(.01)
-                self.assertIsNone(controller.call('result',run).get('scoped_tool_approval'))
-                until=time.monotonic()+5
-                while time.monotonic()<until:
-                    try:
-                        controller.call('resume',{**run,'scoped_tool_approval':'emulator'})
-                        break
-                    except ValueError as exc:
-                        self.assertIn('stopping',str(exc)); time.sleep(.01)
-                self.assertEqual(controller.call('result',run).get('scoped_tool_approval'),'emulator')
-                events=controller.call('events',run)['events']
-                self.assertEqual(len([e for e in events if e['kind']=='run.authorization']),1)
-                self.assertEqual(len([e for e in events if e['kind']=='operator.response']),0)
-                with self.assertRaisesRegex(ValueError,'emulator'):
-                    controller.call('start',{**params,'case':'bme280','scoped_tool_approval':'emulator'})
-                with self.assertRaisesRegex(ValueError,'binding'):
-                    controller.call('start',{**params,'scoped_tool_approval':'emulator','binding':{'url':'ftdi://ftdi:232h/1'}})
             finally:
                 controller.close()
 
@@ -4159,11 +4131,11 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             controller = Controller(Path(directory))
             params = {'goal':'Describe a supplied device', 'executor':'codex', 'request_id':'test-start',
                       'executor_config':{'command':['a-runtime-that-does-not-exist'],'model':'configured-model','version':'contract-version'},
-                      'case_options':{'operator_note':'not-an-agent-input'}}
-            # The configurator holds no password file: the bench harness does, for the cases that need one.
+                      'operator_note':'not-an-agent-input'}
+            # The configurator holds no password file: a client does, where it needs one.
             with self.assertRaisesRegex(ValueError, 'password'):
                 controller.call('start', {**params, 'request_id':'test-password',
-                                          'case_options':{'evaluator_password_file':'not-an-agent-input'}})
+                                          'evaluator_password_file':'not-an-agent-input'})
             run = controller.call('start', params)
             second = controller.call('start', params)
             self.assertEqual(run['run_id'], second['run_id'])
@@ -4179,7 +4151,10 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
             self.assertEqual(result['agent']['model'],'configured-model')
             self.assertEqual(result['agent']['version'],'contract-version')
             self.assertEqual(result['budget_seconds'],10800)
-            self.assertNotIn('not-an-agent-input',str(result))
+            # A key of the start that the service does not know reaches no part of the result but `request`, which
+            # gives the start's params back as they came (07-B2).
+            self.assertNotIn('not-an-agent-input',str({key:value for key,value in result.items() if key!='request'}))
+            self.assertEqual(result['request'],params)
             controller.close()
             reopened = Controller(Path(directory))
             self.assertEqual(reopened.call('status', {'run_id':run['run_id']})['status'], 'blocked')

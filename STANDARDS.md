@@ -9,8 +9,7 @@ How code in this project is built. Build follows these rules, the Reviewer enfor
 - One responsibility per file, so a reader finds each thing where its name says.
 - Reshape only code the Feature touches. Problems elsewhere are reported, not fixed, so each diff stays reviewable.
 - Code runs natively on macOS and Windows 11+: portable imports, process launches as argument lists, no hardcoded user paths, and output only to directories the caller owns, never to installed resources. Optional hardware and analysis dependencies load when used. This machine runs only macOS, so Windows behaviour is claimed only once CI passes on it.
-- Grading code imports nothing from the system under test, the bench harness or the reporting code, so a grader identity covers grading code only and changing anything else keeps a qualification. `tests/test_grader_identity.py` checks the boundary.
-- Evaluator passwords stay in the bench harness. The configurator and workers never receive a password, its path or a plaintext answer.
+- The configurator and workers never receive a password, its path or a plaintext answer.
 - Never silently retry an uncertain write: a lost reply is reported, not repeated.
 
 ## Documentation
@@ -26,7 +25,8 @@ How code in this project is built. Build follows these rules, the Reviewer enfor
 
 Each test module runs in its own process, eight at a time, because the serial suite takes about 13 minutes and the Done check stops at 9. `PYTHONPATH` is absolute because some tests start a configurator from another directory. A worktree links `.venv` to the main checkout's environment.
 
-Test command: `ls tests | grep -x 'test_.*\.py' | PYTHONPATH="$PWD/src" xargs -P 8 -n 1 sh -c 'out=$(.venv/bin/python -m unittest discover -v -s tests -p "$0" 2>&1); s=$?; printf "%s\n" "$out"; exit $s' && node tests/dashboard-client.test.js`
+Test command: `ls tests/test_*.py | PYTHONPATH="$PWD/src" xargs -P 8 -n 1 sh -c 'out=$(.venv/bin/python -m unittest discover -v -s "$(dirname "$0")" -p "$(basename "$0")" 2>&1); s=$?; printf "%s\n" "$out"; exit $s' && node tests/dashboard-client.test.js`
+
 Test files: `tests/test_*.py`
 
 - Test through public interfaces at the seams the Spec agrees, so tests survive refactoring.
@@ -35,7 +35,7 @@ Test files: `tests/test_*.py`
 - No tautological tests: never assert on a mock, or compute the expected value the way the code does.
 - Mock only at system boundaries, such as the network, the clock or a third-party service.
 - A test that starts a Python child gives it `tests/package_env.py`'s environment. MCP stdio children drop `PYTHONPATH`, so without it the child silently runs another checkout's code.
-- Tests use temporary homes. They never touch a real password, vault, device or model run.
+- Tests use temporary homes. They never touch a real password, device or model run.
 
 ## Baseline
 

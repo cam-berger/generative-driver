@@ -25,7 +25,7 @@ from generative_driver.client import call
 from generative_driver.toolkit import resources_root
 prompt=sys.stdin.read()
 if not prompt.startswith('Execute exactly'):
-    shutil.copy2(resources_root()/'bench/cases/setup-smoke/model.json','model.json')
+    shutil.copy2(resources_root()/'smoke/model.json','model.json')
     sys.exit(0)
 task=json.loads(prompt.split('\\n',1)[1])
 if task['stage']=='probe':
@@ -95,7 +95,7 @@ from generative_driver.client import call
 from generative_driver.toolkit import resources_root
 prompt=sys.stdin.read()
 if not prompt.startswith('Execute exactly'):
- model=json.loads((resources_root()/'bench/cases/setup-smoke/model.json').read_text())
+ model=json.loads((resources_root()/'smoke/model.json').read_text())
  model['channel']={'type':'tcp'};model['operations']['measure']['effect']='write'
  pathlib.Path('model.json').write_text(json.dumps(model))
  sys.exit(0)

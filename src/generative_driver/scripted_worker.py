@@ -1,5 +1,5 @@
 """The scripted worker: a program the configurator launches in place of the Codex CLI, which does one stage's work by
-a fixed script with no model (docs/features/kit-fixes/03-service-smoke.md). `generative-driver smoke` configures it
+a fixed script with no model. `generative-driver smoke` configures it
 as the run's Codex command, so each stage launches it the way it would launch Codex.
 
 It takes only what that launch gives a Codex worker: the arguments the configurator passes Codex (its workspace and
@@ -54,7 +54,7 @@ def _task(prompt):
 
 
 def _sha256(path):
-    from .benchmark_support.integrity import digest
+    from .integrity import digest
     return digest(path)
 
 

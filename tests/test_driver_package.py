@@ -1,4 +1,4 @@
-"""A driver package runs on the installed runtime over its own data (docs/features/kit-fixes/05-driver-package.md).
+"""A driver package runs on the installed runtime over its own data.
 
 Packages are emitted here from invented models with replayed evidence, or copied from `tests/fixtures/earlier-package`,
 which an earlier kit emitted; the device is the smoke's stand-in device on a localhost port. Nothing here is physical

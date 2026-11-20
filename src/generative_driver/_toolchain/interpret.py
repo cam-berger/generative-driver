@@ -90,7 +90,7 @@ def _under(path, root):
 
 
 def _label(path):
-    """A path as the event log names it: relative to bench/ inside it, canonical and absolute outside."""
+    """A path as the event log names it: relative to the resources folder inside it, canonical and absolute outside."""
     return os.path.relpath(_canon(path), _canon(core.BENCH)) if _under(path, core.BENCH) else _canon(path)
 
 
@@ -340,7 +340,7 @@ def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=No
     `front_end` is interpret-interface or interpret-selfdescribing, which write an executable interface model
     and get the shared runtime with validate.py and qualify.py, or interpret-datasheet, interpret-firmware or
     interpret-blackbox, which write a schema-1 register model. `inputs` maps a relative name in the workspace
-    to a path under bench/ (a directory is copied whole). On a retry, pass `defects` and they are written into
+    to a path under the resources folder (a directory is copied whole). On a retry, pass `defects` and they are written into
     the workspace as defects.json for the agent to work from.
 
     The workspace is runs/<run>/interpret/attempt<N>, or <workspace_root>/attempt<N> when workspace_root is

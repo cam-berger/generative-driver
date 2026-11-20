@@ -1,6 +1,5 @@
-"""What a run's `status` adds for whoever watches the run (docs/features/kit-fixes/04-service-diagnostics.md, 04-B3 and
-04-B5): where the service's log is, when the budget runs out, the repairs used and allowed, and the running stage
-worker's last sign of life.
+"""What a run's `status` adds for whoever watches the run: where the service's log is, when the budget runs out, the
+repairs used and allowed, and the running stage worker's last sign of life.
 
 Every time here is one that was stored, never an age or a remaining duration, so a stopped run reads the same twice.
 Reading them never fails: a run saved by an earlier version gives null where it holds no value."""
@@ -9,9 +8,6 @@ import json
 import math
 import threading
 import time
-
-# The keys `added` gives. Suite replies stay as they were, so a child's status passes into one without them.
-_ADDED = ('deadline', 'repairs', 'worker', 'log')
 
 
 def _saved(text):
@@ -64,8 +60,7 @@ class Workers:
                 worker.update(last_activity=now, last_activity_kind=kind)
 
     def task(self, run_id, task):
-        """The run's stage worker now runs `task`, an interpret task ({kind, command}), or none (docs/features/
-        kit-fixes/06-interpret-tasks.md, 06-B10)."""
+        """The run's stage worker now runs `task`, an interpret task ({kind, command}), or none."""
         with self._lock:
             worker = self._running.get(run_id)
             if worker is not None:
@@ -90,13 +85,6 @@ class Workers:
             return None if worker is None else {key: worker[key] for key in
                                                 ('stage', 'started', 'last_activity', 'last_activity_kind', 'task')
                                                 if key in worker}
-
-
-def without(reply):
-    """A suite's reply as it was before `added`: one that passes its child's status on drops the added fields."""
-    if isinstance(reply, dict) and any(key in reply for key in _ADDED):
-        return {key: value for key, value in reply.items() if key not in _ADDED}
-    return reply
 
 
 def added(row, progress, worker, log):

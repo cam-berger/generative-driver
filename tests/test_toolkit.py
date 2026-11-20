@@ -44,7 +44,8 @@ class ToolkitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
             # An interpret-interface workspace and an interface package, whose name is not ASCII: every packaged text
-            # asset is read and written under a locale that cannot encode it.
+            # asset is read and written under a locale that cannot encode it. The run folder has a name that no path
+            # of a temporary folder holds: the tool refuses a workspace whose path carries the run's name.
             script = """import locale,json,subprocess,sys
 locale.setlocale(locale.LC_CTYPE, 'C')
 from pathlib import Path
@@ -72,7 +73,7 @@ print(json.dumps({'_exit': 0}))
 """
             env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(Path(__import__("generative_driver").__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)))}
             result = subprocess.run([sys.executable, "-X", "utf8=0", "-c", script,
-                str(root / "run"), str(root / "neutral")], cwd=temp, env=env,
+                str(root / "gd-run-0"), str(root / "neutral")], cwd=temp, env=env,
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             output = json.loads(result.stdout)

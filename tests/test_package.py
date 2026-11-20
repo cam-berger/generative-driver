@@ -824,6 +824,7 @@ class AdviceTests(unittest.TestCase):
             self.assertEqual(sorted(path.name for path in folder.iterdir()), ["model.json"])
 
     def test_02_B9_the_workspace_validator_prints_the_advice_and_writes_it_with_the_result(self):
+        import os
         import subprocess
         import sys
         from package_env import package_env
@@ -832,7 +833,9 @@ class AdviceTests(unittest.TestCase):
 
             def validated(model):
                 (workspace / "model.json").write_text(json.dumps(model))
-                done = subprocess.run([sys.executable, "validate.py", "."], cwd=workspace, env=package_env(),
+                # The child keeps the system's variables: Python does not start on Windows without them.
+                done = subprocess.run([sys.executable, "validate.py", "."], cwd=workspace,
+                                      env={**os.environ, **package_env()},
                                       capture_output=True, text=True, timeout=60)
                 printed = json.loads(done.stdout)
                 self.assertEqual(json.loads((workspace / "validation/result.json").read_text()), printed)

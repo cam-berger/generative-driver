@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
-from . import debug_probe, dispatch_outcome, run_status, service_log, tool_process
+from . import debug_probe, dispatch_outcome, dispatch_record, run_status, service_log, tool_process
 from .service_log import LOG_NAME, ServiceLog
 # Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
 from .integrity import IntegrityError, digest
@@ -1010,6 +1010,9 @@ class Controller:
         self._operations = {}
         self._inflight = set()
         self._closing = False
+        # The record looks `_db` and `_event` up at each call: a replacement of either on this object takes effect.
+        self.dispatch_record = dispatch_record.DispatchRecord(lambda: self._db(), self._lock,
+                                                              lambda *event: self._event(*event))
         with self._db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS runs (
@@ -1033,8 +1036,6 @@ class Controller:
                     state TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS bindings (
                     identity TEXT PRIMARY KEY, run_id TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS pending_effects (
-                    dispatch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT, actor TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS progress (
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
@@ -1061,7 +1062,7 @@ class Controller:
                     self._event(row['id'], 'run.recovered', {'terminal_final_failure': True}, db)
                     continue
                 spec = json.loads(row['spec'])
-                uncertain = row['uncertain'] or bool(set(spec.get('effects',[])) & {'write','actuate'})
+                uncertain = row['uncertain']
                 reason = 'Configurator restarted; explicit resume required'
                 try:
                     progress = self._workflow_progress(row['id'], db)
@@ -1070,8 +1071,6 @@ class Controller:
                     reason = str(error)
                 else:
                     if progress['next_stage'] in ('finalize', None):
-                        # Reuse was accepted and finalize dispatches nothing: only a recorded pending effect is outstanding.
-                        uncertain = row['uncertain']
                         if spec.get('device') and not uncertain:
                             # A supplied run's finalize only records that its frozen driver awaits its client's verdict.
                             db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (row['id'], _json(
@@ -1081,8 +1080,8 @@ class Controller:
                             db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                             self._event(row['id'], 'run.recovered', {'awaiting_evaluation': True, 'uncertain_effect': False}, db)
                             continue
-                db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
-                           (reason, int(uncertain),time.time(),row['id']))
+                db.execute("UPDATE runs SET status='blocked',reason=?,updated=? WHERE id=?",
+                           (reason, time.time(),row['id']))
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                 self._event(row['id'],'run.recovered',{'uncertain_effect':bool(uncertain)},db)
 
@@ -1272,12 +1271,12 @@ class Controller:
                 if resolution is not None and (run_id in self._inflight or run_id in self._workers):
                     raise ValueError('Previous worker or operation is still stopping; reconcile after it finishes')
             with self._db() as db:
+                resolved = {}
                 if resolution is not None:
-                    if resolution != 'confirmed_safe':
-                        raise ValueError('effect_resolution must be confirmed_safe after checking the device')
-                    db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
-                    db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
-                self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
+                    resolved = {'resolved_dispatch_ids': self.dispatch_record.resolve_by_operator(
+                        run_id, kind='run', effect_resolution=resolution, observation=observation, db=db)}
+                self._event(run_id,'operator.response',{'message':message,'observation':observation,
+                                                        'effect_resolution':resolution,**resolved},db)
             return self.call('status', {'run_id': run_id})
         if method in ('attach_device', 'resume') and self._row(run_id)['sealed']:
             # Before anything asks the device, so a stray resume cannot turn a fault into an integrity failure.
@@ -1833,33 +1832,18 @@ class Controller:
         return failures
 
     def _settle_release(self, run_id, failures):
-        """Before a final verdict a release that failed (`cleanup.failed`: giving up what the run holds raised) retains
-        the lease as uncertain. After the verdict each failure is an event; the verdict and the completed status stand
-        unless an effect is uncertain, which blocks for safety. So does an uncertain effect on a run that completed
-        awaiting its independent grade, which an uncertain run cannot record. This relies on the configurator owning no
-        device resource once a verdict exists: a run without a supplied device owns nothing, and the client, not the
-        configurator, stops and seals a supplied device."""
+        """Each failure of the release is an event of the run and nothing more: a failed cleanup (`cleanup.failed`:
+        giving up what the run holds raised) changes neither the run's status nor its flag, so the run keeps what its
+        stage left. An effect that is uncertain after the final verdict blocks the run for safety. So does an uncertain
+        effect on a run that completed awaiting its independent grade, which an uncertain run cannot record. The
+        configurator owns no device resource itself: a run without a supplied device owns nothing, and the client, not
+        the configurator, stops and seals a supplied device."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
             saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
         awaiting = final is None and saved is not None and json.loads(saved['payload']).get('equivalence') == 'pending'
-        if any(kind != 'device.release_failed' for kind, _, _ in failures):
-            awaiting = False  # The failed cleanup blocks the run for the host below.
         for kind, reason, detail in failures:
-            if kind == 'device.release_failed':
-                # The client still owns the device and stops it after the run; the run's status stands.
-                self._event(run_id, kind, {'reason': reason})
-                continue
-            # Before the verdict, a failed stop may leave an external resource live: retain
-            # its lease until explicit reconciliation, even after this worker exits.
-            with self._lock:
-                with self._db() as db:
-                    if final is None:
-                        db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
-                    self._event(run_id, kind, {'reason': reason}, db)
-                if final is None:
-                    self._state(run_id,'blocked','Cleanup failed; operator reconciliation required',
-                                outcome_category='host')
+            self._event(run_id, kind, {'reason': reason})
         if (final is not None or awaiting) and self._row(run_id)['uncertain']:
             # The operator's reconciliation and resume complete a run awaiting its grade again.
             self._state(run_id, 'blocked', UNCERTAIN_AFTER_VERDICT if final is not None else UNCERTAIN_AWAITING,
@@ -2739,8 +2723,7 @@ class Controller:
                 if progress['device'].get('binding'):
                     db.execute('DELETE FROM bindings WHERE identity=? AND run_id=?', (_lease(progress['device']['binding']), run_id))
                 self._claim_binding(recovery['receipt']['binding'], run_id, db)
-                db.execute('DELETE FROM pending_effects WHERE run_id=?', (run_id,))
-                db.execute('UPDATE runs SET uncertain=0 WHERE id=?', (run_id,))
+                self.dispatch_record.resolve_by_replacement(run_id, db)
             db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?)', (assignment['id'],run_id,assignment['stage'],_json(handoff),time.time()))
             db.execute('UPDATE assignments SET state=? WHERE id=?', ('accepted', assignment['id']))
             if revise:

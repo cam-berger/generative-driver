@@ -716,6 +716,64 @@ class ReplaceTests(ScriptedCase):
         self.assertNotIn('kind', device.descriptor)
 
 
+    def run_with_a_failed_write(self, then=None):
+        """The result of a supplied run whose probe worker wrote to the device and got `ERR` where the model expects
+        `OK`: a write that reached the device and failed for the model. `then(worker)` runs after the write."""
+        written = gauge_model()
+        written['operations']['zero'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+            _exchange('Z\n', 'ack', expect={'equals_hex': b'OK\n'.hex()})]}
+        written['provenance'].append({'item': 'operations.zero', 'source': 'the supplied firmware'})
+
+        def failing(worker):
+            context = worker.task['context']
+            Path(context['capabilities_output']).write_text(json.dumps(MAPPING), encoding='utf-8')
+            worker.failed = worker.tool('interface_execute', model_dir=context['model_dir'], operation='zero')
+            if then:
+                then(worker)
+        return self.run_with({'acquire': acquire, 'interpret': lambda worker: worker.write('model.json', written),
+                              'probe': failing}, **self.supplied(effects=['read', 'write']), max_revisions=0)
+
+    def test_01_B15_the_verified_replacement_resolves_the_runs_pending_effect_with_the_stages_handoff(self):
+        result = self.run_with_a_failed_write()
+        [write] = [event for event in self.events('tool.finished') if event['data']['name'] == 'interface_execute']
+        self.assertEqual((write['data']['effectful'], write['data']['effects_reconciled']), (True, False), write)
+        # The replacement resolved the write's pending effect and cleared the run's flag.
+        self.assertIs(result['uncertain_effect'], False)
+        self.assertEqual(self.controller.dispatch_record.pending(self.run['run_id']), [])
+        # It did so with the probe stage's handoff: the two events were written one after the other.
+        [recovered] = self.events('emulator.recovered')
+        [accepted] = [event for event in self.events('stage.accepted') if event['data']['stage'] == 'probe']
+        self.assertEqual(recovered['id'], accepted['id'] + 1)
+        # The event keeps its fields.
+        self.assertEqual(sorted(recovered['data']), ['assignment_id', 'receipt', 'repairs', 'revision',
+                                                     'unresolved_dispatch_ids', 'unresolved_evidence_ids'])
+        self.assertEqual((recovered['data']['unresolved_dispatch_ids'], recovered['data']['unresolved_evidence_ids']),
+                         ([write['data']['dispatch_id']], [str(write['id'])]))
+        self.assertEqual(result['emulator_recoveries'], [recovered['data']])
+
+    def test_01_B15_a_replacement_whose_commit_fails_resolves_nothing(self):
+        def failing_commit(worker):
+            controller = worker.controller
+            write_event = controller._event
+
+            def event(run_id, kind, payload, db=None):
+                if kind == 'emulator.recovered':
+                    raise RuntimeError('scripted failure of the recovery commit')
+                return write_event(run_id, kind, payload, db)
+            replaced = patch.object(controller, '_event', event)
+            replaced.start()
+            self.addCleanup(replaced.stop)
+        result = self.run_with_a_failed_write(failing_commit)
+        self.assertIn('scripted failure of the recovery commit', result['reason'])
+        # Neither the handoff nor the resolution was committed: the write stays a pending effect of the run.
+        self.assertEqual([handoff['stage'] for handoff in result['accepted_handoffs']], ['acquire', 'interpret'])
+        self.assertEqual(self.events('emulator.recovered'), [])
+        self.assertIs(result['uncertain_effect'], True)
+        [write] = [event for event in self.events('tool.started') if event['data']['name'] == 'interface_execute']
+        pending = self.controller.dispatch_record.pending(self.run['run_id'])
+        self.assertEqual([effect['dispatch_id'] for effect in pending], [write['id']])
+
+
 class VerdictTests(FullRunCase):
     """A supplied run waits for its client's verdict (06-B10)."""
 
@@ -752,6 +810,43 @@ class VerdictTests(FullRunCase):
                  'diff': [{'id': 'reads the level', 'reason': 'the level differs'}]}
         with self.assertRaisesRegex(ValueError, '^A different evaluation is already recorded for this run$'):
             post(other)
+
+
+class FailedCleanupTests(ScriptedCase):
+    """A failed cleanup marks nothing on a run that awaits its grade, and an uncertain effect still blocks it
+    (01-B17)."""
+
+    def awaiting(self, release):
+        """The result of a supplied run through all six stages whose release is `release(run_id, spec, run_dir)`."""
+        from generative_driver.configurator import Controller
+        with patch.object(Controller, '_release', side_effect=release):
+            return self.run_with(WORKERS, **self.supplied(self.device('device-' + str(len(self.homes)))))
+
+    def test_01_B17_a_failed_cleanup_leaves_a_run_that_awaits_its_grade_completed_and_not_uncertain(self):
+        def release(run_id, spec, run_dir):
+            raise RuntimeError('scripted release failure')
+        result = self.awaiting(release)
+        self.assertEqual((result['status'], result['outcome_category'], result['reason']),
+                         ('completed', 'completed', 'Frozen driver awaits independent evaluation'), result)
+        self.assertIs(result['uncertain_effect'], False)
+        self.assertEqual(result['progress']['equivalence'], 'pending')
+        self.assertEqual([event['data'] for event in self.events('cleanup.failed')],
+                         [{'reason': 'RuntimeError: scripted release failure'}])
+
+    def test_01_B17_a_run_uncertain_while_it_awaits_its_grade_is_blocked_whether_or_not_a_cleanup_failed(self):
+        for failed in (False, True):
+            with self.subTest(cleanup_failed=failed):
+                def release(run_id, spec, run_dir):
+                    with self.controller._db() as db:
+                        db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
+                    if failed:
+                        raise RuntimeError('scripted release failure')
+                    return []
+                result = self.awaiting(release)
+                self.assertEqual((result['status'], result['outcome_category'], result['reason']), (
+                    'blocked', 'safety', 'Outstanding effect is uncertain after fresh reuse; reconcile it, then '
+                                         'resume, and the frozen driver awaits its grade'), result)
+                self.assertEqual(len(self.events('cleanup.failed')), int(failed))
 
 
 class VerdictRefusalTests(ServiceCase):

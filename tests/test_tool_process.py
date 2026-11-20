@@ -443,8 +443,9 @@ class AbandonedTests(ChildProcessCase):
         self.assertTrue(self.ended(controller, run)['uncertain_effect'])
         with self.assertRaisesRegex(ValueError, 'Outstanding effect is uncertain'):
             controller.call('resume', run)
-        confirmed = controller.call('respond', {**run, 'message': 'The operator checked the device',
-                                                'effect_resolution': 'confirmed_safe'})
+        confirmed = controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+            'source': 'scripted operator', 'message': 'The operator checked the device',
+            'prior_execution_stopped': True}})
         self.assertFalse(confirmed['uncertain_effect'])
 
     def test_04_B8_a_tool_process_that_ends_without_a_result_is_abandoned_with_what_ended_it(self):

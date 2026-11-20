@@ -318,10 +318,9 @@ class FailureEventEntryTests(ControllerCase):
         # A write the runtime attributed to the model after it opened the device, as the configurator records one.
         call = {'stage': 'acquire', 'assignment_id': assignment['id'], 'name': 'interface_execute', 'effectful': True,
                 'actor': 'worker'}
+        started = controller.dispatch_record.begin(run_id, kind='run', name='interface_execute', actor='worker',
+                                                   effects=['write'], stage='acquire', assignment_id=assignment['id'])
         with controller._db() as db:
-            started = controller._event(run_id, 'tool.started', call, db)
-            db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)', (started, run_id, assignment['id'], 'worker'))
-            db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
             controller._event(run_id, 'tool.finished', {**call, 'ok': False, 'dispatch_id': str(started),
                 'effects_reconciled': False, 'result': {'schema': 'interface-result/1', 'ok': False,
                     'identity_verified': True, 'transport_open_attempted': True, 'transcript': [{'tx': '00'}],

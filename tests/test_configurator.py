@@ -2198,7 +2198,8 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         stopped = wait_stopped(controller, run)
                 self.assertEqual((stopped['status'], stopped['outcome_category']), ('blocked', 'safety'), stopped)
-                controller.call('respond', {**run, 'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'})
+                controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+                    'source': 'scripted operator', 'message': 'Checked the device', 'prior_execution_stopped': True}})
                 with controller._db() as db:
                     # The wall-clock budget has lapsed since the verdict.
                     db.execute('UPDATE runs SET created=created-? WHERE id=?', (10 * 86400, run['run_id']))
@@ -2303,7 +2304,9 @@ class FinalVerdictTests(unittest.TestCase):
                             self.assertIn('uncertain', recovered['reason'])
                             with self.assertRaisesRegex(ValueError, 'uncertain'):
                                 reopened.call('resume', run)
-                            reopened.call('respond', {**run, 'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'})
+                            reopened.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+                                'source': 'scripted operator', 'message': 'Checked the device',
+                                'prior_execution_stopped': True}})
                             resume_when_idle(self, reopened, run)
                             recovered = wait_stopped(reopened, run)
                         self.assertEqual((recovered['status'], recovered['outcome_category'], recovered['reason']),
@@ -3607,27 +3610,206 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_recovery_preserves_uncertainty_until_operator_reconciles_it(self):
+    # The operator's statement that resolves an uncertain effect, without its `effect_resolution`.
+    STATEMENT = {'source': 'scripted operator', 'message': 'The earlier execution has stopped; the device is safe.',
+                 'prior_execution_stopped': True}
+    INCOMPLETE = ('Resolving an uncertain effect requires effect_resolution "confirmed_safe" and an observation with '
+                  'source, message and prior_execution_stopped true')
+
+    def _idle_run(self, controller, **start):
+        """A running run whose acquire worker idles, and that worker's assignment."""
+        run = controller.call('start', {'goal': 'Scripted statement contract', **start,
+            'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(20)']}})
+        until = time.monotonic() + 5
+        while time.monotonic() < until:
+            assignment = next((e['data'] for e in controller.call('events', run)['events']
+                               if e['kind'] == 'stage.assigned'), None)
+            if assignment and controller.call('status', run)['status'] == 'running':
+                return run, assignment
+            time.sleep(.02)
+        self.fail('no running acquire assignment')
+
+    @staticmethod
+    def _pending_write(controller, run, assignment):
+        """The id of a write dispatched for the run's worker that has not ended: its pending effect stays."""
+        return controller.dispatch_record.begin(run['run_id'], kind='run', name='interface_execute', actor='worker',
+            effects=['write'], stage=assignment['stage'], assignment_id=assignment['id'])
+
+    @staticmethod
+    def _responses(controller, run):
+        return [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'operator.response']
+
+    def test_01_B12_recovery_preserves_uncertainty_only_for_a_pending_effect_until_the_operator_resolves_it(self):
+        from generative_driver.configurator import Controller
+        for pending in (False, True):
+            with self.subTest(pending_effect=pending), tempfile.TemporaryDirectory() as directory:
+                controller=Controller(Path(directory))
+                # The run is granted a write. Only a write that was dispatched and has not ended leaves a pending
+                # effect.
+                run,assignment=self._idle_run(controller,effects=['read','write'])
+                dispatch=self._pending_write(controller,run,assignment) if pending else None
+                self.assertEqual(controller.call('status',run)['uncertain_effect'],pending)
+                controller.close()
+                reopened=Controller(Path(directory))
+                try:
+                    state=reopened.call('status',run)
+                    self.assertEqual((state['status'],state['reason']),
+                                     ('blocked','Configurator restarted; explicit resume required'))
+                    # The restart leaves the flag as it was.
+                    self.assertEqual(state['uncertain_effect'],pending)
+                    events=reopened.call('events',run)['events']
+                    self.assertEqual([e['data'] for e in events if e['kind']=='run.recovered'],
+                                     [{'uncertain_effect':pending}])
+                    self.assertEqual(len([e for e in events if e['kind']=='stage.assigned']),1)
+                    if pending:
+                        with self.assertRaisesRegex(ValueError,'uncertain'):
+                            reopened.call('resume',run)
+                        reconciled=reopened.call('respond',{**run,'observation':{
+                            **self.STATEMENT,'effect_resolution':'confirmed_safe'}})
+                        self.assertFalse(reconciled['uncertain_effect'])
+                        self.assertEqual(self._responses(reopened,run)[0]['resolved_dispatch_ids'],[str(dispatch)])
+                    # Without a pending effect the run resumes with no statement.
+                    self.assertIn(reopened.call('resume',run)['status'],('queued','running'))
+                finally:
+                    reopened.close()
+
+    def test_01_B14_a_respond_with_an_incomplete_statement_is_refused_and_changes_nothing(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:
-            controller=Controller(Path(directory))
-            run=controller.call('start',{'goal':'Scripted recovery contract','effects':['read','write'],
-                'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}})
-            until=time.monotonic()+3
-            while time.monotonic()<until and controller.call('status',run)['status']!='running':
-                time.sleep(.01)
-            controller.close()
-            reopened=Controller(Path(directory))
+            controller = Controller(Path(directory))
             try:
-                state=reopened.call('status',run)
-                self.assertEqual(state['status'],'blocked')
-                self.assertTrue(state['uncertain_effect'])
-                with self.assertRaisesRegex(ValueError,'uncertain'):
-                    reopened.call('resume',run)
-                self.assertEqual(len([e for e in reopened.call('events',run)['events'] if e['kind']=='stage.assigned']),1)
-                reconciled=reopened.call('respond',{**run,'observation':{'source':'scripted operator','effect_resolution':'confirmed_safe','evidence':'No device attached in contract test'}})
-                self.assertFalse(reconciled['uncertain_effect'])
-                self.assertIn(reopened.call('resume',run)['status'],('queued','running'))
+                run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                dispatch = self._pending_write(controller, run, assignment)
+                # The caller's own refusal comes before the check of the statement.
+                with self.assertRaisesRegex(ValueError, 'Respond only while the run is stopped'):
+                    controller.call('respond', {**run, 'message': 'Checked', 'effect_resolution': 'confirmed_safe'})
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                stated = {**self.STATEMENT, 'effect_resolution': 'confirmed_safe'}
+                for label, params in (
+                        ('a message alone', {'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'}),
+                        ('another resolution', {'observation': self.STATEMENT, 'effect_resolution': 'probably_safe'}),
+                        ('another resolution in the observation',
+                         {'observation': {**self.STATEMENT, 'effect_resolution': 'unknown'}}),
+                        ('no source', {'observation': {key: stated[key] for key in stated if key != 'source'}}),
+                        ('a source that is no text', {'observation': {**stated, 'source': 7}}),
+                        ('a blank message', {'observation': {**stated, 'message': ' '}}),
+                        ('execution not stated as stopped',
+                         {'observation': {**stated, 'prior_execution_stopped': 'yes'}})):
+                    with self.subTest(statement=label):
+                        with self.assertRaises(ValueError) as refused:
+                            controller.call('respond', {**run, **params})
+                        self.assertEqual(str(refused.exception), self.INCOMPLETE)
+                self.assertTrue(controller.call('status', run)['uncertain_effect'])
+                self.assertEqual(self._responses(controller, run), [])
+                pending = controller.dispatch_record.pending(run['run_id'])
+                self.assertEqual([effect['dispatch_id'] for effect in pending], [dispatch])
+                with self.assertRaisesRegex(ValueError, 'uncertain'):
+                    controller.call('resume', run)
+            finally:
+                controller.close()
+
+    def test_01_B14_a_complete_statement_resolves_the_runs_pending_effects_and_its_event_lists_them(self):
+        from generative_driver.configurator import Controller
+        # `respond` reads the resolution from its parameters or, when absent there, from the observation.
+        for where, params in (('parameters', {'observation': self.STATEMENT, 'effect_resolution': 'confirmed_safe'}),
+                              ('observation',
+                               {'observation': {**self.STATEMENT, 'effect_resolution': 'confirmed_safe'}})):
+            with self.subTest(resolution_in=where), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory))
+                try:
+                    run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                    dispatch = self._pending_write(controller, run, assignment)
+                    controller.call('cancel', run)
+                    self.assertTrue(wait_stopped(controller, run)['uncertain_effect'])
+                    resolved = controller.call('respond', {**run, **params})
+                    self.assertFalse(resolved['uncertain_effect'])
+                    [response] = self._responses(controller, run)
+                    self.assertEqual((response['effect_resolution'], response['resolved_dispatch_ids']),
+                                     ('confirmed_safe', [str(dispatch)]))
+                    self.assertEqual(response['observation'], params['observation'])
+                    self.assertEqual(controller.dispatch_record.pending(run['run_id']), [])
+                    self.assertIn(resume_when_idle(self, controller, run)['status'], ('queued', 'running'))
+                finally:
+                    controller.close()
+
+    def test_01_B14_a_complete_statement_on_a_run_that_is_not_uncertain_is_accepted_and_lists_no_dispatch(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, _ = self._idle_run(controller)
+                controller.call('cancel', run)
+                self.assertFalse(wait_stopped(controller, run)['uncertain_effect'])
+                accepted = controller.call('respond', {**run, 'observation': self.STATEMENT,
+                                                       'effect_resolution': 'confirmed_safe'})
+                self.assertFalse(accepted['uncertain_effect'])
+                [response] = self._responses(controller, run)
+                self.assertEqual((response['effect_resolution'], response['resolved_dispatch_ids']),
+                                 ('confirmed_safe', []))
+            finally:
+                controller.close()
+
+    def test_01_B14_a_respond_that_states_no_resolution_stays_an_operator_message_and_resolves_nothing(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                dispatch = self._pending_write(controller, run, assignment)
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                # The statement's fields alone state no resolution: the observation is kept as the operator's message.
+                for params in ({'message': 'The cable was loose'}, {'observation': self.STATEMENT}):
+                    self.assertTrue(controller.call('respond', {**run, **params})['uncertain_effect'])
+                first, second = self._responses(controller, run)
+                self.assertEqual(first, {'message': 'The cable was loose', 'observation': None,
+                                         'effect_resolution': None})
+                self.assertEqual((second['observation'], second['effect_resolution']), (self.STATEMENT, None))
+                self.assertNotIn('resolved_dispatch_ids', second)
+                pending = controller.dispatch_record.pending(run['run_id'])
+                self.assertEqual([effect['dispatch_id'] for effect in pending], [dispatch])
+            finally:
+                controller.close()
+
+    def test_01_B16_a_flag_an_earlier_version_set_on_a_run_stays_until_the_statement_which_lists_no_dispatch(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._idle_run(controller)
+                with controller._db() as db:
+                    # As an earlier version left it: the flag is set and no pending effect is recorded.
+                    db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['run_id'],))
+                self.assertEqual(controller.dispatch_record.pending(run['run_id']), [])
+                # The end of a read does not clear it.
+                with patch('generative_driver.toolkit.call_tool', return_value={'available': True, '_exit': 0}):
+                    controller.call('tool', {**run, 'assignment_id': assignment['id'],
+                                             'name': 'acquire_firmware_artifact', 'arguments': {}})
+                [finished] = [e['data'] for e in controller.call('events', run)['events']
+                              if e['kind'] == 'tool.finished']
+                self.assertEqual((finished['ok'], finished['effectful']), (True, False), finished)
+                self.assertTrue(controller.call('status', run)['uncertain_effect'])
+            finally:
+                controller.close()
+            # Neither does a restart, nor a cancellation.
+            reopened = Controller(Path(directory))
+            try:
+                state = reopened.call('status', run)
+                self.assertEqual((state['status'], state['uncertain_effect']), ('blocked', True), state)
+                recovered = [e['data'] for e in reopened.call('events', run)['events'] if e['kind'] == 'run.recovered']
+                self.assertEqual(recovered, [{'uncertain_effect': True}])
+                cancelled = reopened.call('cancel', run)
+                self.assertEqual((cancelled['status'], cancelled['uncertain_effect']), ('cancelled', True), cancelled)
+                with self.assertRaisesRegex(ValueError, 'uncertain'):
+                    reopened.call('resume', run)
+                resolved = reopened.call('respond', {**run, 'observation': self.STATEMENT,
+                                                     'effect_resolution': 'confirmed_safe'})
+                self.assertFalse(resolved['uncertain_effect'])
+                [response] = self._responses(reopened, run)
+                self.assertEqual(response['resolved_dispatch_ids'], [])
+                self.assertIn(resume_when_idle(self, reopened, run)['status'], ('queued', 'running'))
             finally:
                 reopened.close()
 

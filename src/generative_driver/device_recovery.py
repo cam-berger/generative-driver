@@ -42,9 +42,10 @@ def diagnostic_faults(finishes, assignment):
     return faults
 
 
-def unresolved_outcomes(db, run_id, assignment):
-    """Attribute every pending effect to exactly one trusted dispatch completion."""
-    pending = db.execute('SELECT * FROM pending_effects WHERE run_id=? ORDER BY dispatch_id',(run_id,)).fetchall()
+def unresolved_outcomes(record, db, run_id, assignment):
+    """Attribute every pending effect to exactly one trusted dispatch completion. `record` is the dispatch record
+    that holds the run's pending effects."""
+    pending = record.pending(run_id, db)
     rows = db.execute("SELECT seq,kind,payload FROM events WHERE run_id=? AND kind IN ('tool.started','tool.finished') ORDER BY seq",(run_id,)).fetchall()
     starts = {row['seq']:json.loads(row['payload']) for row in rows if row['kind']=='tool.started'}
     finishes = [(row['seq'],json.loads(row['payload'])) for row in rows if row['kind']=='tool.finished']
@@ -102,7 +103,7 @@ def reconcile(controller, run_id, spec, assignment, run_dir, progress):
         lock = controller._operations.setdefault(run_id, threading.RLock())
     with lock, controller._active_operation(run_id):
         with controller._db() as db:
-            category, failed, dispatches = unresolved_outcomes(db,run_id,assignment)
+            category, failed, dispatches = unresolved_outcomes(controller.dispatch_record,db,run_id,assignment)
             allowed = failed and category == 'model' and bool(spec.get('device'))
             if not allowed:
                 return {'stop':{'category':'safety','reason':'Outstanding effect requires operator reconciliation'}}

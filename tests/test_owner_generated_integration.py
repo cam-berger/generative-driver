@@ -206,8 +206,14 @@ class OwnerGeneratedTests(unittest.TestCase):
             start={'stage':'reuse','assignment_id':'reuse','actor':'worker','name':'samp1_write','effectful':True,
                 'connected':True,'argument_sha256':{'package_dir':'d'*64}}
             with owner._db() as db:
-                dispatch=owner._event('run','tool.started',start,db)
-                db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch,'run','reuse','worker'))
+                # The run and its assignment as their rows hold them, so that the record starts the dispatch.
+                db.execute('INSERT INTO runs(id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?)',
+                    ('run','{}','running','reuse',time.time(),time.time()))
+                db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
+                    ('reuse','run','reuse','active',json.dumps(assignment),time.time()))
+            dispatch=owner.dispatch_record.begin('run',kind='run',name='samp1_write',actor='worker',effects=['write'],
+                stage='reuse',assignment_id='reuse',facts={key:start[key] for key in ('connected','argument_sha256')})
+            with owner._db() as db:
                 proof={'schema':'driver-mcp-call/1','tool_name':'samp1_write','session_id':'run',
                     'assignment_id':'reuse','dispatch_id':str(dispatch),'package_sha256':'d'*64,
                     **{k:v for k,v in configured.items() if k!='package_dir'}}
@@ -216,11 +222,11 @@ class OwnerGeneratedTests(unittest.TestCase):
                     'error':{'fault':'model','code':'response_mismatch'}}
                 finish={**start,'result':result,'ok':False,'dispatch_id':str(dispatch),'effects_reconciled':False}
                 identifier=owner._event('run','tool.finished',finish,db)
-                self.assertEqual(unresolved_outcomes(db,'run',assignment)[0],'model')
+                self.assertEqual(unresolved_outcomes(owner.dispatch_record,db,'run',assignment)[0],'model')
                 for changes in ({'error':{'fault':'host'}},{'requested_command_dispatched':False},
                                 {'mcp':{**proof,'manifest_sha256':'f'*64}}):
                     db.execute('UPDATE events SET payload=? WHERE seq=?',(json.dumps({**finish,'result':{**result,**changes}}),identifier))
-                    self.assertNotEqual(unresolved_outcomes(db,'run',assignment)[0],'model')
+                    self.assertNotEqual(unresolved_outcomes(owner.dispatch_record,db,'run',assignment)[0],'model')
 
     def test_01_B4_the_recovery_takes_the_faults_from_the_reading_and_holds_no_copy_of_their_rule(self):
         import inspect

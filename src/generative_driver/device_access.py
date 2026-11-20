@@ -31,16 +31,21 @@ class DeviceAccess:
             db.execute('''CREATE TABLE IF NOT EXISTS device_cancellations (
                 owner_id TEXT NOT NULL, request_id TEXT NOT NULL, result TEXT NOT NULL,
                 PRIMARY KEY(owner_id, request_id))''')
-            interrupted = db.execute('''SELECT DISTINCT session_id FROM device_invocations
-                                        JOIN device_sessions ON device_sessions.id=session_id
-                                        WHERE result IS NULL''').fetchall()
-            for invocation in interrupted:
-                session_id = invocation['session_id']
-                db.execute("UPDATE device_sessions SET status='blocked',uncertain=1,updated=? WHERE id=?",
+            unfinished = db.execute('''SELECT session_id,dispatch_id,uncertain FROM device_invocations
+                                       JOIN device_sessions ON device_sessions.id=session_id
+                                       WHERE result IS NULL AND status!='closed' ''').fetchall()
+            abandoned = {(event['run_id'], json.loads(event['payload']).get('dispatch_id')) for event in db.execute(
+                "SELECT run_id,payload FROM events WHERE kind='tool.abandoned'")} if unfinished else set()
+            # An invocation was in flight when the owner stopped if it has no result and its dispatch was not
+            # recorded as abandoned. Its session is blocked, and is as uncertain as it was.
+            interrupted = {invocation['session_id']: invocation['uncertain'] for invocation in unfinished
+                           if (invocation['session_id'], str(invocation['dispatch_id'])) not in abandoned}
+            for session_id, uncertain in interrupted.items():
+                db.execute("UPDATE device_sessions SET status='blocked',updated=? WHERE id=?",
                            (time.time(), session_id))
                 owner._event(session_id, 'device.recovered', {
                     'reason': 'Owner restarted with an unfinished invocation; confirm prior execution has stopped before reconciliation',
-                    'uncertain_effect': True}, db)
+                    'uncertain_effect': bool(uncertain)}, db)
 
     @contextmanager
     def lease(self, owner_id):
@@ -69,9 +74,13 @@ class DeviceAccess:
         if prior and prior['run_id'] != owner_id:
             key = prior['run_id']
             row = db.execute('SELECT status,uncertain FROM runs WHERE id=?', (key,)).fetchone()
+            on = ('queued', 'running', 'open')
             if row is None:
                 row = db.execute('SELECT status,uncertain FROM device_sessions WHERE id=?', (key,)).fetchone()
-            if row and (row['status'] in ('queued', 'running', 'open') or row['uncertain']
+                # The call that blocked a session may still run in a child of an earlier owner: the session, and
+                # only a session, holds its lease until it is closed.
+                on += ('blocked',)
+            if row and (row['status'] in on or row['uncertain']
                         or key in self.owner._workers or key in self.owner._inflight):
                 raise SafetyError(refusal)
         db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)', (identity, owner_id))
@@ -409,8 +418,11 @@ class DeviceAccess:
                 raise ValueError('Unknown device session')
             if close and (row['uncertain'] or session_id in self.owner._inflight):
                 raise ValueError('Cannot close a session with an active invocation or uncertain effect')
+            # A cancelled session that is blocked stays blocked, so that it keeps its lease until it is closed, and one
+            # that is closed stays closed, so that no restart blocks it again.
             db.execute('UPDATE device_sessions SET status=?,cancelled=1,updated=? WHERE id=?',
-                       ('closed' if close else 'cancelled', time.time(), session_id))
+                       ('closed' if close else row['status'] if row['status'] in ('blocked', 'closed') else 'cancelled',
+                        time.time(), session_id))
             if close:
                 db.execute('DELETE FROM bindings WHERE run_id=?', (session_id,))
             self.owner._event(session_id, 'device.closed' if close else 'device.cancelled', {}, db)
@@ -419,21 +431,18 @@ class DeviceAccess:
     def reconcile(self, params):
         session_id = params['session_id']
         observation = params.get('observation')
-        if (params.get('effect_resolution') != 'confirmed_safe' or type(observation) is not dict
-                or observation.get('prior_execution_stopped') is not True
-                or not isinstance(observation.get('source'), str) or not observation['source'].strip()
-                or not isinstance(observation.get('message'), str) or not observation['message'].strip()):
-            raise ValueError('Reconciliation requires confirmed_safe and a sourced observation confirming prior execution stopped')
         with self.owner._lock, self.owner._db() as db:
             row, spec = self._session(session_id)
             if row['status'] == 'closed' or not row['uncertain']:
                 raise ValueError('Only an owned session with an uncertain outcome can be reconciled')
             if session_id in self.owner._inflight:
                 raise ValueError('Prior invocation is still running; reconcile only after it stops')
-            pending = db.execute('SELECT dispatch_id FROM pending_effects WHERE run_id=?', (session_id,)).fetchall()
+            resolved = self.owner.dispatch_record.resolve_by_operator(
+                session_id, kind='session', effect_resolution=params.get('effect_resolution'), observation=observation,
+                db=db)
             evidence = self.owner._event(session_id, 'device.reconciled', {
                 'observation': observation, 'effect_resolution': 'confirmed_safe',
-                'resolved_dispatch_ids': [str(item['dispatch_id']) for item in pending]}, db)
+                'resolved_dispatch_ids': resolved}, db)
             interrupted = db.execute('SELECT * FROM device_invocations WHERE session_id=? AND result IS NULL',
                                      (session_id,)).fetchall()
             for invocation in interrupted:
@@ -444,8 +453,7 @@ class DeviceAccess:
                         'message': 'Original outcome remains unknown; operator confirmed execution stopped and inspected the device.'}}
                 db.execute('UPDATE device_invocations SET result=? WHERE session_id=? AND request_id=?',
                            (json.dumps(result), session_id, invocation['request_id']))
-            db.execute('DELETE FROM pending_effects WHERE run_id=?', (session_id,))
-            db.execute('UPDATE device_sessions SET uncertain=0,status=?,updated=? WHERE id=?',
+            db.execute('UPDATE device_sessions SET status=?,updated=? WHERE id=?',
                        ('cancelled' if row['cancelled'] else 'open', time.time(), session_id))
         return self.status(params)
 

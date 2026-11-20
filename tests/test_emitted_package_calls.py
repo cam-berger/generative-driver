@@ -44,12 +44,10 @@ def emitted_example(output):
 
 
 class BenchmarkPackageGateTests(unittest.TestCase):
-    def test_package_execute_treats_read_as_implicit_and_preserves_write_and_actuate(self):
-        # A package call on the device a case's bench harness provides: the stage-assigned copy, over the assigned
-        # binding with the assigned grants. Read is implicit; write and actuate need their grants, and a refused effect
-        # reaches no device.
-        from generative_driver.supplied.stages import package_call
-        from generative_driver.configurator import digest
+    def test_a_package_call_treats_read_as_implicit_and_preserves_write_and_actuate(self):
+        # A call on a package through the installed runtime, over a binding with grants. Read is implicit; write and
+        # actuate need their grants, and a refused effect reaches no device.
+        from interface_runtime.driver import execute_package
         received = []
         class DeviceFixture(socketserver.StreamRequestHandler):
             def handle(self):
@@ -78,13 +76,8 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             emitted = call_tool('emit_package', {'run_dir': str(root/'build'), 'model_dir': str(model_dir), 'probe': probe['probe']})
             package = Path(emitted['package_dir'])
             binding = {'host': '127.0.0.1', 'port': server.server_address[1]}
-            run_dir = root/'run'; (run_dir/'supplied').mkdir(parents=True)
-            (run_dir/'supplied/state.json').write_text(json.dumps({
-                'package_copies': {'reuse': str(package)}, 'package_attempts': {'reuse': 'fixture-attempt'},
-                'package_sha256': digest(package)}))
             def call(operation, grants):
-                return package_call(run_dir, 'reuse', {'package_dir': str(package), 'operation': operation,
-                                                   'parameters': {}, 'binding': binding, 'allow_effects': grants})()
+                return execute_package(package, operation, {}, binding=binding, allow_effects=grants)
             for operation in ('measure', 'write', 'actuate'):
                 result = call(operation, ['read', 'write', 'actuate'])
                 self.assertTrue(result['ok'], result)
@@ -97,7 +90,7 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertEqual(refused['transcript'], [])
             self.assertEqual(len(received), before)
 
-    def test_emit_uses_accepted_bytes_and_requires_matching_current_executable_package(self):
+    def test_emit_uses_accepted_bytes_and_requires_a_package_of_the_accepted_model(self):
         from generative_driver.configurator import digest
         # The configurator's record that an emit_package of the assignment built these package bytes, so the package
         # reaches the emit_check gate this test is about.
@@ -109,7 +102,7 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             model = accepted/'0-model.json'
             probe = accepted/'1-interface-1.json'
             shutil.copy2(root/'smoke/model/model.json', model)
-            shutil.copy2(Path(smoke['package'])/'probe.json', probe)
+            shutil.copy2(Path(smoke['package'])/'evidence/fictional_demonstration.probe.json', probe)
             handoffs = [{'stage':'probe','artifacts':[{'path':str(path),
                 'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'kind':'file'} for path in (model, probe)]}]
             ws = root/'worker'
@@ -121,7 +114,7 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             checked = observe_stage('emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual([Path(a).name for a in checked['artifacts']],['package'],checked)
             self.assertEqual([(c['name'],c['passed']) for c in checked['checks']],[('package_integrity_and_replay',True)])
-            # A valid, current package for different model bytes (emit_package run on another model) cannot replace
+            # A valid package for different model bytes (emit_package run on another model) cannot replace
             # the model accepted by the preceding stage, even if its replay passes: emit_check rejects it.
             other = root/'other-model'; other.mkdir()
             changed = json.loads(model.read_text(encoding='utf-8'))
@@ -132,21 +125,6 @@ class BenchmarkPackageGateTests(unittest.TestCase):
             self.assertTrue(result['ok'],result)
             emitted = call_tool('emit_package',{'run_dir':str(root/'other'),'model_dir':str(other),'probe':result['probe']})
             shutil.rmtree(package); shutil.copytree(emitted['package_dir'],package)
-            rejected = observe_stage('emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
-            self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
-            self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)
-            # Historical runtimes may have valid integrity but cannot satisfy the
-            # benchmark's executed-replay gate.
-            shutil.rmtree(package); shutil.copytree(smoke['package'],package)
-            engine = package/'interface_runtime/engine.py'
-            with engine.open('a',encoding='utf-8') as stream: stream.write('\n# historical runtime\n')
-            manifest = json.loads((package/'manifest.json').read_text(encoding='utf-8'))
-            manifest['files']['interface_runtime/engine.py'] = hashlib.sha256(engine.read_bytes()).hexdigest()
-            (package/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
-            (package/'manifest.sha256').write_text(hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest(),encoding='utf-8')
-            integrity = call_tool('emit_check',{'run_dir':str(root/'historical-check'),'package_dir':str(package)})
-            self.assertTrue(integrity['ok'],integrity)
-            self.assertFalse(integrity['runtime_current'],integrity)
             rejected = observe_stage('emit',root/'run',ws,{'status':'completed'},accepted=handoffs,options=built(package))
             self.assertEqual((rejected['artifacts'],rejected['checks'][0]['passed']),([],False),rejected)
             self.assertEqual(len(rejected['checks'][0]['rejected']),1,rejected)

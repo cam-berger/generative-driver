@@ -129,12 +129,17 @@ async def _emit(tools, task, workspace):
 
 
 async def _reuse(tools, task, workspace):
+    from interface_runtime.catalog import render_mcp
+    from interface_runtime.package import the_driver, verify_package
     package = next(Path(path) for path in task['inputs'] if (Path(path) / 'manifest.json').is_file())
-    catalog = json.loads((package / 'mcp-tools.json').read_text(encoding='utf-8'))
-    identity = json.loads((package / 'driver/model.json').read_text(encoding='utf-8'))['identity']['operation']
-    name = sorted(tool for tool, operation in catalog['operations'].items() if operation != identity)[0]
+    checked = verify_package(package)
+    if not checked['ok']:
+        raise _StepFailed('the package given to reuse is refused: ' + str(checked['defects']))
+    identity = the_driver(checked)[1]['identity']['operation']
+    name = sorted(tool for tool, behind in render_mcp(checked['drivers'])['operations'].items()
+                  if behind['operation'] != identity)[0]
     await tools.call(name, {})
-    return 'Called ' + name + ' through the generated catalog', []
+    return 'Called ' + name + ' through the generated tools', []
 
 
 _STAGE_WORK = {'acquire': _acquire, 'probe': _probe, 'ground': _probe, 'emit': _emit, 'reuse': _reuse}

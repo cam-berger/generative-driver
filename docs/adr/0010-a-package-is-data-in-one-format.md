@@ -1,6 +1,6 @@
 # 10. A package is data in one format
 
-Status: Accepted, 2026-11-19. Not built yet; the build removes this sentence.
+Status: Accepted, 2026-11-19.
 
 A package stated its driver three times: the interface model a worker wrote, and a contract and a protocol derived from it. A rendered MCP catalog was a fourth view, and five checks kept them equal. A package also carried a copy of the tool's runtime, 190 of 228 KB in a real one, which the tool itself did not run. ADR 0002 had made the contract and the protocol files of their own, and ADR 0008 had kept every package format ever written readable. The owner decided otherwise:
 

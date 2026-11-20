@@ -1,6 +1,6 @@
 # Accepted design
 
-Current runs use `assistive/1`: stage handoffs carry notes, device differences drive bounded repair, and one final equivalence verdict follows fresh reuse. The [amendment below](#assistive-protocol-amendment--2026-10-07) governs current behavior; the original design records the earlier gated protocol.
+Current runs use `assistive/1`: stage handoffs carry notes, device differences drive bounded repair, and one final equivalence verdict follows fresh reuse. The [amendment below](#assistive-protocol-amendment--2026-10-07) governs current behavior; the original design records the earlier gated protocol. The [section of 2026-11-19](#a-package-is-data--2026-11-19) says what a package holds, how it runs and how it is served.
 
 ## Original design — 2026-10-03
 
@@ -38,6 +38,8 @@ Blind interpretation receives its prepared inputs and generic tools. Fresh reuse
 Generic tools and skills ship to workers. The Codex plugin connects to the configurator through MCP. Follow [setup](setup.md) through runtime configuration and dependency checks before a device run.
 
 ## Driver contracts and generated MCP — 2026-10-28
+
+The section [A package is data](#a-package-is-data--2026-11-19) replaces the packaging this section describes: the formats, the files of a package and how a package is served.
 
 The [extension guide](extending-drivers-and-mcp.md) and [ADR 0002](adr/0002-driver-contract-and-generated-mcp.md) define the public driver contract, declarative protocol and supported application SDK. The contract supplies operation/field meanings, caveats and executable preconditions. Device-specific executable plugins remain outside the driver format; new behavior uses a shared runtime capability or a higher-level application tool.
 
@@ -85,3 +87,25 @@ flowchart LR
 - **Resume and readings.** A stopped run resumes a stage only on a device that answers, healthy, with the session and binding the run recorded; otherwise it stops for the operator until a client attaches a verified device with the run's evaluation token (`attach_device`), which the configurator checks against the hash of the run's firmware and the device's own status. A verdict is taken only for a `completed` run. Readings leave the device's provider as `instrument-observation/1` values and units; the run records the device's session, binding and recovery receipts.
 - **No stage verdicts.** No stage grades, records a stage verdict or ends a run with a frozen-final failure; runs recorded with that earlier terminal failure stay terminal.
 - **Limits of this protocol.** Workers are not read-isolated until a real sandbox exists: a worker running as the same user can read files outside its workspace, including the device control endpoint file, with which it could act on the device outside the configurator's record. The runs database stays readable. Nothing limits what a driver prints or a worker's disk or memory use. Effect grants bound the effects a model declares: only a register model's write steps and a USB control transfer's direction are checked against the request, so elsewhere a `read` label is the model author's claim, a probe or ground worker's own model included. A read-only grant does not show that the device was left unchanged, and an interrupted read is never held uncertain. A supplied device runs only inside each live call, probe included, and is paused between calls; probe objectives tell workers so.
+
+## A package is data — 2026-11-19
+
+[ADR 0010](adr/0010-a-package-is-data-in-one-format.md) records the decision. This section replaces the packaging of the section of 2026-10-28. Where the earlier sections speak of a register model, of code or a copy of the runtime in a package, of a package's own command line, or of a live test with `emit_test_live` as the measure of fresh reuse, this section replaces them too. The [extension guide](extending-drivers-and-mcp.md) shows the commands.
+
+**What a package holds.** A package is five files of data in the format `interface-package/3`, and no code:
+
+| File | What it holds |
+|---|---|
+| `README.md` | The documentation. |
+| `manifest.json` | The format, the name, the version, the drivers and a hash of each other file. |
+| `mcp.json` | The MCP side: the tools an agent is served, and an entry for an MCP client. |
+| `drivers/<driver>.json` | The driver of one controller: an interface model in the one format, `interface-model/7`. |
+| `evidence/<driver>.probe.json` | The probe record that driver wrote. |
+
+A driver is named after its device, a tool is `<driver>_<operation>`, and the server has the driver's name. The hash of `manifest.json` is the package's pin. The layout can hold one driver for each controller of a device; a run writes one. The tool renders `README.md` and `mcp.json` from the driver and the evidence, and the emit stage accepts a package only when both equal what the tool renders, so a worker cannot edit them. A package of an earlier format is refused, and the refusal names the format.
+
+**How it runs.** Every use of a package runs the installed runtime over the package's data: a managed session, a generated tool call in fresh reuse and `emit_test_live`. In a managed session the configurator holds a device for one package, outside a run. Each of the three runs an operation in a child process of the installed runtime, started the same way. Nothing in the package's folder is imported or run. Every call opens the connection for that call. Using a driver on another machine needs the tool installed there.
+
+**How it is served.** One command, `generative-driver serve PACKAGE --binding JSON`, checks the package, opens a managed session, serves the package's tools over MCP on its standard input and output, and closes the session when it ends. A read needs no flag; a write, an actuation or a reset is refused unless the command was started with `--allow-effect` for that effect. When the close is refused, because a call is still active or an effect is uncertain, the command leaves the session as it is for the operator to resolve. It never repeats a call and never closes by force.
+
+**Fresh reuse and the final verdict.** Fresh reuse gets the generated tools and no other tool, in a generic run and on a supplied device. Its objective names them and the package's `README.md`. The final verdict of a generic run judges fresh reuse by its generated tool calls: a call counts as a run of the frozen package when it is a generated tool call that the configurator dispatched for that package. The rule is otherwise that of the amendment of 2026-10-07.

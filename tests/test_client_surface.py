@@ -1,4 +1,4 @@
-"""What a client may import and read at version 4 of the client interface, and what the service no longer knows.
+"""What a client may import and read at version 5 of the client interface, and what the service no longer knows.
 
 The interface lists every tool name a client may import and names the records on disk a client on the same machine
 may read.
@@ -63,7 +63,7 @@ def backticked(text):
 
 
 class ImportListTests(unittest.TestCase):
-    """The interface is version 4, and its module lists what a client may import (08-B9)."""
+    """The interface is version 5, and its module lists what a client may import (08-B9)."""
 
     def test_08_B9_imports_maps_each_module_to_the_names_a_client_may_take_from_it(self):
         self.assertEqual(dict(client_interface.IMPORTS), IMPORTS)
@@ -414,10 +414,11 @@ class RecordsOnDiskTests(RecordsCase):
 
     def test_08_B11_a_line_of_package_events_has_the_keys_it_names(self):
         always = backticked(sentence('`supplied/package-events.jsonl` there holds'))
+        # Since version 5 the page names `mcp` among what every line has (Spec 03 of the package-format Run, 03-B17).
         self.assertEqual(always, ['supplied/package-events.jsonl', 'actor', 'stage', 'operation', 'revision',
-                                  'attempt_id', 'assignment_id', 'package_sha256', 'parameters', 'result'])
-        sometimes = backticked(sentence('A line has `mcp`'))
-        self.assertEqual(sometimes, ['mcp', 'observation', 'before_observation'])
+                                  'attempt_id', 'assignment_id', 'package_sha256', 'parameters', 'result', 'mcp'])
+        sometimes = backticked(sentence('A line has `observation`'))
+        self.assertEqual(sometimes, ['observation', 'before_observation'])
         rows = [json.loads(line) for line in self.lines]
         # One line for each call the fresh worker made on the driver package, through the package's own server, on a
         # device that offers readings.

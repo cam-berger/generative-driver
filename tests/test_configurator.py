@@ -271,7 +271,9 @@ class AssistiveHandoffTests(unittest.TestCase):
                 reopened.close()
 
     def test_generic_model_reaches_probe_and_emit_and_notes_travel_except_to_reuse(self):
+        import shutil
         from generative_driver.configurator import Controller, digest
+        from test_package_data import emitted
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage == 'interpret':
                 model = workspace / 'model'; model.mkdir()
@@ -280,8 +282,9 @@ class AssistiveHandoffTests(unittest.TestCase):
             if stage == 'probe':
                 return probed(workspace, assignment)
             if stage == 'emit':
-                package = workspace / 'package'; package.mkdir()
-                (package / 'manifest.json').write_text('{"fixture": "scripted package"}')
+                # A package the tool emits, so that the real preparation of reuse finds its generated tools.
+                package = shutil.copytree(emitted(Path(run_dir) / 'emitted-for-the-test')[0]['package_dir'],
+                                          workspace / 'package')
                 return {'ok': True, 'artifacts': [str(package)], 'checks': []}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, stage, run_dir, workspace, accepted):
@@ -1333,19 +1336,38 @@ class DeviceRepairTests(unittest.TestCase):
                 controller.close()
 
 
-def driver_package(root, name='package', operations=None, channel=None):
-    """A minimal emitted package: its manifest and a driver model with an identity operation and, unless `operations`
-    names others, one read. Each operation sends its own name to the device unless it names its steps. `channel` gives
-    the model a channel."""
-    package = Path(root) / name
-    (package / 'driver').mkdir(parents=True)
-    (package / 'manifest.json').write_text(json.dumps({'schema': 'interface-package/1', 'name': 'scripted'}))
-    operations = operations or {'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}}
-    (package / 'driver' / 'model.json').write_text(json.dumps({'schema': 'interface-model/7', 'identity': {'operation': 'identify'},
-        **({'channel': channel} if channel is not None else {}),
-        'operations': {name: {'steps': [{'op': 'exchange', 'tx': [{'text': name}]}], **operation}
-                       for name, operation in operations.items()}}))
-    return package
+def thermometer_package(root, name='package', operations=None, channel=None):
+    """The package the toolkit emits for the scripted thermometer, with replayed evidence of its identity, at
+    `root`/`name`. Unless `operations` names others, the model has the identity operation and one read. Each operation
+    it names sends its own name to the device unless it names its steps. `channel` gives the model a channel. Call it
+    where `toolkit.call_tool` is the real one."""
+    from generative_driver.toolkit import call_tool
+    model = thermometer_model()
+    rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
+    if operations is not None:
+        known = model['operations']
+        asks = lambda text: {'parameters': {}, 'outputs': {}, 'steps': [
+            {'op': 'exchange', 'tx': [{'text': text + '\n'}], 'rx': rx, 'timeout_ms': 1000}]}
+        model['operations'] = {operation: {**known.get(operation, asks(operation)), **given}
+                               for operation, given in operations.items()}
+        model['provenance'] = [{'item': 'operations.' + operation, 'source': 'scripted fixture'}
+                               for operation in operations]
+    if channel is not None:
+        model['channel'] = channel
+    source = Path(root) / (name + '-source')
+    (source / 'model').mkdir(parents=True)
+    (source / 'model' / 'model.json').write_text(json.dumps(model))
+    (source / 'replay.json').write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
+        {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+    grants = ['reset'] if model['channel'].get('resets_on_open') else []
+    probe = call_tool('probe_run', {'run_dir': str(source / 'run'), 'model_dir': str(source / 'model'), 'n': 1,
+                                    'operation': 'identify', 'replay': str(source / 'replay.json'),
+                                    'allow_effects': grants})
+    assert probe.get('ok'), probe
+    emitted = call_tool('emit_package', {'run_dir': str(source / 'run'), 'model_dir': str(source / 'model'),
+                                         'probe': probe['probe']})
+    assert emitted.get('ok'), emitted
+    return Path(shutil.move(emitted['package_dir'], Path(root) / name))
 
 
 def final_verdicts(controller, run):
@@ -1356,62 +1378,51 @@ def final_verdicts(controller, run):
 
 class FinalVerdictTests(unittest.TestCase):
     """Each run ends with one functional-equivalence verdict, recorded once after reuse. A generic run's verdict is
-    self-evidence: the emitted package passed emit_check replay and every live operation of fresh reuse succeeded."""
+    self-evidence: the emitted package passed emit_check replay and every live operation of fresh reuse succeeded,
+    one of them a generated tool call that ran a function of the frozen package
+    (docs/features/package-format/03-package.md, Behaviour 03-B6)."""
     BINDING = {'host': '127.0.0.1', 'port': 9}
+    # The generated tools of the scripted thermometer's package.
+    IDENTIFY, READ = 'scripted_thermometer_identify', 'scripted_thermometer_read_temperature'
 
-    # Scripted live tool results in the toolchain's own shapes. None of them reaches a device.
-    PASSED = {'schema': 'interface-live-test/1', 'ok': True, 'verdict': 'pass', 'passed': 1, 'failed': 0,
-              'results': [{'ok': True, 'operation': 'read_temperature', 'fault': None}], 'live_record': 'live-1.json', '_exit': 0}
-    MODEL_FAILURE = {'schema': 'interface-live-test/1', 'ok': False, 'verdict': 'fail', 'passed': 0, 'failed': 1,
-                     'results': [{'ok': False, 'operation': 'read_temperature', 'error_code': 'expect', 'fault': 'model'}],
-                     'live_record': 'live-1.json', '_exit': 1}
-    # interface.emit_test_live refused before any call and declared it: no transport opened and no live record.
-    TOOLKIT_REFUSAL = {'ok': False, 'error': 'ValueError: parameters name an operation that is not tested',
-                       'transport_open_attempted': False, '_exit': 1}
-    # The tool raised without declaring a refusal, as a host fault after the device was contacted would.
-    TOOLKIT_ERROR = {'_exit': 1, 'error': 'OSError: [Errno 28] No space left on device'}
-    # The plan stopped at a host fault (a timeout before identity): exit 4, inconclusive.
-    HOST_FAULT = {'schema': 'interface-live-test/1', 'ok': False, 'verdict': 'inconclusive', 'passed': 0, 'failed': 1,
-                  'results': [{'ok': False, 'operation': 'read_temperature', 'error_code': 'timeout', 'fault': 'host'}],
-                  'live_record': 'live-1.json', '_exit': 4}
-    # The runtime refused the operation before opening the transport.
-    PREFLIGHT_REFUSAL = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
-                         'units': {}, 'identity_verified': False, 'transcript': [], 'transport_open_attempted': False,
-                         'error': {'code': 'validation_error', 'message': 'argument violates parameter type or bounds',
-                                   'fault': 'operator'}, '_exit': 1}
+    # What the child process of a generated call gives, scripted in the runtime's own shape. None reaches a device.
+    PASSED = {'schema': 'driver-result/1', 'operation': 'read_temperature', 'ok': True,
+              'outputs': {'temperature_c': 21.5}, 'units': {'temperature_c': 'degC'}, 'identity_verified': True,
+              'transcript': [], 'warnings': [], 'transport_open_attempted': True}
     # The runtime opened the device and the reply contradicted the model.
-    EXECUTE_MODEL_FAILURE = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
-                             'units': {}, 'identity_verified': True, 'transcript': [], 'transport_open_attempted': True,
-                             'error': {'code': 'expect', 'message': 'reply differs from the model', 'fault': 'model'}, '_exit': 1}
-    # The package's own runtime refused the fresh agent's parameters before it opened the device (operator, exit 4),
-    # in the shape of the toolchain's per-call summary.
-    PACKAGE_REFUSAL = {'ok': False, 'passed': 0, 'failed': 1, 'not_run': [], 'verdict': 'inconclusive',
-                       'results': [{'operation': 'read_temperature', 'ok': False, 'returncode': 1, 'error_code': 'validation_error',
-                                    'error_message': 'arguments must match parameter names exactly', 'fault': 'operator',
-                                    'identity_verified': False, 'outputs': {}, 'units': {}, 'transport_open_attempted': False}],
-                       'live_record': 'live-1.json', '_exit': 4}
-    # One package call: its first operation passed on the device, then the package's own runtime refused the fresh
-    # agent's parameters for the second before it opened the device, so the plan stopped (operator, exit 4).
-    PARTLY_REFUSED = {'ok': False, 'passed': 1, 'failed': 1, 'not_run': [], 'verdict': 'inconclusive',
-                      'results': [{'operation': 'read_temperature', 'ok': True, 'returncode': 0, 'error_code': None,
-                                   'error_message': None, 'fault': None, 'identity_verified': True,
-                                   'outputs': {'temperature': 21.5}, 'units': {'temperature': 'C'}, 'transport_open_attempted': True},
-                                  {'operation': 'read_pressure', 'ok': False, 'returncode': 1, 'error_code': 'validation_error',
-                                   'error_message': 'arguments must match parameter names exactly', 'fault': 'operator',
-                                   'identity_verified': False, 'outputs': {}, 'units': {}, 'transport_open_attempted': False}],
-                      'live_record': 'live-1.json', '_exit': 4}
-    # The runtime ran the operation on the device and the reply matched the model.
-    EXECUTE_PASSED = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': True,
-                      'outputs': {'temperature': 21.5}, 'units': {'temperature': 'C'}, 'identity_verified': True,
-                      'transcript': [], 'transport_open_attempted': True, '_exit': 0}
-    NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
+    MODEL_FAILURE = {'schema': 'driver-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
+                     'units': {}, 'identity_verified': True, 'transcript': [], 'warnings': [],
+                     'transport_open_attempted': True,
+                     'error': {'code': 'expect', 'message': 'reply differs from the model', 'fault': 'model'}}
+    # The call stopped at a host fault after the transport opened (a timeout before identity).
+    HOST_FAULT = {'schema': 'driver-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
+                  'units': {}, 'identity_verified': False, 'transcript': [], 'warnings': [],
+                  'transport_open_attempted': True,
+                  'error': {'code': 'timeout', 'message': 'the device did not answer', 'fault': 'host'}}
+    # The runtime refused the fresh agent's parameters before it opened the transport.
+    REFUSAL = {'schema': 'driver-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {}, 'units': {},
+               'identity_verified': False, 'transcript': [], 'warnings': [], 'transport_open_attempted': False,
+               'error': {'code': 'validation_error', 'message': 'arguments must match parameter names exactly',
+                         'fault': 'operator'}}
+    # The child process of a call gave no result, as the gateway words it: a host fault that does not say whether the
+    # device was opened.
+    NO_RESULT = {'schema': 'driver-result/1', 'operation': 'read_temperature', 'ok': False, 'outputs': {},
+                 'warnings': [],
+                 'error': {'code': 'package_output', 'message': 'package printed no JSON result', 'fault': 'host'}}
+    NEVER_RAN = 'fresh reuse never ran a tool of the frozen package'
+
+    @classmethod
+    def passed(cls, operation):
+        """The result of `operation` that ran on the device and gave no output."""
+        return {**cls.PASSED, 'operation': operation, 'outputs': {}, 'units': {}}
 
     @contextlib.contextmanager
     def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None, operations=None,
                   channel=None, listen=None):
-        """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with scripted emit_package,
-        emit_check and live tools: the emit worker builds a package with emit_package through the gateway and the reuse
-        worker runs it once on the device.
+        """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with a scripted
+        emit_package and emit_check: the emit worker builds a package with emit_package through the gateway, and the
+        reuse worker calls the generated tool of the package's read once through the gateway. What the child process
+        of a generated call gives is scripted (`DeviceAccess.invoke_package`), so no call reaches a device.
 
         `replay` is the emit_check outcome ('passed', 'failed', or 'supplied' for a passed replay of exchanges the
         worker supplied). `listen`, when given, has the acquire worker
@@ -1419,26 +1430,28 @@ class FinalVerdictTests(unittest.TestCase):
         it is True. With 'unopened' the real listen tool runs on the bound port, which does not exist (with 'unfound' the
         gateway cannot resolve the bound port at all, and with 'no-pyserial' the host cannot list serial ports); with 'bad-arguments' it refuses the worker's own seconds; with
         'unrecorded' the dispatched listen never returns a result to record.
-        `calls` scripts the reuse worker instead: (tool, result) pairs called in order, where the tool is emit_test_live
-        of the frozen package or interface_execute of its model, and a result that is an exception is raised by the tool.
-        As the real tool does, an emit_test_live result that ran a snapshot names that snapshot's manifest digest, unless
-        the script names one.
-        A third element 'elsewhere' runs the tool on a changed copy the worker made in its workspace instead, and a third
-        element that is a dict adds those arguments. A result of None scripts a call the gateway refuses before dispatch.
-        `operations` and `channel` give the emitted package's model operations and channel (`driver_package`).
+        `calls` scripts the reuse worker instead: (operation, result) pairs, each a call of the generated tool of that
+        operation, in order. A result that is an exception is raised in place of the child's result, so the dispatch
+        ends without a recorded result. A result of None scripts a call the gateway refuses before dispatch.
+        `operations` and `channel` give the emitted package's model operations and channel (`thermometer_package`).
         `attempts` scripts several fresh-reuse attempts, one list of calls each: the runtime of every attempt but the
-        last exits with an error after its calls, so the run stops for the host until it is resumed."""
+        last exits with an error after its calls, so the run stops for the host until it is resumed.
+        Yields the names of the kit's tools the configurator ran."""
         import shutil
         from unittest.mock import patch
         from generative_driver import toolkit
         from generative_driver.configurator import digest
         real_check, real_call_tool, tools = controller._check, toolkit.call_tool, []
-        attempts = attempts or [list(calls) if calls is not None else [('emit_test_live', self.PASSED if live else self.MODEL_FAILURE)]]
+        attempts = attempts or [list(calls) if calls is not None else
+                                [('read_temperature', self.PASSED if live else self.MODEL_FAILURE)]]
         results = iter([call[1] for attempt in attempts for call in attempt if call[1] is not None])
         reused = []
+        # The package is emitted before the toolkit is scripted; the scripted emit_package hands out its bytes.
+        built = tempfile.TemporaryDirectory()
+        emitted = thermometer_package(built.name, operations=operations, channel=channel)
         def fake_call_tool(name, arguments):
             if name == 'emit_package':
-                package = driver_package(arguments['run_dir'], operations=operations, channel=channel)
+                package = Path(shutil.copytree(emitted, Path(arguments['run_dir']) / 'package'))
                 return {'ok': True, '_exit': 0, 'package_dir': str(package), 'manifest_sha256': digest(package / 'manifest.json')}
             tools.append(name)
             if name == 'acquire_serial_listen':
@@ -1449,18 +1462,15 @@ class FinalVerdictTests(unittest.TestCase):
                 return {'available': True, 'unsolicited_output': listen, '_exit': 0, 'artifacts': []}
             if name == 'emit_check':
                 passed = replay in ('passed', 'supplied')
-                return {'ok': passed, '_exit': 0 if passed else 1, 'runtime_current': True,
+                return {'ok': passed, '_exit': 0 if passed else 1, 'integrity_ok': True,
                         'replay_status': 'passed' if passed else replay,
                         'source_evidence_kind': 'replay' if replay == 'supplied' else 'live'}
-            if name in ('emit_test_live', 'interface_execute'):
-                result = next(results)
-                if isinstance(result, BaseException):
-                    raise result
-                result = json.loads(json.dumps(result))
-                if name == 'emit_test_live' and isinstance(result.get('results'), list):
-                    result.setdefault('manifest_sha256', digest(Path(arguments['package_dir']) / 'manifest.json'))
-                return result
             raise AssertionError('Unexpected tool ' + name)
+        def invoke_package(package, pin, operation, parameters, binding, effects):
+            result = next(results)
+            if isinstance(result, BaseException):
+                raise result
+            return json.loads(json.dumps(result))
         def prepare(original, spec, stage, run_dir, workspace, accepted):
             if stage == 'acquire' and listen is not None:
                 return {'inputs': [], 'allowed_tools': ['acquire_serial_listen']}
@@ -1481,24 +1491,17 @@ class FinalVerdictTests(unittest.TestCase):
                 controller.call('tool', {**gateway_identity(request), 'name': 'emit_package', 'arguments': {
                     'model_dir': str(workspace / 'model'), 'probe': str(workspace / 'probe.json')}})
             if request.stage == 'reuse':
-                package = Path(task_of(request.prompt)['inputs'][0])
-                for call in attempts[len(reused)]:
-                    tool, target = call[0], package
-                    if call[2:] == ('elsewhere',):
-                        target = Path(request.workspace) / 'own-package'
-                        if not target.exists():
-                            shutil.copytree(package, target)
-                            model = json.loads((target / 'driver' / 'model.json').read_text())
-                            (target / 'driver' / 'model.json').write_text(json.dumps({**model, 'changed': True}))
-                    extra = call[2] if len(call) > 2 and isinstance(call[2], dict) else {}
-                    arguments = ({'package_dir': str(target), **extra} if tool == 'emit_test_live' else
-                                 {'model_dir': str(target / 'driver'), 'operation': 'read_temperature', **extra})
+                identity = gateway_identity(request)
+                server = controller.call('mcp_tools', identity)['server']
+                for index, (operation, result) in enumerate(attempts[len(reused)]):
                     try:
-                        controller.call('tool', {**gateway_identity(request), 'name': tool, 'arguments': arguments})
+                        request_id = 'attempt-' + str(len(reused)) + '-call-' + str(index)
+                        controller.call('mcp_tool', {**identity, 'name': server + '_' + operation, 'arguments': {},
+                                                     'request_id': request_id})
                     except RuntimeError:
                         pass
                     except ValueError:
-                        if call[1] is not None:
+                        if result is not None:
                             raise
                 reused.append(request.stage)
         def runtime(request):
@@ -1510,15 +1513,17 @@ class FinalVerdictTests(unittest.TestCase):
                 package = Path(request.workspace) / 'tools' / 'package'
                 return {'status': 'completed', 'summary': 'scripted emission', 'checks': [], 'unresolved': [],
                         'artifacts': [{'path': str(package), 'sha256': digest(package), 'kind': 'package'}]}
-        with scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime), \
-             patch('generative_driver.toolkit.call_tool', fake_call_tool):
+        stages = scripted_stages(controller, check=check, prepare=prepare, work=work, report=report, runtime=runtime)
+        with built, stages, patch('generative_driver.toolkit.call_tool', fake_call_tool), \
+             patch.object(controller.device_access, 'invoke_package', side_effect=invoke_package):
             yield tools
 
     def start(self, controller, **params):
         return controller.call('start', {'goal': 'Scripted final verdict; no model or device', 'binding': self.BINDING,
                                          'executor_config': {'command': ['never-launched']}, **params})
 
-    def test_a_replayed_package_that_fresh_reuse_runs_on_the_device_is_equivalent_by_self_evidence(self):
+    def test_03_B6_a_replayed_package_whose_generated_tool_fresh_reuse_runs_on_the_device_is_equivalent(self):
+        # Self-evidence: emit_check replayed the package, and fresh reuse ran a function of it with a generated tool.
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:
             controller = Controller(Path(directory) / 'home')
@@ -1528,7 +1533,7 @@ class FinalVerdictTests(unittest.TestCase):
                     result = wait_stopped(controller, run)
                 self.assertEqual((result['status'], result['outcome_category'], result['reason']),
                                  ('completed', 'completed', 'Final verdict: equivalent'), result)
-                self.assertEqual(tools, ['emit_check', 'emit_test_live'])
+                self.assertEqual(tools, ['emit_check'])
                 package = next(a for h in result['accepted_handoffs'] if h['stage'] == 'emit' for a in h['artifacts'])
                 equivalence = result['equivalence']
                 self.assertEqual((equivalence['equivalent'], equivalence['basis'], equivalence['diff']), (True, 'self-evidence', []))
@@ -1540,7 +1545,7 @@ class FinalVerdictTests(unittest.TestCase):
                                 checks['emitted_package_replay'])
                 self.assertEqual([(o['name'], o['ok'], o['outcome'], o['emitted_package'])
                                   for o in checks['fresh_reuse_live_operations']['operations']],
-                                 [('emit_test_live', True, 'succeeded', True)])
+                                 [(self.READ, True, 'succeeded', True)])
                 # Recorded once under the run's final id, apart from evaluator verdicts; the run needs no further stage.
                 [(verdict_id, payload)] = final_verdicts(controller, run)
                 self.assertEqual(verdict_id, run['run_id'] + ':final')
@@ -1561,7 +1566,7 @@ class FinalVerdictTests(unittest.TestCase):
         # An emit handoff from before the check named how it verified the package cannot show a replay.
         from generative_driver.configurator import _self_evidence, digest
         with tempfile.TemporaryDirectory() as directory:
-            package = driver_package(Path(directory))
+            package = thermometer_package(Path(directory))
             emit = {'stage': 'emit', 'revision': 0, 'artifacts': [{'path': str(package), 'sha256': digest(package)}],
                     'checks': [{'name': 'package_integrity_and_replay', 'passed': True}]}
             evidence = _self_evidence([emit], [])
@@ -1571,11 +1576,12 @@ class FinalVerdictTests(unittest.TestCase):
         self.assertEqual(evidence['diff'][0], {'id': 'emitted_package_replay', 'reason': 'the emitted package passed '
                                                'emit_check without a replay of the recorded device exchanges'})
 
-    def test_a_failed_live_reuse_or_an_unreplayed_package_completes_not_equivalent(self):
+    def test_03_B6_a_driver_that_failed_on_the_device_or_an_unreplayed_package_completes_not_equivalent(self):
         from generative_driver.configurator import Controller, _has_terminal_final_failure
         for name, options, first in (('failed live operation', {'live': False}, 'fresh_reuse_live_operations'),
                                      ('model fault after an inconclusive call',
-                                      {'calls': [('emit_test_live', self.HOST_FAULT), ('emit_test_live', self.MODEL_FAILURE)]},
+                                      {'calls': [('read_temperature', self.HOST_FAULT),
+                                                 ('read_temperature', self.MODEL_FAILURE)]},
                                       'fresh_reuse_live_operations'),
                                      ('replay failed', {'replay': 'failed'}, 'emitted_package_replay')):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -1603,8 +1609,9 @@ class FinalVerdictTests(unittest.TestCase):
                         self.assertEqual((Path(drop['path']).name, drop['reason']), ('package', 'emit_check did not pass: replay failed'))
                     else:
                         failed = [e['data']['dispatch_id'] for e in controller.call('events', run)['events']
-                                  if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live'][-1]
-                        self.assertEqual(equivalence['diff'][0]['reason'], 'emit_test_live failed on the device (dispatch ' + failed + ')')
+                                  if e['kind'] == 'tool.finished' and e['data']['name'] == self.READ][-1]
+                        self.assertEqual(equivalence['diff'][0]['reason'],
+                                         self.READ + ' failed on the device (dispatch ' + failed + ')')
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
                     # A verdict of not equivalent is a completed run, never a terminal failure to resume around.
                     with controller._db() as db:
@@ -1618,19 +1625,14 @@ class FinalVerdictTests(unittest.TestCase):
         check = next(c for c in result['equivalence']['checks'] if c['id'] == 'fresh_reuse_live_operations')
         return [(o['name'], o['outcome']) for o in check['operations']]
 
-    def test_a_call_refused_before_the_device_was_contacted_is_not_a_live_operation(self):
+    def test_03_B6_a_generated_call_refused_before_the_device_was_contacted_is_not_a_live_operation(self):
         from generative_driver.configurator import Controller
         for name, calls, equivalent, outcomes in (
-                ('toolchain refusal, then the frozen package passes',
-                 [('emit_test_live', self.TOOLKIT_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
-                ('runtime preflight refusal, then the frozen package passes',
-                 [('interface_execute', self.PREFLIGHT_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
-                ('package runtime refusal, then the frozen package passes',
-                 [('emit_test_live', self.PACKAGE_REFUSAL), ('emit_test_live', self.PASSED)], True, ['refused', 'succeeded']),
-                # The refused operation is not a live operation; the one that ran on the device passed.
-                ('one package call that passed on the device, then refused its next operation before contact',
-                 [('emit_test_live', self.PARTLY_REFUSED)], True, ['succeeded']),
-                ('only refused calls', [('emit_test_live', self.TOOLKIT_REFUSAL), ('interface_execute', self.PREFLIGHT_REFUSAL)],
+                ('a refusal before the device, then a function of the frozen package passes',
+                 [('read_temperature', self.REFUSAL), ('read_temperature', self.PASSED)], True,
+                 ['refused', 'succeeded']),
+                ('only refused calls',
+                 [('read_temperature', self.REFUSAL), ('identify', {**self.REFUSAL, 'operation': 'identify'})],
                  False, ['refused', 'refused'])):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
@@ -1647,53 +1649,12 @@ class FinalVerdictTests(unittest.TestCase):
                     else:
                         self.assertEqual(reasons, [self.NEVER_RAN + ' (2 calls refused before the device was contacted)'])
                     # The configurator records its own reading of a runtime refusal on the event.
-                    finished = {e['data']['name']: e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.finished'}
-                    if 'interface_execute' in finished:
-                        self.assertIs(finished['interface_execute']['refused_before_open'], True)
+                    finished = [e['data'] for e in controller.call('events', run)['events']
+                                if e['kind'] == 'tool.finished' and e['data']['stage'] == 'reuse']
+                    self.assertEqual([e['refused_before_open'] for e in finished],
+                                     [True, False] if equivalent else [True, True])
                 finally:
                     controller.close()
-
-    def test_an_undeclared_toolchain_error_is_inconclusive_never_a_refusal(self):
-        """Only a refusal the tool declared before its first device call is not a live operation. Any other toolchain
-        error, such as an OSError after the device was contacted, leaves the verdict unscored."""
-        from generative_driver.configurator import Controller
-        for name, calls in (('only call', [('emit_test_live', self.TOOLKIT_ERROR)]),
-                            ('then the frozen package passes', [('emit_test_live', self.TOOLKIT_ERROR), ('emit_test_live', self.PASSED)])):
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
-                controller = Controller(Path(directory) / 'home')
-                try:
-                    with self.finishing(controller, calls=calls):
-                        run = self.start(controller)
-                        result = wait_stopped(controller, run)
-                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', None), result)
-                    self.assertEqual(self.operations(result)[0], ('emit_test_live', 'inconclusive'))
-                    dispatch = next(e['id'] for e in controller.call('events', run)['events']
-                                    if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live')
-                    self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
-                                     ['emit_test_live was inconclusive: host fault (OSError), not a driver failure (dispatch '
-                                      + str(dispatch) + ')'])
-                finally:
-                    controller.close()
-
-    def test_an_undeclared_content_error_is_inconclusive_and_never_called_a_host_fault(self):
-        """A ValueError the tool did not declare as a refusal before contact leaves the verdict unscored, but it names no
-        host failure, so the reason says what it is: an undeclared toolchain error."""
-        from generative_driver.configurator import Controller
-        undeclared = {'_exit': 1, 'error': 'ValueError: a check the tool did not declare'}
-        with tempfile.TemporaryDirectory() as directory:
-            controller = Controller(Path(directory) / 'home')
-            try:
-                with self.finishing(controller, calls=[('emit_test_live', undeclared), ('emit_test_live', self.PASSED)]):
-                    run = self.start(controller)
-                    result = wait_stopped(controller, run)
-                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', None), result)
-                dispatch = next(e['id'] for e in controller.call('events', run)['events']
-                                if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live')
-                self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
-                                 ['emit_test_live was inconclusive: undeclared toolchain error (ValueError), not a driver '
-                                  'failure (dispatch ' + str(dispatch) + ')'])
-            finally:
-                controller.close()
 
     def test_only_a_named_host_failure_is_a_host_fault(self):
         """The emit stage stops for the host only on a positive list; any other toolchain error refuses the content."""
@@ -1713,29 +1674,30 @@ class FinalVerdictTests(unittest.TestCase):
         self.assertEqual(_toolchain_fault({'error': 'TimeoutExpired: Command timed out after 260 seconds'}), 'TimeoutExpired')
         self.assertIs(_host_fault({'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1}), False)
 
-    def test_functions_the_operator_did_not_grant_leave_the_verdict_unscored_never_not_equivalent(self):
+    def test_03_B6_functions_the_operator_did_not_grant_leave_the_verdict_unscored_never_not_equivalent(self):
         """The frozen package's only function writes and the operator granted read alone: the gateway refuses every call
         of it, so identity is all fresh reuse can run. That limit is the operator's, not the driver's, so the once-only
         verdict is unscored. With the write grant, running identity alone is still not equivalent."""
         from generative_driver.configurator import Controller, IDENTITY_ONLY, UNGRANTED
-        identity = {**self.PASSED, 'results': [{'ok': True, 'operation': 'identify', 'fault': None}]}
-        settle = {**self.PASSED, 'results': [{'ok': True, 'operation': 'settle', 'fault': None}]}
+        self.assertEqual(IDENTITY_ONLY, 'fresh reuse ran no function of the frozen package beyond its identity '
+                         'operation; identity alone is not evidence of function, nor is an operation that only waits '
+                         "or repeats identity's requests")
         operations = {'identify': {'effect': 'read'}, 'set_rate': {'effect': 'write'},
                       'settle': {'effect': 'read', 'steps': [{'op': 'delay', 'ms': 1}]}}
         for grants, calls, equivalent, reason in (
-                (['read'], [('emit_test_live', None, {'operations': ['set_rate']}),
-                            ('emit_test_live', identity, {'operations': ['identify']})], None, UNGRANTED),
+                (['read'], [('set_rate', None), ('identify', self.passed('identify'))], None, UNGRANTED),
                 # A granted operation that only waits is no function: the operator's grants still permit none.
-                (['read'], [('emit_test_live', settle, {'operations': ['settle']})], None, UNGRANTED),
-                (['read', 'write'], [('emit_test_live', identity, {'operations': ['identify']})], False, IDENTITY_ONLY)):
-            with self.subTest(grants=grants, calls=[c[2]['operations'] for c in calls]), tempfile.TemporaryDirectory() as directory:
+                (['read'], [('settle', self.passed('settle'))], None, UNGRANTED),
+                (['read', 'write'], [('identify', self.passed('identify'))], False, IDENTITY_ONLY)):
+            called = [operation for operation, _ in calls]
+            with self.subTest(grants=grants, calls=called), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
                     with self.finishing(controller, calls=calls, operations=operations):
                         run = self.start(controller, effects=grants)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
-                    self.assertEqual(self.operations(result), [('emit_test_live', 'succeeded')])
+                    self.assertEqual(self.operations(result), [('scripted_thermometer_' + calls[-1][0], 'succeeded')])
                     self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [reason])
                     reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
                     note = next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
@@ -1746,17 +1708,18 @@ class FinalVerdictTests(unittest.TestCase):
                 finally:
                     controller.close()
 
-    def test_a_reset_the_operator_did_not_grant_leaves_the_verdict_unscored_never_not_equivalent(self):
+    def test_03_B6_a_reset_the_operator_did_not_grant_leaves_the_verdict_unscored_never_not_equivalent(self):
         """The reset grant is an operator grant like the effect grants. Without it, the runtime of a package whose
         channel resets the device on open refuses every operation before it opens the port, including a live probe of
-        those model bytes, so emit_check can replay only exchanges the worker supplied. The gateway refuses every
+        those model bytes, so emit_check can replay only exchanges the worker supplied, and the gateway refuses every
+        generated call of that package before it dispatches it. The gateway also refuses every
         connection to a serial device the run observed resetting on open, or whose every listen failed for the
         operator or the host, so no live probe could run either. Neither says anything about the driver: the verdict is
         unscored, unless the package failed its offline emit_check. Listening needs no grant, so a device no worker
         listened to is the candidate pipeline's omission: not equivalent. With the grant, or on a device that was heard
         to stay quiet, the same runs are judged as usual."""
         from generative_driver.configurator import (Controller, SUPPLIED, UNGRANTED, UNHEARD, UNLISTENED, UNREACHABLE,
-                                                    _fresh_reuse, _frozen_package, _live_outcome, _ungranted, digest)
+                                                    _fresh_reuse, _frozen_package, _ungranted, digest)
         from generative_driver.toolkit import call_tool
         from test_package import example_model, example_replay
         # The real tools under the read grant alone, as the gateway dispatches them, on a model whose uart channel
@@ -1781,30 +1744,22 @@ class FinalVerdictTests(unittest.TestCase):
             checked = call_tool('emit_check', {'run_dir': str(root / 'checks'), 'package_dir': package})
             self.assertEqual((checked['_exit'], checked['replay_status'], checked['source_evidence_kind']),
                              (0, 'passed', 'replay'), checked)
-            refused = call_tool('emit_test_live', {'run_dir': str(root / 'reuse'), 'package_dir': package,
-                                                   'binding': {'port': str(root / 'no-such-serial-port')},
-                                                   'operations': ['measure'], 'allow_effects': ['read']})
-            [entry] = refused['results']
-            self.assertEqual((refused['_exit'], entry['error_code'], entry['fault'], entry['transport_open_attempted']),
-                             (4, 'effect', 'operator', False), refused)
-            event = {'name': 'emit_test_live', 'connected': True, 'ok': False, 'result': refused, 'dispatch_id': '9',
-                     'argument_sha256': {'package_dir': digest(package)}}
-            self.assertEqual(_live_outcome(event), ('refused', None))
+            # No generated call of this package is dispatched under the read grant alone, so fresh reuse has none.
             frozen = _frozen_package({'path': package, 'sha256': digest(package)}, strict=True)
             self.assertIs(frozen['resets_on_open'], True)
-            check, diff = _fresh_reuse(frozen, [event], [], ['read'])
+            check, diff = _fresh_reuse(frozen, [], [], ['read'])
             self.assertEqual((check['passed'], [d['reason'] for d in diff]), (None, [UNGRANTED]))
+            self.assertTrue(_ungranted(frozen, ['read']))
             self.assertFalse(_ungranted(frozen, ['read', 'reset']))
-        # Whole runs on a serial binding: the reuse worker runs the frozen package once. The package's own refusal is
-        # the real result above; a call of None is one the gateway refuses before dispatch.
-        package_refusal = {key: value for key, value in refused.items() if key != 'manifest_sha256'}
+        # Whole runs on a serial binding: the reuse worker calls the generated tool of the frozen package's read once.
+        # A call of None is one the gateway refuses before dispatch.
         uart, resets = {'type': 'uart', 'baudrate': 115200}, {'type': 'uart', 'baudrate': 115200, 'resets_on_open': True}
         unreplayed = ('the emitted package passed emit_check without a replay of the recorded device exchanges (' + SUPPLIED + ')')
         rejected = 'the emitted package did not pass emit_check: replay failed'
         for name, grants, listen, channel, replay, result, equivalent, note, reasons in (
                 # Its runtime refused the live probe of these bytes, so emit_check could replay only supplied exchanges.
                 ('a package that resets on open, without the reset grant', ['read'], False, resets, 'supplied',
-                 package_refusal, None, None, [unreplayed, UNGRANTED]),
+                 None, None, None, [unreplayed, UNGRANTED]),
                 ('a package that resets on open, with the reset grant', ['read', 'reset'], False, resets, 'passed',
                  self.PASSED, True, True, []),
                 ('a device observed resetting on open, without the reset grant', ['read'], True, resets, 'supplied', None,
@@ -1843,7 +1798,7 @@ class FinalVerdictTests(unittest.TestCase):
                          unittest.mock.patch.dict(sys.modules, dict.fromkeys(('serial', 'serial.tools', 'serial.tools.list_ports')))
                          if listen == 'no-pyserial' else contextlib.nullcontext())
                 try:
-                    with ports, self.finishing(controller, calls=[('emit_test_live', result, {'operations': ['read_temperature']})],
+                    with ports, self.finishing(controller, calls=[('read_temperature', result)],
                                                replay=replay, channel=channel, listen=listen):
                         # A port that does not exist: the real listen tool cannot open it. No port matches the
                         # identity of a device that is not attached.
@@ -1878,12 +1833,15 @@ class FinalVerdictTests(unittest.TestCase):
                         # Emit handed off no package, so reuse was skipped and made no call.
                         self.assertEqual(refusals, [])
                     elif result is None:
-                        self.assertEqual(len(refusals), 1, refusals)
-                        self.assertRegex(refusals[0], 'Listen to the bound serial device first|resets when opened')
+                        # The gateway refused the call for want of the reset grant its package or its device needs.
+                        self.assertEqual(refusals, [
+                            'Operation or transport opening requires an effect grant the operator has not supplied'
+                            if channel is resets else
+                            'Listen to the bound serial device first, or supply a reset grant'])
+                        self.assertEqual(self.operations(result_of_run), [])
                     else:
                         self.assertEqual(refusals, [])
-                        self.assertEqual(self.operations(result_of_run),
-                                         [('emit_test_live', 'refused' if result is package_refusal else 'succeeded')])
+                        self.assertEqual(self.operations(result_of_run), [(self.READ, 'succeeded')])
                 finally:
                     controller.close()
 
@@ -1899,8 +1857,7 @@ class FinalVerdictTests(unittest.TestCase):
             with self.subTest(replay=replay), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
-                    with self.finishing(controller, calls=[('emit_test_live', None, {'operations': ['read_temperature']})],
-                                        replay=replay):
+                    with self.finishing(controller, calls=[('read_temperature', None)], replay=replay):
                         run = self.start(controller, binding=None)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
@@ -1919,8 +1876,9 @@ class FinalVerdictTests(unittest.TestCase):
         from generative_driver.configurator import SUPPLIED, UNBOUND, UNHEARD, UNLISTENED, UNREACHABLE, _self_evidence, digest
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            one, two = driver_package(root, 'one'), driver_package(root, 'two')
-            resetting = driver_package(root, 'resetting', channel={'type': 'uart', 'baudrate': 115200, 'resets_on_open': True})
+            one, two = thermometer_package(root, 'one'), thermometer_package(root, 'two')
+            resetting = thermometer_package(root, 'resetting',
+                                            channel={'type': 'uart', 'baudrate': 115200, 'resets_on_open': True})
             artifact = lambda package: {'path': str(package), 'sha256': digest(package)}
             emit = lambda artifacts, **check: [{'stage': 'emit', 'revision': 0, 'artifacts': artifacts,
                                                 'checks': [{'name': 'package_integrity_and_replay', **check}]}]
@@ -1947,19 +1905,19 @@ class FinalVerdictTests(unittest.TestCase):
         device does not reset on open. Fresh reuse could not reach the device whatever the operator observed later, so
         resume grades it as unscored, never as a driver that never ran."""
         from unittest.mock import patch
-        from interface_runtime import evidence
+        import interface_runtime.package as runtime_package
         from generative_driver import configurator
-        real_self_evidence, real_read = configurator._self_evidence, evidence.read_json_hashed
+        real_self_evidence, real_digest = configurator._self_evidence, runtime_package.digest
         attempts = []
-        def unreadable(path, *args, **kwargs):
-            if Path(path).name == 'model.json' and Path(path).parent.name == 'driver':
+        def unreadable(path):
+            if Path(path).parent.name == 'drivers':
                 raise PermissionError(13, 'Permission denied', str(path))
-            return real_read(path, *args, **kwargs)
+            return real_digest(path)
         def self_evidence(*args, **kwargs):
             attempts.append(1)
             if len(attempts) > 1:
                 return real_self_evidence(*args, **kwargs)
-            with patch.object(evidence, 'read_json_hashed', unreadable):
+            with patch.object(runtime_package, 'digest', unreadable):
                 return real_self_evidence(*args, **kwargs)
         resets = {'type': 'uart', 'baudrate': 115200, 'resets_on_open': True}
         unreplayed = ('the emitted package passed emit_check without a replay of the recorded device exchanges ('
@@ -1967,7 +1925,7 @@ class FinalVerdictTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             controller = configurator.Controller(Path(directory) / 'home')
             try:
-                with self.finishing(controller, calls=[('emit_test_live', None, {'operations': ['read_temperature']})],
+                with self.finishing(controller, calls=[('read_temperature', None)],
                                     replay='supplied', channel=resets, listen=True), \
                         patch('generative_driver.configurator._self_evidence', self_evidence):
                     run = self.start(controller, effects=['read'],
@@ -1982,48 +1940,137 @@ class FinalVerdictTests(unittest.TestCase):
                     result = wait_stopped(controller, run)
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', None), result)
                 self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [unreplayed, configurator.UNREACHABLE])
-                self.assertEqual([e['data']['reason'] for e in controller.call('events', run)['events'] if e['kind'] == 'tool.refused'],
-                                 ['The bound device resets when opened; this connection requires a reset grant'])
+                refusals = [e['data']['reason'] for e in controller.call('events', run)['events']
+                            if e['kind'] == 'tool.refused']
+                self.assertEqual(refusals, [
+                    'Operation or transport opening requires an effect grant the operator has not supplied'])
                 self.assertEqual(len(attempts), 2)
             finally:
                 controller.close()
 
-    def test_only_a_snapshot_of_the_frozen_manifest_counts_as_running_the_frozen_package(self):
-        """emit_test_live executes a snapshot it copies after the configurator hashed the package. A result whose
-        snapshot carries another manifest ran other bytes: its pass is no run of the frozen package, and its failure
-        is not the driver's."""
-        from generative_driver.configurator import Controller
-        other, failing_other = ({**result, 'manifest_sha256': '0' * 64} for result in (self.PASSED, self.MODEL_FAILURE))
-        for name, calls, equivalent, outcomes, reasons in (
-                ('a pass of another snapshot', [('emit_test_live', other)], False,
-                 [('emit_test_live', 'succeeded', False)], [self.NEVER_RAN]),
-                ('a failure of another snapshot, then the frozen package passes',
-                 [('emit_test_live', failing_other), ('emit_test_live', self.PASSED)], None,
-                 [('emit_test_live', 'inconclusive', False), ('emit_test_live', 'succeeded', True)],
-                 ['emit_test_live was inconclusive: model fault outside the emitted driver, not a driver failure'])):
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
-                controller = Controller(Path(directory) / 'home')
-                try:
-                    with self.finishing(controller, calls=calls):
-                        run = self.start(controller)
-                        result = wait_stopped(controller, run)
-                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
-                    check = next(c for c in result['equivalence']['checks'] if c['id'] == 'fresh_reuse_live_operations')
-                    self.assertEqual([(o['name'], o['outcome'], o['emitted_package']) for o in check['operations']], outcomes)
-                    self.assertEqual([d['reason'].split(' (dispatch ')[0] for d in result['equivalence']['diff']], reasons)
-                finally:
-                    controller.close()
+    def records(self, controller, run, result):
+        """What the final verdict judged of a finished run, from the configurator's own records: the facts of the frozen
+        package and the tool.finished payloads of fresh reuse, in order."""
+        from generative_driver.configurator import _frozen_package
+        package = next(a for h in result['accepted_handoffs'] if h['stage'] == 'emit' for a in h['artifacts'])
+        return _frozen_package(package, strict=True), [
+            e['data'] for e in controller.call('events', run)['events']
+            if e['kind'] == 'tool.finished' and e['data']['stage'] == 'reuse']
 
-    def test_reuse_that_never_ran_the_frozen_package_with_emit_test_live_is_not_equivalent_and_says_so(self):
-        """Fresh reuse must run the frozen package itself (emit_test_live). Running its driver directory as a model
-        with interface_execute is a live operation that is judged, but it is not a run of the package, and the diff
-        names that rule rather than claiming nothing live ran."""
-        from generative_driver.configurator import Controller
-        for name, calls, outcome, reasons in (
-                ('interface_execute of the frozen driver passed', [('interface_execute', self.EXECUTE_PASSED)],
-                 'succeeded', [self.NEVER_RAN]),
-                ('interface_execute of the frozen driver failed', [('interface_execute', self.EXECUTE_MODEL_FAILURE)],
-                 'failed', ['interface_execute failed on the device', self.NEVER_RAN])):
+    @staticmethod
+    def judged(check, diff):
+        """A judgement of `_fresh_reuse` in short: whether it passed, each operation as (name, outcome, whether it ran
+        the frozen package), and the reasons without their dispatch ids."""
+        return (check['passed'], [(o['name'], o['outcome'], o['emitted_package']) for o in check['operations']],
+                [d['reason'].split(' (dispatch ')[0] for d in diff])
+
+    def test_03_B6_a_call_counts_only_when_its_proof_names_the_package_manifest_assignment_dispatch_and_tool(self):
+        """The gateway writes an `mcp` proof into the result of each generated call it dispatches. The verdict counts a
+        call as a run of the frozen package only when that proof names the frozen package and its manifest, the call's
+        own assignment and dispatch, and its tool. A call whose proof names anything else, or that has none, ran no
+        tool of the frozen package: its pass is no evidence of the driver, and its failure is not the driver's."""
+        from generative_driver.configurator import Controller, _fresh_reuse
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller, calls=[('read_temperature', self.MODEL_FAILURE),
+                                                       ('read_temperature', self.PASSED)]):
+                    run = self.start(controller)
+                    result = wait_stopped(controller, run)
+                frozen, (failure, passed) = self.records(controller, run, result)
+            finally:
+                controller.close()
+        judge = lambda *events: self.judged(*_fresh_reuse(frozen, list(events), grants=['read']))
+        inconclusive = self.READ + ' was inconclusive: model fault outside the emitted driver, not a driver failure'
+        # The proof the gateway wrote names all five, and the call counts.
+        for event in (failure, passed):
+            proof = event['result']['mcp']
+            named = {'schema': 'driver-mcp-call/1', 'package_sha256': frozen['sha256'],
+                     'manifest_sha256': frozen['manifest_sha256'], 'assignment_id': event['assignment_id'],
+                     'dispatch_id': event['dispatch_id'], 'tool_name': self.READ}
+            self.assertEqual({key: proof[key] for key in named}, named)
+        self.assertEqual(judge(passed), (True, [(self.READ, 'succeeded', True)], []))
+        self.assertEqual(judge(failure, passed), (False, [(self.READ, 'failed', True), (self.READ, 'succeeded', True)],
+                                                  [self.READ + ' failed on the device']))
+        others = {'package_sha256': '0' * 64, 'manifest_sha256': '0' * 64, 'assignment_id': 'another-assignment',
+                  'dispatch_id': '0', 'tool_name': self.IDENTIFY, 'schema': 'driver-mcp-call/0'}
+        def unproved(event, key):
+            """The event with a proof that names another `key`, with none, or with one that is no object."""
+            result = {k: v for k, v in event['result'].items() if k != 'mcp'}
+            if key in others:
+                result['mcp'] = {**event['result']['mcp'], key: others[key]}
+            elif key == 'no object':
+                result['mcp'] = 'driver-mcp-call/1'
+            return {**event, 'result': result}
+        for key in (*others, 'absent', 'no object'):
+            with self.subTest(proof=key):
+                self.assertEqual(judge(unproved(passed, key)),
+                                 (False, [(self.READ, 'succeeded', False)], [self.NEVER_RAN]))
+                self.assertEqual(judge(unproved(failure, key)),
+                                 (False, [(self.READ, 'inconclusive', False)], [inconclusive, self.NEVER_RAN]))
+                # Beside a run of the frozen package that passed, a failure of other bytes leaves the verdict unsettled.
+                self.assertEqual(judge(unproved(failure, key), passed), (
+                    None, [(self.READ, 'inconclusive', False), (self.READ, 'succeeded', True)], [inconclusive]))
+
+    def test_03_B6_no_other_call_counts_as_a_run_of_the_frozen_package(self):
+        """Only a generated tool call runs the frozen package. A record of another tool is judged as a live operation,
+        but it is no run of the package, whatever bytes it names: a live test of the frozen package with emit_test_live
+        that passed is no evidence of function, and a model failure it or interface_execute reports is not the
+        driver's. Fresh reuse is assigned neither tool, so the records are written here."""
+        from generative_driver.configurator import Controller, _fresh_reuse
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory) / 'home')
+            try:
+                with self.finishing(controller):
+                    run = self.start(controller)
+                    result = wait_stopped(controller, run)
+                frozen, [generated] = self.records(controller, run, result)
+            finally:
+                controller.close()
+        def other(name, ok, dispatch):
+            """A record of the tool `name` for the bytes of the frozen package, as the gateway would write it: of a
+            read that passed, or that the runtime attributes to the model after the device was opened."""
+            if name == 'emit_test_live':
+                hashed = {'package_dir': frozen['sha256']}
+                result = {'schema': 'interface-live-test/1', 'ok': ok, 'manifest_sha256': frozen['manifest_sha256'],
+                          'results': [{'ok': ok, 'operation': 'read_temperature',
+                                       **({} if ok else {'error_code': 'expect', 'fault': 'model'})}]}
+            else:
+                hashed = {'model_dir': frozen['sha256']}
+                result = {'schema': 'interface-result/1', 'operation': 'read_temperature', 'ok': ok,
+                          'identity_verified': True, 'transport_open_attempted': True,
+                          **({} if ok else {'error': {'code': 'expect', 'message': 'reply differs from the model',
+                                                      'fault': 'model'}})}
+            return {**generated, 'name': name, 'ok': ok, 'dispatch_id': str(dispatch), 'argument_sha256': hashed,
+                    'result': {**result, '_exit': 0 if ok else 1}}
+        judge = lambda events, started=(): self.judged(*_fresh_reuse(frozen, events, started, grants=['read']))
+        for name in ('emit_test_live', 'interface_execute'):
+            with self.subTest(tool=name):
+                inconclusive = name + ' was inconclusive: model fault outside the emitted driver, not a driver failure'
+                self.assertEqual(judge([other(name, True, 1)]), (False, [(name, 'succeeded', False)], [self.NEVER_RAN]))
+                self.assertEqual(judge([other(name, False, 1)]),
+                                 (False, [(name, 'inconclusive', False)], [inconclusive, self.NEVER_RAN]))
+                self.assertEqual(judge([other(name, False, 1), generated]), (
+                    None, [(name, 'inconclusive', False), (self.READ, 'succeeded', True)], [inconclusive]))
+                # A dispatch of it without a recorded result is unsettled, but it cannot have run the frozen package.
+                unrecorded = {k: v for k, v in other(name, True, 1).items() if k not in ('ok', 'result')}
+                self.assertEqual(judge([], [unrecorded]),
+                                 (False, [(name, 'unresolved', False)],
+                                  [name + ' was dispatched but its result was never recorded', self.NEVER_RAN]))
+        self.assertEqual(judge([generated]), (True, [(self.READ, 'succeeded', True)], []))
+
+    def test_03_B6_fresh_reuse_that_ran_no_tool_of_the_frozen_package_is_not_equivalent_and_says_so(self):
+        """Fresh reuse must run a tool of the frozen package. A fresh agent that hands off without one call leaves the
+        driver untested, and the verdict names that rule. So does one whose only dispatch was of the identity tool and
+        has no recorded result: identity is no function, so that dispatch cannot have run one."""
+        from generative_driver.configurator import Controller, NEVER_RAN
+        self.assertEqual(NEVER_RAN, 'fresh reuse never ran a tool of the frozen package')
+        unrecorded = self.IDENTIFY + ' was dispatched but its result was never recorded'
+        for name, calls, operations, says in (
+                ('no call', [], [], [NEVER_RAN]),
+                ('one dispatch of the identity tool, never recorded',
+                 [('identify', RuntimeError('scripted fault after dispatch'))], [(self.IDENTIFY, 'unresolved')],
+                 [unrecorded, NEVER_RAN])):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
@@ -2031,23 +2078,33 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
-                    self.assertEqual(self.operations(result), [('interface_execute', outcome)])
-                    diff = [d['reason'] for d in result['equivalence']['diff']]
-                    self.assertEqual([reason.split(' (dispatch ')[0] for reason in diff], reasons)
-                    self.assertFalse(any('no live operation' in reason for reason in diff), diff)
-                    self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + '; '.join(diff))
+                    self.assertEqual(self.operations(result), operations)
+                    diff = result['equivalence']['diff']
+                    self.assertEqual({d['id'] for d in diff}, {'fresh_reuse_live_operations'})
+                    reasons = [d['reason'] for d in diff]
+                    self.assertEqual([reason.split(' (dispatch ')[0] for reason in reasons], says)
+                    self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + '; '.join(reasons))
+                    reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
+                    note = next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
+                    self.assertEqual((note['passed'], note['reason']), (False, '; '.join(reasons)))
                 finally:
                     controller.close()
 
-    def test_an_operator_or_host_fault_or_an_unrecorded_dispatch_leaves_the_verdict_unscored(self):
+    def test_03_B6_a_host_fault_or_an_unrecorded_dispatch_of_a_generated_call_leaves_the_verdict_unscored(self):
         from generative_driver.configurator import Controller
+        lost = lambda: RuntimeError('scripted fault after dispatch')
         for name, calls, outcome, detail in (
-                ('host fault, then the frozen package passes', [('emit_test_live', self.HOST_FAULT), ('emit_test_live', self.PASSED)],
-                 'inconclusive', 'host fault'),
-                ('host fault only', [('emit_test_live', self.HOST_FAULT)], 'inconclusive', 'host fault'),
+                ('host fault, then the frozen package passes',
+                 [('read_temperature', self.HOST_FAULT), ('read_temperature', self.PASSED)], 'inconclusive',
+                 'host fault'),
+                ('host fault only', [('read_temperature', self.HOST_FAULT)], 'inconclusive', 'host fault'),
+                # It may have come after the device ran the package, so it never reads as a refusal.
+                ('a child process that gave no result', [('read_temperature', self.NO_RESULT)], 'inconclusive',
+                 'host fault (package_output)'),
                 ('dispatch never recorded, then the frozen package passes',
-                 [('emit_test_live', RuntimeError('scripted gateway fault after dispatch')), ('emit_test_live', self.PASSED)],
-                 'unresolved', 'never recorded')):
+                 [('read_temperature', lost()), ('read_temperature', self.PASSED)], 'unresolved', 'never recorded'),
+                # The call was a function of the frozen package, so it may have run one.
+                ('dispatch never recorded only', [('read_temperature', lost())], 'unresolved', 'never recorded')):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
@@ -2056,11 +2113,12 @@ class FinalVerdictTests(unittest.TestCase):
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
                     self.assertIsNone(result['equivalence']['equivalent'], result['equivalence'])
-                    self.assertEqual(self.operations(result)[0], ('emit_test_live', outcome))
+                    self.assertEqual(self.operations(result)[0], (self.READ, outcome))
                     started = [e['id'] for e in controller.call('events', run)['events']
-                               if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live']
+                               if e['kind'] == 'tool.started' and e['data']['name'] == self.READ]
                     [entry] = result['equivalence']['diff']
                     self.assertEqual(entry['id'], 'fresh_reuse_live_operations')
+                    self.assertTrue(entry['reason'].startswith(self.READ + ' was '), entry['reason'])
                     self.assertIn(detail, entry['reason'])
                     self.assertIn('(dispatch ' + str(started[0]) + ')', entry['reason'])
                     self.assertNotIn('failed on the device', entry['reason'])
@@ -2068,20 +2126,22 @@ class FinalVerdictTests(unittest.TestCase):
                 finally:
                     controller.close()
 
-    def test_every_reuse_attempt_that_received_the_frozen_package_is_judged(self):
+    def test_03_B6_every_reuse_attempt_that_received_the_frozen_package_is_judged(self):
         """A fresh-reuse attempt that stopped before its handoff (its runtime exited with an error) and was resumed
-        had already run the frozen package on the device. Its live operations count as the accepted attempt's do."""
+        had already run a tool of the frozen package on the device. Its live operations count as the accepted
+        attempt's do."""
         from generative_driver.configurator import Controller
         for name, first, equivalent, outcome, says in (
-                ('driver failure', [('emit_test_live', self.MODEL_FAILURE)], False, 'failed', 'emit_test_live failed on the device'),
-                ('host fault', [('emit_test_live', self.HOST_FAULT)], None, 'inconclusive', 'host fault'),
-                ('dispatch never recorded', [('emit_test_live', RuntimeError('scripted gateway fault after dispatch'))],
-                 None, 'unresolved', 'never recorded'),
-                ('refusal before the device was contacted', [('emit_test_live', self.TOOLKIT_REFUSAL)], True, 'refused', None)):
+                ('driver failure', self.MODEL_FAILURE, False, 'failed', self.READ + ' failed on the device'),
+                ('host fault', self.HOST_FAULT, None, 'inconclusive', 'host fault'),
+                ('dispatch never recorded', RuntimeError('scripted fault after dispatch'), None, 'unresolved',
+                 'never recorded'),
+                ('refusal before the device was contacted', self.REFUSAL, True, 'refused', None)):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
-                    with self.finishing(controller, attempts=[first, [('emit_test_live', self.PASSED)]]):
+                    with self.finishing(controller, attempts=[[('read_temperature', first)],
+                                                              [('read_temperature', self.PASSED)]]):
                         run = self.start(controller)
                         stopped = wait_stopped(controller, run)
                         self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']),
@@ -2091,9 +2151,9 @@ class FinalVerdictTests(unittest.TestCase):
                     self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
                     self.assertEqual(result['equivalence']['equivalent'], equivalent, result['equivalence'])
                     started = [e for e in controller.call('events', run)['events']
-                               if e['kind'] == 'tool.started' and e['data']['name'] == 'emit_test_live']
+                               if e['kind'] == 'tool.started' and e['data']['name'] == self.READ]
                     self.assertEqual(len({e['data']['assignment_id'] for e in started}), 2)
-                    self.assertEqual(self.operations(result), [('emit_test_live', outcome), ('emit_test_live', 'succeeded')])
+                    self.assertEqual(self.operations(result), [(self.READ, outcome), (self.READ, 'succeeded')])
                     reasons = [d['reason'] for d in result['equivalence']['diff']]
                     if says:
                         [reason] = reasons
@@ -2103,33 +2163,6 @@ class FinalVerdictTests(unittest.TestCase):
                     else:
                         self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
-                finally:
-                    controller.close()
-
-    def test_a_failure_outside_the_emitted_driver_is_never_counted_as_the_drivers(self):
-        """Only bytes the configurator hashed before dispatch tie a failure to the driver: the frozen package for
-        emit_test_live, or its driver directory for interface_execute. Another failure leaves the verdict unscored."""
-        from generative_driver.configurator import Controller
-        for name, first, equivalent, outcome, says in (
-                ('interface_execute of the frozen driver', ('interface_execute', self.EXECUTE_MODEL_FAILURE),
-                 False, 'failed', 'interface_execute failed on the device'),
-                ('interface_execute of a model the worker changed', ('interface_execute', self.EXECUTE_MODEL_FAILURE, 'elsewhere'),
-                 None, 'inconclusive', 'interface_execute was inconclusive: model fault outside the emitted driver'),
-                ('emit_test_live of a package the worker changed', ('emit_test_live', self.MODEL_FAILURE, 'elsewhere'),
-                 None, 'inconclusive', 'emit_test_live was inconclusive: model fault outside the emitted driver')):
-            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
-                controller = Controller(Path(directory) / 'home')
-                try:
-                    with self.finishing(controller, calls=[first, ('emit_test_live', self.PASSED)]):
-                        run = self.start(controller)
-                        result = wait_stopped(controller, run)
-                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
-                    self.assertEqual(self.operations(result), [(first[0], outcome), ('emit_test_live', 'succeeded')])
-                    dispatch = next(e['id'] for e in controller.call('events', run)['events']
-                                    if e['kind'] == 'tool.started' and e['data']['stage'] == 'reuse')
-                    [entry] = result['equivalence']['diff']
-                    self.assertTrue(entry['reason'].startswith(says), entry['reason'])
-                    self.assertTrue(entry['reason'].endswith('(dispatch ' + str(dispatch) + ')'), entry['reason'])
                 finally:
                     controller.close()
 
@@ -2330,23 +2363,23 @@ class FinalVerdictTests(unittest.TestCase):
                 controller.close()
 
     def test_a_host_failure_reading_the_frozen_package_at_finalize_stops_for_the_host_and_resume_grades_once(self):
-        """Finalize reads the frozen package's model and manifest to judge fresh reuse. A host that cannot read them
+        """Finalize reads the frozen package's driver and manifest to judge fresh reuse. A host that cannot read them
         says nothing about the driver: the run stops for the host at finalize, records no verdict, and resume grades it."""
         from unittest.mock import patch
-        from interface_runtime import evidence
+        import interface_runtime.package as runtime_package
         from generative_driver import configurator
-        real_self_evidence, real_read = configurator._self_evidence, evidence.read_json_hashed
+        real_self_evidence, real_digest = configurator._self_evidence, runtime_package.digest
         attempts = []
-        def unreadable(path, *args, **kwargs):
-            # The host refuses to read the frozen driver model, which the configurator reads as the runtime does.
-            if Path(path).name == 'model.json' and Path(path).parent.name == 'driver':
+        def unreadable(path):
+            # The host refuses to read the frozen driver, which the configurator reads through the runtime's check.
+            if Path(path).parent.name == 'drivers':
                 raise PermissionError(13, 'Permission denied', str(path))
-            return real_read(path, *args, **kwargs)
+            return real_digest(path)
         def self_evidence(*args, **kwargs):
             attempts.append(1)
             if len(attempts) > 1:
                 return real_self_evidence(*args, **kwargs)
-            with patch.object(evidence, 'read_json_hashed', unreadable):
+            with patch.object(runtime_package, 'digest', unreadable):
                 return real_self_evidence(*args, **kwargs)
         with tempfile.TemporaryDirectory() as directory:
             controller = configurator.Controller(Path(directory) / 'home')
@@ -2367,53 +2400,77 @@ class FinalVerdictTests(unittest.TestCase):
                 controller.close()
 
     def test_the_frozen_package_facts_raise_only_for_a_host_failure_and_only_when_read_strictly(self):
-        """The package's functions are its operations beyond identity with a step that reaches the device. A part that
-        is absent or does not parse is the package's own (None) even when read strictly, as finalize reads it; a host
-        failure to read one raises there, and reads as None where the reuse notes read it."""
+        """The facts of a frozen package are read through the runtime's check of it: its tools, each with its operation,
+        and its functions, which are its operations beyond identity with a step that reaches the device. A package the
+        check refuses, such as one whose driver is absent or does not parse, gives none of them (None) even when read
+        strictly, as finalize reads it; a host failure to read a file raises there, and reads as None where the reuse
+        notes read it."""
         from unittest.mock import patch
-        from interface_runtime import evidence
-        from generative_driver.configurator import _frozen_package
+        import interface_runtime.package as runtime_package
+        from generative_driver.configurator import _frozen_package, digest
         with tempfile.TemporaryDirectory() as directory:
-            package = driver_package(Path(directory), operations={
+            package = thermometer_package(Path(directory), operations={
                 'identify': {'effect': 'read'}, 'read_temperature': {'effect': 'read'}, 'set_rate': {'effect': 'write'},
                 'settle': {'effect': 'read', 'steps': [{'op': 'delay', 'ms': 1}]}})
-            frozen = {'path': str(package), 'sha256': 'frozen'}
+            frozen = {'path': str(package), 'sha256': digest(package)}
             facts = _frozen_package(frozen, strict=True)
             self.assertEqual((facts['identity'], facts['functions']), ('identify', ['read_temperature', 'set_rate']))
-            self.assertEqual(facts['effects'], {'identify': 'read', 'read_temperature': 'read', 'set_rate': 'write', 'settle': 'read'})
-            model = package / 'driver' / 'model.json'
-            for name, change in (('absent', model.unlink), ('unparseable', lambda: model.write_text('{"identity": '))):
-                with self.subTest(model=name):
-                    change()
-                    facts = _frozen_package(frozen, strict=True)
-                    self.assertEqual((facts['identity'], facts['effects'], facts['functions']), (None, None, None))
-                    self.assertIsNotNone(facts['manifest_sha256'])
-            with patch.object(evidence, 'read_json_hashed', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(facts['effects'],
+                             {'identify': 'read', 'read_temperature': 'read', 'set_rate': 'write', 'settle': 'read'})
+            self.assertEqual(facts['tools'], {'scripted_thermometer_' + name: name for name in facts['effects']})
+            self.assertEqual((facts['sha256'], facts['manifest_sha256'], facts['resets_on_open']),
+                             (frozen['sha256'], digest(package / 'manifest.json'), False))
+            # Nothing of a package's own command line or of an earlier format is among the facts.
+            self.assertEqual(set(facts), {'sha256', 'manifest_sha256', 'tools', 'identity', 'effects', 'resets_on_open',
+                                          'functions'})
+            real_digest = runtime_package.digest
+            def unreadable(path):
+                if Path(path).parent.name == 'drivers':
+                    raise PermissionError(13, 'Permission denied', str(path))
+                return real_digest(path)
+            with patch.object(runtime_package, 'digest', unreadable):
                 self.assertIsNone(_frozen_package(frozen)['identity'])
                 with self.assertRaises(PermissionError):
                     _frozen_package(frozen, strict=True)
+            driver = package / 'drivers' / 'scripted_thermometer.json'
+            for name, change in (('unparseable', lambda: driver.write_text('{"identity": ')),
+                                 ('absent', driver.unlink)):
+                with self.subTest(driver=name):
+                    change()
+                    facts = _frozen_package(frozen, strict=True)
+                    self.assertEqual((facts['identity'], facts['effects'], facts['functions'], facts['tools']),
+                                     (None, None, None, None))
+                    self.assertEqual(facts['manifest_sha256'], digest(package / 'manifest.json'))
 
     def test_the_configurator_reads_a_model_as_the_runtime_does(self):
-        """The runtime reads model.json with its strict bounded reader, which accepts a UTF-8 byte-order mark (as
+        """The runtime reads a model with its strict bounded reader, which accepts a UTF-8 byte-order mark (as
         PowerShell 5.1 writes) or UTF-16. The configurator's readers of a frozen package and of a dispatched model read
         the same bytes the same way, so such a model keeps its identity, functions, effects and channel."""
-        from generative_driver.configurator import _frozen_package, _model_channel, operation_effects
+        from generative_driver.configurator import _frozen_package, _model_channel, digest, operation_effects
         model = thermometer_model()
         model['channel'] = {'type': 'uart', 'baudrate': 115200, 'resets_on_open': True}
-        for encoding, raw in (('UTF-8 with a byte-order mark', b'\xef\xbb\xbf' + json.dumps(model).encode('utf-8')),
-                              ('UTF-16', json.dumps(model).encode('utf-16'))):
+        for encoding, encoded in (('UTF-8 with a byte-order mark', lambda text: b'\xef\xbb\xbf' + text.encode('utf-8')),
+                                  ('UTF-16', lambda text: text.encode('utf-16'))):
             with self.subTest(encoding), tempfile.TemporaryDirectory() as directory:
-                package = Path(directory) / 'package'; (package / 'driver').mkdir(parents=True)
-                (package / 'manifest.json').write_text('{}')
-                (package / 'driver' / 'model.json').write_bytes(raw)
-                facts = _frozen_package({'path': str(package), 'sha256': 'scripted'}, strict=True)
+                # A package whose driver file holds the same model in that encoding, under the hash of those bytes.
+                package = thermometer_package(Path(directory), channel=model['channel'])
+                driver = package / 'drivers' / 'scripted_thermometer.json'
+                driver.write_bytes(encoded(driver.read_text(encoding='utf-8')))
+                manifest = json.loads((package / 'manifest.json').read_text(encoding='utf-8'))
+                manifest['files']['drivers/scripted_thermometer.json'] = digest(driver)
+                (package / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+                facts = _frozen_package({'path': str(package), 'sha256': digest(package)}, strict=True)
                 self.assertEqual((facts['identity'], facts['functions'], facts['effects'], facts['resets_on_open']),
                                  ('identify', ['read_temperature'], {'identify': 'read', 'read_temperature': 'read'}, True))
-                arguments = {'model_dir': str(package / 'driver'), 'operation': 'read_temperature'}
+                # The gateway's readers of a model that a worker's call names, in a folder of its own.
+                named = Path(directory) / 'named'; (named / 'driver').mkdir(parents=True)
+                (named / 'driver' / 'model.json').write_bytes(encoded(json.dumps(model)))
+                arguments = {'model_dir': str(named / 'driver'), 'operation': 'read_temperature'}
                 self.assertEqual(operation_effects('interface_execute', arguments), {'read'})
-                self.assertEqual(operation_effects('emit_test_live', {'package_dir': str(package), 'operations': ['identify']}), {'read'})
+                live_test = {'package_dir': str(named), 'operations': ['identify']}
+                self.assertEqual(operation_effects('emit_test_live', live_test), {'read'})
                 self.assertEqual(_model_channel('interface_execute', arguments)['resets_on_open'], True)
-                self.assertEqual(_model_channel('emit_test_live', {'package_dir': str(package)})['type'], 'uart')
+                self.assertEqual(_model_channel('emit_test_live', {'package_dir': str(named)})['type'], 'uart')
 
     def test_a_run_stopped_at_finalize_resumes_to_its_verdict_without_budget_binding_or_assumed_effects(self):
         """Finalize only reads the configurator's records and contacts no device. A generic run that stopped there
@@ -2673,55 +2730,46 @@ class GenericEmitInputTests(unittest.TestCase):
 
 
 class RealToolVerdictTests(unittest.TestCase):
-    """Whole generic runs whose probe, emit and fresh-reuse workers call the real tools through the configurator's
-    gateway, on a fictional line-protocol thermometer served on a localhost socket. No hardware and no model run:
-    acquire, interpret and ground are scripted, and interpret hands on the thermometer model."""
+    """03-B6 on whole generic runs with a fictional line-protocol thermometer served on a localhost socket. The probe
+    and emit workers call the real tools through the configurator's gateway. The fresh-reuse worker calls the generated
+    tools of the package emit handed off, and each call runs the installed runtime over that package in a child
+    process. No hardware and no model run: acquire, interpret and ground are scripted, and interpret hands on the
+    thermometer model."""
     DEVICE = {b'ID': b'THERMO-1\n', b'T': b'21.5\n'}
+    DRIVER = 'drivers/scripted_thermometer.json'
+    EVIDENCE = 'evidence/scripted_thermometer.probe.json'
+    IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation; identity alone '
+                     "is not evidence of function, nor is an operation that only waits or repeats identity's requests")
 
-    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None, effects=None,
-                    emit_report=None, emit_runtime=None, seen=None, before_tool=None):
-        """`reuse(call, package, workspace)` is the fresh-reuse worker; it calls the real tools with `call(name,
-        **arguments)`, which returns the result or the gateway's exception. Interpret hands on `model` (the thermometer
-        by default). `emit(call, model, record, workspace)`
-        returns the package the emit worker hands off; by default it packages the assigned model with the probe
-        record handed on. `emit_report(package)` is the emit worker's report (None: one that names no artifact); by
-        default it names the package with the configurator's digest. `emit_runtime(request)` may replace the emit
-        runtime's whole result. `on_emit_check(attempt)` may return a context manager to run the configurator's own
-        emit_check in. With `resume`, a run that stopped is resumed once. `effects` are the run's grants. The device
-        appends each request line to `seen`, and `before_tool(name, arguments)` runs as the gateway dispatches each
-        tool, before the real tool. Returns the stopped result (or the first stop and the final result when resumed)
-        and the events."""
+    @staticmethod
+    def tool(operation):
+        """The name of the generated tool of `operation` of the thermometer's package."""
+        return 'scripted_thermometer_' + operation
+
+    def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None,
+                    effects=None, emit_report=None, emit_runtime=None, seen=None):
+        """`reuse(call, package, workspace)` is the fresh-reuse worker. Its `call(operation, **arguments)` calls the
+        generated tool of that operation of the package it was assigned, through the gateway, and returns the result
+        or the exception the gateway raised. Interpret hands on `model` (the thermometer by default).
+        `emit(call, model, record, workspace)` returns the package the emit worker hands off; its `call(name,
+        **arguments)` calls a tool of the kit. By default it packages the assigned model with the probe record handed
+        on. `emit_report(package)` is the emit worker's report (None: one that names no artifact); by default it names
+        the package with the configurator's digest. `emit_runtime(request)` may replace the emit runtime's whole
+        result. `on_emit_check(attempt)` may return a context manager to run the configurator's own emit_check in.
+        With `resume`, a run that stopped is resumed once. `effects` are the run's grants. The device appends each
+        request line to `seen`. Returns the stopped result (or the first stop and the final result when resumed) and
+        the events."""
         from unittest.mock import patch
         from generative_driver import toolkit
         from generative_driver.configurator import Controller, digest
-        real_call_tool, packages, checks = toolkit.call_tool, {}, []
+        real_call_tool, packages, checks, requests = toolkit.call_tool, {}, [], []
         interpreted = model or thermometer_model()
         def call_tool(name, arguments):
-            if before_tool:
-                before_tool(name, arguments)
             if name == 'emit_check' and Path(arguments['run_dir']).parent.name == 'checks' and on_emit_check:
                 checks.append(name)
                 with on_emit_check(len(checks)):
                     return real_call_tool(name, arguments)
-            result = real_call_tool(name, arguments)
-            if name == 'emit_package' and result.get('ok'):
-                # These tests exercise the historical generic live-test tools. Produce a genuine
-                # format-1 artifact before the owner records its build hash, never exempt format 2.
-                from interface_runtime.package import package_files, verify_package
-                package = Path(result['package_dir'])
-                manifest = json.loads((package/'manifest.json').read_text())
-                for filename, field in (('driver/contract.json', 'contract_sha256'),
-                                        ('driver/protocol.json', 'protocol_sha256'),
-                                        ('mcp-tools.json', 'mcp_catalog_sha256')):
-                    (package/filename).unlink()
-                    del manifest[field]
-                manifest.update(schema='interface-package/1', files=package_files(package))
-                (package/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
-                pin = hashlib.sha256((package/'manifest.json').read_bytes()).hexdigest()
-                (package/'manifest.sha256').write_text(pin+'\n')
-                self.assertTrue(verify_package(package)['ok'])
-                result = {**result, 'manifest_sha256': pin, '_files': {str(package/'manifest.json'): pin}}
-            return result
+            return real_call_tool(name, arguments)
         controller = Controller(home)
         real_check = controller._check
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
@@ -2733,7 +2781,9 @@ class RealToolVerdictTests(unittest.TestCase):
                 return {'ok': True, 'artifacts': [str(model)], 'checks': []}
             return {'ok': True, 'artifacts': [], 'checks': []}
         def prepare(original, spec, stage, run_dir, workspace, accepted):
-            return original(spec, stage, run_dir, workspace, accepted) if stage in ('probe', 'emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
+            if stage in ('probe', 'emit', 'reuse'):
+                return original(spec, stage, run_dir, workspace, accepted)
+            return {'inputs': [], 'allowed_tools': []}
         def work(request):
             inputs = [Path(p) for p in task_of(request.prompt)['inputs']]
             def call(name, **arguments):
@@ -2750,7 +2800,17 @@ class RealToolVerdictTests(unittest.TestCase):
                 packages[request.workspace] = (emit or (lambda call, model, record, workspace: call(
                     'emit_package', model_dir=str(model), probe_json=str(record))['package_dir']))(call, model, record, workspace)
             elif request.stage == 'reuse':
-                reuse(call, inputs[0], workspace)
+                identity = gateway_identity(request)
+                server = controller.call('mcp_tools', identity)['server']
+                def generated(operation, **arguments):
+                    requests.append(operation)
+                    try:
+                        return controller.call('mcp_tool', {**identity, 'name': server + '_' + operation,
+                                                            'arguments': arguments,
+                                                            'request_id': 'call-' + str(len(requests))})
+                    except (ValueError, OSError) as error:
+                        return error
+                reuse(generated, inputs[0], workspace)
         def report(request):
             if request.stage == 'emit':
                 package = packages[request.workspace]
@@ -2786,57 +2846,66 @@ class RealToolVerdictTests(unittest.TestCase):
         reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
         return next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
 
-    def test_fresh_reuse_must_run_a_function_of_the_frozen_package_beyond_its_identity(self):
-        """Identity alone is not evidence of function: self-evidence needs fresh reuse to run at least one operation of
-        the frozen package beyond its identity operation on the device. The reuse note follows the verdict's rule."""
-        for name, arguments, equivalent in (('a function beyond identity', {'operations': ['read_temperature']}, True),
-                                            ('the identity operation only', {}, False),
-                                            ('the identity operation named explicitly', {'operations': ['identify']}, False)):
+    @staticmethod
+    def reads(call, package, workspace):
+        """The fresh-reuse worker that runs the frozen package's read once."""
+        return call('read_temperature')
+
+    def test_03_B6_fresh_reuse_must_run_a_function_of_the_frozen_package_beyond_its_identity(self):
+        """Identity alone is not evidence of function: self-evidence needs fresh reuse to run, with a generated tool, at
+        least one operation of the frozen package beyond its identity operation on the device. The reuse note follows
+        the verdict's rule."""
+        for name, operations, equivalent in (
+                ('a function beyond identity', ['read_temperature'], True),
+                ('the identity operation only', ['identify'], False),
+                ('the identity operation, then a function', ['identify', 'read_temperature'], True)):
             with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
                 ran = []
-                result, _ = self.run_generic(Path(directory) / 'home',
-                    lambda call, package, workspace: ran.append(call('emit_test_live', package_dir=str(package), **arguments)))
+                result, _ = self.run_generic(Path(directory) / 'home', lambda call, package, workspace: ran.extend(
+                    call(operation) for operation in operations))
                 self.assertEqual(result['status'], 'completed', result)
-                self.assertEqual(ran[0]['_exit'], 0, ran)
+                self.assertEqual([(r['operation'], r['ok']) for r in ran],
+                                 [(operation, True) for operation in operations], ran)
                 equivalence = result['equivalence']
                 self.assertEqual(equivalence['equivalent'], equivalent, equivalence)
-                self.assertEqual(self.outcomes(result), [('emit_test_live', 'succeeded')])
-                replay = equivalence['checks'][0]
-                self.assertTrue(replay['passed'] and replay['basis'].startswith('emit_check replay of the recorded device exchanges'), replay)
+                replay, live = equivalence['checks']
+                self.assertTrue(replay['passed'] and replay['basis'].startswith(
+                    'emit_check replay of the recorded device exchanges'), replay)
+                self.assertEqual([(o['name'], o['outcome'], o['emitted_package']) for o in live['operations']],
+                                 [(self.tool(operation), 'succeeded', True) for operation in operations])
                 note = self.reuse_note(result)
                 self.assertEqual(note['passed'], equivalent, note)
                 if not equivalent:
-                    reason = ('fresh reuse ran no function of the frozen package beyond its identity operation with '
-                              'emit_test_live; identity alone is not evidence of function, nor is an operation that only waits or repeats '
-                              "identity's requests")
-                    self.assertEqual(equivalence['diff'], [{'id': 'fresh_reuse_live_operations', 'reason': reason}])
-                    self.assertEqual(note['reason'], reason)
+                    self.assertEqual(equivalence['diff'],
+                                     [{'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
+                    self.assertEqual(note['reason'], self.IDENTITY_ONLY)
 
     def test_an_operation_that_only_waits_is_no_function_of_the_frozen_package(self):
         """A settle operation of delays alone sends nothing to the device once identity is verified, so running it is
-        running identity alone: not equivalent. Running it with a function that exchanges with the device is."""
-        from generative_driver.configurator import IDENTITY_ONLY
+        running identity alone: not equivalent. Running it and a function that exchanges with the device is."""
         model = thermometer_model()
         model['operations']['settle'] = {'effect': 'read', 'parameters': {}, 'outputs': {}, 'steps': [{'op': 'delay', 'ms': 1}]}
         model['provenance'].append({'item': 'operations.settle', 'source': 'scripted fixture'})
         for operations, equivalent in ((['settle'], False), (['settle', 'read_temperature'], True)):
             with self.subTest(operations=operations), tempfile.TemporaryDirectory() as directory:
                 ran = []
-                result, _ = self.run_generic(Path(directory) / 'home', lambda call, package, workspace: ran.append(
-                    call('emit_test_live', package_dir=str(package), operations=operations)), model=model)
+                result, _ = self.run_generic(Path(directory) / 'home', lambda call, package, workspace: ran.extend(
+                    call(operation) for operation in operations), model=model)
                 self.assertEqual(result['status'], 'completed', result)
-                self.assertEqual((ran[0]['_exit'], [r['operation'] for r in ran[0]['results'] if r['ok']]), (0, operations), ran)
+                self.assertEqual([r['operation'] for r in ran if r['ok']], operations, ran)
                 equivalence = result['equivalence']
                 self.assertEqual(equivalence['equivalent'], equivalent, equivalence)
-                self.assertEqual(self.outcomes(result), [('emit_test_live', 'succeeded')])
-                self.assertEqual(equivalence['diff'], [] if equivalent else [{'id': 'fresh_reuse_live_operations', 'reason': IDENTITY_ONLY}])
+                self.assertEqual(self.outcomes(result),
+                                 [(self.tool(operation), 'succeeded') for operation in operations])
+                self.assertEqual(equivalence['diff'], [] if equivalent else [
+                    {'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
                 self.assertEqual(self.reuse_note(result)['passed'], equivalent)
 
     def test_an_operation_that_repeats_the_identity_request_is_no_function_of_the_frozen_package(self):
         """get_chip_id sends the device what identify sends: running it on the device asks nothing identity does not, so
         it is no function, whatever it accepts back (another capture name or timeout, no expectation, a looser one or
-        another receive bound). Running it with a function that sends something else is equivalent."""
-        from generative_driver.configurator import IDENTITY_ONLY, _frozen_package, digest
+        another receive bound). Running it and a function that sends something else is equivalent."""
+        from generative_driver.configurator import _frozen_package, digest
         identify = thermometer_model()['operations']['identify']['steps'][0]
         unexpecting = {key: value for key, value in identify.items() if key != 'expect'}
         for alias_name, alias in (
@@ -2852,207 +2921,145 @@ class RealToolVerdictTests(unittest.TestCase):
                     ran, frozen = [], []
                     def reuse(call, package, workspace):
                         frozen.append(_frozen_package({'path': str(package), 'sha256': digest(package)}, strict=True))
-                        ran.append(call('emit_test_live', package_dir=str(package), operations=operations))
+                        ran.extend(call(operation) for operation in operations)
                     result, _ = self.run_generic(Path(directory) / 'home', reuse, model=model)
                     self.assertEqual(result['status'], 'completed', result)
                     self.assertEqual(frozen[0]['functions'], ['read_temperature'])
-                    self.assertEqual((ran[0]['_exit'], [r['operation'] for r in ran[0]['results'] if r['ok']]), (0, operations), ran)
+                    self.assertEqual([r['operation'] for r in ran if r['ok']], operations, ran)
                     equivalence = result['equivalence']
                     self.assertEqual(equivalence['equivalent'], equivalent, equivalence)
-                    self.assertEqual(self.outcomes(result), [('emit_test_live', 'succeeded')])
-                    self.assertEqual(equivalence['diff'], [] if equivalent else [{'id': 'fresh_reuse_live_operations', 'reason': IDENTITY_ONLY}])
+                    self.assertEqual(self.outcomes(result),
+                                     [(self.tool(operation), 'succeeded') for operation in operations])
+                    self.assertEqual(equivalence['diff'], [] if equivalent else [
+                        {'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
                     self.assertEqual(self.reuse_note(result)['passed'], equivalent)
 
-    def test_a_host_failure_before_an_effectful_live_test_contacts_the_device_leaves_no_effect_to_reconcile(self):
-        """emit_test_live copies the frozen package into a snapshot before any call. When the host cannot read that copy
-        back, nothing reached the device: the tool declares a host fault before contact, so the gateway reconciles the
-        write it marked uncertain, and the verdict is unscored, never a refusal or a driver failure."""
+    def test_03_B6_a_call_the_runtime_refused_before_it_opened_the_device_is_not_a_live_operation(self):
+        """The runtime of the frozen package refuses arguments an operation does not take before it opens the device.
+        Such a generated call is not a live operation: fresh reuse that then runs a function that passes is
+        equivalent, and the reuse note judges the attempt by the same rule."""
+        seen, ran, sent = [], [], []
+        def reuse(call, package, workspace):
+            sent.append(len(seen))
+            ran.append(call('read_temperature', unexpected=1))
+            sent.append(len(seen))
+            ran.append(call('read_temperature'))
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(Path(directory) / 'home', reuse, seen=seen)
+        refused, passed = ran
+        self.assertEqual((refused['ok'], refused['transport_open_attempted']), (False, False), refused)
+        self.assertEqual(sent[0], sent[1], 'the device received a request of the refused call')
+        self.assertTrue(passed['ok'], passed)
+        self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True),
+                         result['equivalence'])
+        outcomes = [(self.tool('read_temperature'), 'refused'), (self.tool('read_temperature'), 'succeeded')]
+        self.assertEqual(self.outcomes(result), outcomes)
+        finished = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['stage'] == 'reuse']
+        self.assertEqual([e['refused_before_open'] for e in finished], [True, False])
+        note = self.reuse_note(result)
+        self.assertEqual((note['passed'], [(o['name'], o['outcome']) for o in note['operations']]), (True, outcomes))
+
+    def test_03_B6_a_package_the_worker_swaps_in_never_runs(self):
+        """A generated call runs the package the gateway assigned, by the hashes it recorded. A worker that swaps
+        another package that is consistent in itself into its place, here one whose read_temperature became a heater
+        command, never has it run. Before a call, the gateway refuses the changed input and dispatches nothing. During
+        a call, after the gateway read the package, the copy the child would run is checked against the frozen manifest
+        and refused: that dispatch has no recorded result, which leaves the verdict unscored. The stand-in swaps the
+        package at the moment named and puts the frozen bytes back afterwards."""
+        from unittest.mock import patch
+        from generative_driver.device_access import DeviceAccess
+        from interface_runtime.package import package_files, verify_package
+        read = self.tool('read_temperature')
+        def swapped(package):
+            """Swap the heater package into `package`; returns the call that puts the frozen bytes back."""
+            kept = {name: (package / name).read_bytes() for name in (self.DRIVER, 'manifest.json')}
+            model = json.loads(kept[self.DRIVER])
+            model['operations']['read_temperature'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+                {'op': 'exchange', 'tx': [{'text': 'H1\n'}], 'timeout_ms': 1000,
+                 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}}]}
+            (package / self.DRIVER).write_text(json.dumps(model))
+            manifest = json.loads(kept['manifest.json'])
+            manifest['files'] = package_files(package)
+            (package / 'manifest.json').write_text(json.dumps(manifest))
+            self.assertTrue(verify_package(package)['ok'], 'the package swapped in is not consistent in itself')
+            return lambda: [(package / name).write_bytes(data) for name, data in kept.items()]
+        real_invoke = DeviceAccess.invoke_package
+        for when in ('before the call', 'during the call'):
+            seen, ran, during = [], [], []
+            def reuse(call, package, workspace):
+                if when == 'before the call':
+                    restore = swapped(package)
+                    ran.append(call('read_temperature'))
+                    restore()
+                else:
+                    during.append(True)
+                    ran.append(call('read_temperature'))
+                ran.append(call('read_temperature'))
+            def invoke(access, package, *rest):
+                if not during:
+                    return real_invoke(access, package, *rest)
+                during.clear()
+                restore = swapped(Path(package))
+                try:
+                    return real_invoke(access, package, *rest)
+                finally:
+                    restore()
+            with self.subTest(swapped=when), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(DeviceAccess, 'invoke_package', invoke):
+                result, events = self.run_generic(Path(directory) / 'home', reuse, effects=['read', 'write'],
+                                                  replies={**self.DEVICE, b'H1': b'OK\n'}, seen=seen)
+                # The heater command never reached the device, and no write was marked uncertain.
+                self.assertNotIn(b'H1', seen)
+                self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
+                refusal, passed = ran
+                self.assertIsInstance(refusal, ValueError, ran)
+                self.assertTrue(passed['ok'], passed)
+                refused = [e['data'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'reuse']
+                abandoned = [e['data'] for e in events if e['kind'] == 'tool.abandoned']
+                reasons = [d['reason'] for d in result['equivalence']['diff']]
+                if when == 'before the call':
+                    self.assertEqual([(e['name'], e['reason']) for e in refused], [(read, str(refusal))])
+                    self.assertIn('an assigned input was altered', str(refusal))
+                    self.assertEqual((abandoned, self.outcomes(result)), ([], [(read, 'succeeded')]))
+                    self.assertEqual((result['equivalence']['equivalent'], reasons), (True, []))
+                else:
+                    self.assertIn('manifest pin mismatch', str(refusal))
+                    self.assertEqual((refused, [e['name'] for e in abandoned]), ([], [read]))
+                    self.assertEqual(self.outcomes(result), [(read, 'unresolved'), (read, 'succeeded')])
+                    self.assertEqual((result['equivalence']['equivalent'], reasons), (None, [
+                        read + ' was dispatched but its result was never recorded (dispatch '
+                        + abandoned[0]['dispatch_id'] + ')']))
+
+    def test_03_B6_a_host_failure_before_the_child_starts_leaves_the_call_unrecorded_and_the_verdict_unscored(self):
+        """A generated call runs a checked copy of the frozen package. When the host cannot read that copy back, nothing
+        reached the device and the dispatch ends without a recorded result: the verdict is unscored, never a refusal
+        or a driver failure."""
         from unittest.mock import patch
         import interface_runtime.package as runtime_package
-        ran = []
+        read = self.tool('read_temperature')
+        seen, ran, sent = [], [], []
         def reuse(call, package, workspace):
-            real_digest = runtime_package.digest
+            real_digest, own = runtime_package.digest, package.resolve()
             def locked(path):
-                if Path(path).name == 'engine.py' and 'package' in Path(path).parts and not Path(path).is_relative_to(package):
-                    raise PermissionError(13, 'The process cannot access the file because it is being used by another process', str(path))
+                if Path(path).name == Path(self.DRIVER).name and not Path(path).resolve().is_relative_to(own):
+                    raise PermissionError(13, 'The process cannot access the file because it is being used by another '
+                                          'process', str(path))
                 return real_digest(path)
+            sent.append(len(seen))
             with patch.object(runtime_package, 'digest', locked):
-                ran.append(call('emit_test_live', package_dir=str(package), operations=['set_rate', 'read_temperature']))
+                ran.append(call('read_temperature'))
+            sent.append(len(seen))
         with tempfile.TemporaryDirectory() as directory:
-            result, events = self.run_generic(Path(directory) / 'home', reuse, model=DeviceRepairTests.writing_thermometer(),
-                                              effects=['read', 'write'], replies={**self.DEVICE, b'R': b'OK\n'})
-        self.assertEqual((ran[0]['_exit'], ran[0]['fault'], ran[0]['transport_open_attempted']), (4, 'host', False), ran)
-        self.assertTrue(ran[0]['error'].startswith('PermissionError: '), ran)
+            result, events = self.run_generic(Path(directory) / 'home', reuse, seen=seen)
+        self.assertIsInstance(ran[0], PermissionError, ran)
+        self.assertEqual(sent[0], sent[1], 'the device received a request of the call that never started')
         self.assertEqual((result['status'], result['uncertain_effect'], result['equivalence']['equivalent']),
                          ('completed', False, None), result)
-        [finished] = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live']
-        self.assertEqual((finished['effectful'], finished['refused_before_open'], finished['effects_reconciled']),
-                         (True, False, True), finished)
-        self.assertEqual(self.outcomes(result), [('emit_test_live', 'inconclusive')])
-        dispatch = finished['dispatch_id']
-        self.assertEqual([d['reason'] for d in result['equivalence']['diff']],
-                         ['emit_test_live was inconclusive: host fault (PermissionError), not a driver failure (dispatch ' + dispatch + ')'])
-
-    def test_01_B7_a_live_test_of_a_package_whose_model_format_the_runtime_does_not_know_is_refused_at_the_gateway(self):
-        """The gateway classifies a live test by the package's model. A package whose model has a schema the runtime
-        does not know is refused there, whatever the run grants: emit_test_live never starts, the device receives
-        nothing and no effect is marked uncertain. Here a folder laid out as a register package, and the frozen package
-        with its model renamed to a schema nobody defined."""
-        from interface_runtime.package import package_files
-        from test_package import register_package
-        for grants in (None, ['read', 'write']):
-            seen, ran, before = [], [], []
-            with self.subTest(grants=grants), tempfile.TemporaryDirectory() as directory:
-                marker = Path(directory) / 'package-ran'
-                def reuse(call, package, workspace):
-                    before.append(len(seen))
-                    register = register_package(workspace / 'register', marker)
-                    ran.append(call('emit_test_live', package_dir=str(register)))
-                    renamed = workspace / 'renamed'
-                    shutil.copytree(package, renamed)
-                    model = json.loads((renamed / 'driver' / 'model.json').read_text())
-                    (renamed / 'driver' / 'model.json').write_text(json.dumps(dict(model, schema='interface-model/99')))
-                    manifest = json.loads((renamed / 'manifest.json').read_text())
-                    files = package_files(renamed)
-                    manifest.update(files=files, model_sha256=files['driver/model.json'])
-                    (renamed / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-                    pin = hashlib.sha256((renamed / 'manifest.json').read_bytes()).hexdigest()
-                    (renamed / 'manifest.sha256').write_text(pin + '\n')
-                    ran.append(call('emit_test_live', package_dir=str(renamed), operations=['set_rate']))
-                result, events = self.run_generic(Path(directory) / 'home', reuse, effects=grants, seen=seen,
-                    model=DeviceRepairTests.writing_thermometer(), replies={**self.DEVICE, b'R': b'OK\n'})
-                self.assertEqual([type(refusal) for refusal in ran], [ValueError, ValueError], ran)
-                for refusal, schema in zip(ran, ("'interface-model/1'", "'interface-model/99'")):
-                    self.assertIn('model format is not one the runtime knows', str(refusal))
-                    self.assertTrue(str(refusal).endswith('nothing was dispatched: ' + schema), refusal)
-                self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished')
-                                     and e['data']['name'] == 'emit_test_live' for e in events))
-                refused = [e['data'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'reuse']
-                self.assertEqual([(e['name'], e['reason']) for e in refused],
-                                 [('emit_test_live', str(refusal)) for refusal in ran])
-                # The device received nothing after fresh reuse began, and no file of the register folder ran.
-                self.assertEqual(len(seen), before[0])
-                self.assertFalse(marker.exists(), 'a file of a refused package was imported or run')
-
-    def test_02_B2_the_gateway_refuses_a_live_test_of_a_package_whose_model_has_an_earlier_tag(self):
-        """A package emitted before the one driver format holds a model with an earlier tag. The gateway refuses its
-        live test by that name: emit_test_live never starts and the device receives nothing."""
-        from interface_runtime.package import package_files
-        for tag in ('interface-model/3', 'interface-model/6'):
-            seen, ran, before = [], [], []
-            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as directory:
-                def reuse(call, package, workspace):
-                    before.append(len(seen))
-                    earlier = workspace / 'earlier'
-                    shutil.copytree(package, earlier)
-                    model = json.loads((earlier / 'driver' / 'model.json').read_text())
-                    (earlier / 'driver' / 'model.json').write_text(json.dumps(dict(model, schema=tag)))
-                    manifest = json.loads((earlier / 'manifest.json').read_text())
-                    files = package_files(earlier)
-                    manifest.update(files=files, model_sha256=files['driver/model.json'])
-                    (earlier / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-                    pin = hashlib.sha256((earlier / 'manifest.json').read_bytes()).hexdigest()
-                    (earlier / 'manifest.sha256').write_text(pin + '\n')
-                    ran.append(call('emit_test_live', package_dir=str(earlier), operations=['set_rate']))
-                result, events = self.run_generic(Path(directory) / 'home', reuse, effects=['read', 'write'], seen=seen,
-                    model=DeviceRepairTests.writing_thermometer(), replies={**self.DEVICE, b'R': b'OK\n'})
-                self.assertEqual([type(refusal) for refusal in ran], [ValueError], ran)
-                self.assertIn('interface-model/7', str(ran[0]))
-                self.assertTrue(str(ran[0]).endswith('nothing was dispatched: ' + repr(tag)), ran[0])
-                self.assertFalse(any(e['kind'] in ('tool.started', 'tool.finished')
-                                     and e['data']['name'] == 'emit_test_live' for e in events))
-                self.assertEqual(len(seen), before[0])
-                self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
-
-    def test_a_package_the_worker_swaps_in_during_a_live_test_never_runs(self):
-        """The gateway classifies a live test by the package's model, and the tool then copies the package and verifies
-        the copy against the package's own manifest. A worker that swaps in another consistent package in between, here
-        one whose read_temperature became a heater command labelled write, which this run grants, would run a write the
-        gateway never marked uncertain. The stand-in rewrites the worker's package copy after the gateway's read."""
-        from interface_runtime.package import package_files
-        seen, ran, own = [], [], {}
-        def swap(name, arguments):
-            if name != 'emit_test_live' or Path(arguments['package_dir']) != own.get('package'):
-                return
-            package = own['package']
-            model = json.loads((package / 'driver' / 'model.json').read_text())
-            model['operations']['read_temperature'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
-                {'op': 'exchange', 'tx': [{'text': 'H1\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64},
-                 'timeout_ms': 1000}]}
-            (package / 'driver' / 'model.json').write_text(json.dumps(model))
-            manifest = json.loads((package / 'manifest.json').read_text())
-            files = package_files(package)
-            manifest.update(files=files, model_sha256=files['driver/model.json'])
-            (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-            (package / 'manifest.sha256').write_text(hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest() + '\n')
-        def reuse(call, package, workspace):
-            own['package'] = workspace / 'own-package'
-            shutil.copytree(package, own['package'])
-            ran.append(call('emit_test_live', package_dir=str(own['package']), operations=['read_temperature']))
-        with tempfile.TemporaryDirectory() as directory:
-            result, events = self.run_generic(Path(directory) / 'home', reuse, effects=['read', 'write'],
-                                              replies={**self.DEVICE, b'H1': b'OK\n'}, seen=seen, before_tool=swap)
-        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
-        # The tool refused the swapped package before contact, so the heater command never reached the device.
-        self.assertNotIn(b'H1', seen)
-        self.assertEqual((ran[0]['_exit'], ran[0].get('transport_open_attempted')), (1, False), ran)
-        self.assertIn('manifest checksum/pin mismatch', str(ran[0]['defects']))
-
-    def test_a_host_fault_after_the_device_ran_the_package_never_reads_as_a_refusal(self):
-        """The host cannot write the live record after the package ran on the device. What the device did is kept:
-        alone it leaves the verdict unscored; a driver failure in it still makes the run not equivalent."""
-        def block(workspace):
-            (workspace / 'tools').mkdir(exist_ok=True); (workspace / 'tools' / 'emit').write_text('not a folder')
-        def unblock(workspace):
-            (workspace / 'tools' / 'emit').unlink()
-        replies = dict(self.DEVICE)
-        def lost_pass(call, package, workspace):
-            block(workspace)
-            call('emit_test_live', package_dir=str(package), operations=['read_temperature'])
-        def lost_failure_then_pass(call, package, workspace):
-            block(workspace)
-            replies[b'T'] = b'ERR\n'
-            call('emit_test_live', package_dir=str(package), operations=['read_temperature'])
-            replies[b'T'] = self.DEVICE[b'T']
-            unblock(workspace)
-            call('emit_test_live', package_dir=str(package), operations=['read_temperature'])
-        for name, reuse, equivalent, outcomes, says in (
-                ('only call', lost_pass, None, [('emit_test_live', 'inconclusive')], 'emit_test_live was inconclusive: host fault'),
-                ('driver failed, record lost, then a pass', lost_failure_then_pass, False,
-                 [('emit_test_live', 'failed'), ('emit_test_live', 'succeeded')], 'emit_test_live failed on the device')):
-            replies.update(self.DEVICE)
-            with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
-                result, events = self.run_generic(Path(directory) / 'home', reuse, replies=replies)
-                self.assertEqual(result['status'], 'completed', result)
-                live = [e['data']['result'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live']
-                self.assertEqual((live[0]['fault'], live[0]['_exit'], live[0]['live_record']), ('host', 4, None), live[0])
-                self.assertEqual(result['equivalence']['equivalent'], equivalent, result['equivalence'])
-                self.assertEqual(self.outcomes(result), outcomes)
-                reasons = [d['reason'] for d in result['equivalence']['diff']]
-                self.assertTrue(reasons[0].startswith(says), reasons)
-                self.assertFalse(any('refused before the device was contacted' in reason for reason in reasons), reasons)
-                self.assertEqual(self.reuse_note(result)['passed'], equivalent)
-
-    def test_only_a_declared_refusal_before_the_first_call_is_not_a_live_operation(self):
-        for name, plan, outcomes in (
-                ('the tool refused its arguments, then the package passed',
-                 [{'operations': ['read_temperature'], 'parameters': {'identify': {}}}, {'operations': ['read_temperature']}],
-                 [('emit_test_live', 'refused'), ('emit_test_live', 'succeeded')]),
-                ('one call passed its first operation and the package runtime refused the next before contact',
-                 [{'operations': ['read_temperature', 'identify'], 'parameters': {'identify': {'unexpected': 1}}}],
-                 [('emit_test_live', 'succeeded')])):
-            with self.subTest(plan=name), tempfile.TemporaryDirectory() as directory:
-                def reuse(call, package, workspace):
-                    for arguments in plan:
-                        call('emit_test_live', package_dir=str(package), **arguments)
-                result, events = self.run_generic(Path(directory) / 'home', reuse)
-                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result['equivalence'])
-                self.assertEqual(self.outcomes(result), outcomes)
-                finished = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_test_live']
-                self.assertEqual([e['refused_before_open'] for e in finished], [o == 'refused' for _, o in outcomes])
-                # The reuse note judges this attempt by the verdict's rule.
-                note = self.reuse_note(result)
-                self.assertEqual((note['passed'], [(o['name'], o['outcome']) for o in note['operations']]), (True, outcomes))
+        [abandoned] = [e['data'] for e in events if e['kind'] == 'tool.abandoned']
+        self.assertEqual((abandoned['name'], abandoned['type']), (read, 'PermissionError'), abandoned)
+        self.assertEqual(self.outcomes(result), [(read, 'unresolved')])
+        self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [
+            read + ' was dispatched but its result was never recorded (dispatch ' + abandoned['dispatch_id'] + ')'])
 
     def test_an_emit_check_the_host_could_not_run_stops_for_the_host_and_resumes(self):
         """A host fault in the configurator's own emit_check says nothing about the package: the run stops for the
@@ -3065,73 +3072,26 @@ class RealToolVerdictTests(unittest.TestCase):
                    lambda: patch('generative_driver._toolchain.core.log_event', side_effect=OSError(28, 'No space left on device'))))
         for name, says, fault in faults:
             with self.subTest(fault=name), tempfile.TemporaryDirectory() as directory:
-                (stopped, result), _ = self.run_generic(Path(directory) / 'home',
-                    lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
-                    on_emit_check=lambda attempt: fault() if attempt == 1 else contextlib.nullcontext(), resume=True)
+                (stopped, result), _ = self.run_generic(Path(directory) / 'home', self.reads, resume=True,
+                    on_emit_check=lambda attempt: fault() if attempt == 1 else contextlib.nullcontext())
                 self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']), ('failed', 'host', 'emit'), stopped)
                 self.assertIn('emit_check could not run', stopped['reason'])
                 self.assertIn(says, stopped['reason'])
                 self.assertIsNone(stopped['equivalence'])
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
 
-    def test_a_call_the_tool_refused_before_the_device_opened_is_no_live_operation(self):
-        """interface_execute checks a model and its evidence bound before it opens the transport and declares each
-        refusal; the gateway, which reads a model as the runtime does, refuses bytes the runtime cannot load before it
-        dispatches. Fresh reuse that tries its own copy of the model and is refused either way, then runs a function of
-        the frozen package that passes, is equivalent: the refused call never reached the device."""
-        exchange = {'op': 'exchange', 'tx': [{'text': 'T\n'}], 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 65536},
-                    'timeout_ms': 1000}
-        def duplicate_key(model):
-            return json.dumps(model).replace('"device": {', '"device": {"name": "twice", ', 1)
-        def invalid(model):
-            model['operations']['read_temperature']['steps'] = []
-            return json.dumps(model)
-        def beyond_the_evidence_bound(model):
-            model['operations']['dump'] = {'effect': 'read', 'parameters': {},
-                                           'steps': [dict(exchange, capture='c%d' % i) for i in range(100)],
-                                           'outputs': {'x%d' % i: {'from': 'c%d' % i, 'kind': 'hex'} for i in range(100)}}
-            model['provenance'].append({'item': 'operations.dump', 'source': 'scripted fixture'})
-            return json.dumps(model)
-        for name, write, operation, says, gateway in (
-                ('a duplicate JSON key', duplicate_key, 'read_temperature', 'duplicate JSON key', True),
-                ('an invalid model', invalid, 'read_temperature', 'invalid model', False),
-                ('a probe beyond the evidence bound', beyond_the_evidence_bound, 'dump', 'requested probe exceeds evidence bound', False)):
-            with self.subTest(refusal=name), tempfile.TemporaryDirectory() as directory:
-                calls = []
-                def reuse(call, package, workspace):
-                    own = workspace / 'own'; own.mkdir()
-                    (own / 'model.json').write_text(write(json.loads((package / 'driver' / 'model.json').read_text())))
-                    calls.append(call('interface_execute', model_dir=str(own), operation=operation))
-                    calls.append(call('emit_test_live', package_dir=str(package), operations=['read_temperature']))
-                result, events = self.run_generic(Path(directory) / 'home', reuse)
-                refused, passed = calls
-                if gateway:
-                    self.assertIsInstance(refused, ValueError)
-                    self.assertIn(says, str(refused))
-                    self.assertEqual([e['data']['name'] for e in events if e['kind'] == 'tool.refused'], ['interface_execute'])
-                else:
-                    self.assertEqual((refused['_exit'], refused['transport_open_attempted']), (1, False), refused)
-                    self.assertIn(says, refused['error'])
-                self.assertEqual(passed['_exit'], 0, passed)
-                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
-                self.assertEqual(self.outcomes(result), ([] if gateway else [('interface_execute', 'refused')])
-                                 + [('emit_test_live', 'succeeded')])
-                self.assertEqual(result['equivalence']['diff'], [])
-                self.assertIs(self.reuse_note(result)['passed'], True)
-
     def test_a_hand_edited_package_is_rejected_and_never_stops_the_run_for_the_host(self):
-        """Worker content never stops a run. A package the emit worker edited and resealed, however malformed, fails the
-        configurator's emit_check and is dropped; and a file the worker leaves where a check folder might go cannot
+        """Worker content never stops a run. A package the emit worker edited and listed again, however malformed, fails
+        the configurator's emit_check and is dropped; and a file the worker leaves where a check folder might go cannot
         block the configurator's own check, which runs outside the worker's workspace."""
-        from interface_runtime.package import digest as file_digest, package_files
+        from interface_runtime.package import package_files
         def edited(content):
             def emit(call, model, record, workspace):
                 package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
-                (package / 'probe.json').write_text(content(package))
+                (package / self.EVIDENCE).write_text(content(package))
                 manifest = json.loads((package / 'manifest.json').read_text())
-                manifest.update(files=package_files(package), probe_sha256=file_digest(package / 'probe.json'))
+                manifest['files'] = package_files(package)
                 (package / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-                (package / 'manifest.sha256').write_text(file_digest(package / 'manifest.json') + '\n')
                 # The worker checks its edit through the configurator, which hashes the package it is given.
                 call('emit_check', package_dir=str(package))
                 return str(package)
@@ -3144,15 +3104,14 @@ class RealToolVerdictTests(unittest.TestCase):
         def blocking(call, model, record, workspace):
             (workspace / 'checks').write_text('a file where a folder could go')
             return call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir']
-        nested = lambda package: (package / 'probe.json').read_text().rstrip()[:-1] + ', "x": ' + '[' * 100000 + ']' * 100000 + '}'
+        nested = lambda package: ((package / self.EVIDENCE).read_text().rstrip()[:-1] + ', "x": ' + '[' * 100000
+                                  + ']' * 100000 + '}')
         for name, emit, equivalent in (('a probe record that is a JSON array', edited(lambda package: '[1, 2]'), False),
                                        ('a probe record nested deeper than the parser allows', edited(nested), False),
                                        ('a manifest nested deeper than the parser allows', unparsable_manifest, False),
                                        ('a file where a check folder could go', blocking, True)):
             with self.subTest(package=name), tempfile.TemporaryDirectory() as directory:
-                result, events = self.run_generic(Path(directory) / 'home',
-                    lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
-                    emit=emit)
+                result, events = self.run_generic(Path(directory) / 'home', self.reads, emit=emit)
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
                 self.assertFalse(any(e['kind'] == 'run.failed' for e in events), [e for e in events if e['kind'] == 'run.failed'])
                 emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
@@ -3163,9 +3122,9 @@ class RealToolVerdictTests(unittest.TestCase):
         """The configurator's own record of emit_package decides which bytes are the driver: a report that gives the
         manifest hash, names nothing or is missing still hands off the package emit_package built, and reuse runs it.
         A report may name which package; it never supplies the hash."""
-        reuse = lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature'])
+        from interface_runtime.package import digest as file_digest
         named = lambda package: {'status': 'completed', 'summary': 'packaged', 'checks': [], 'unresolved': [], 'artifacts': [
-            {'path': package, 'sha256': (Path(package) / 'manifest.sha256').read_text().strip(), 'kind': 'package'}]}
+            {'path': package, 'sha256': file_digest(Path(package) / 'manifest.json'), 'kind': 'package'}]}
         silent = lambda request: {'runtime': 'codex', 'status': 'failed', 'cause': 'no_report', 'elapsed_seconds': 0,
                                   'usage': None, 'report': None, 'reason': 'Runtime did not produce a structured stage report'}
         def copied(call, model, record, workspace):
@@ -3177,7 +3136,7 @@ class RealToolVerdictTests(unittest.TestCase):
                               ('a report naming no artifact', {'emit_report': lambda package: None}),
                               ('no report', {'emit_runtime': silent})):
             with self.subTest(report=name), tempfile.TemporaryDirectory() as directory:
-                result, events = self.run_generic(Path(directory) / 'home', reuse, **options)
+                result, events = self.run_generic(Path(directory) / 'home', self.reads, **options)
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
                 emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
                 built = next(e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['name'] == 'emit_package')
@@ -3192,12 +3151,10 @@ class RealToolVerdictTests(unittest.TestCase):
         saying no driver was emitted."""
         def edited(call, model, record, workspace):
             package = Path(call('emit_package', model_dir=str(model), probe_json=str(record))['package_dir'])
-            (package / 'REFERENCE.md').write_text('rewritten after the tool returned')
+            (package / 'README.md').write_text('rewritten after the tool returned')
             return str(package)
         with tempfile.TemporaryDirectory() as directory:
-            result, _ = self.run_generic(Path(directory) / 'home',
-                lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
-                emit=edited)
+            result, _ = self.run_generic(Path(directory) / 'home', self.reads, emit=edited)
         self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
         emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
         self.assertEqual(emitted['artifacts'], [])
@@ -3226,9 +3183,7 @@ class RealToolVerdictTests(unittest.TestCase):
             def emit(call, model, record, workspace):
                 own = workspace / 'supplied-probe.json'; shutil.copyfile(supplied['probe'], own)
                 return call('emit_package', model_dir=str(model), probe_json=str(own))['package_dir']
-            result, _ = self.run_generic(root / 'home',
-                lambda call, package, workspace: call('emit_test_live', package_dir=str(package), operations=['read_temperature']),
-                emit=emit)
+            result, _ = self.run_generic(root / 'home', self.reads, emit=emit)
         equivalence = result['equivalence']
         self.assertEqual((result['status'], equivalence['equivalent']), ('completed', False), result)
         replay_check, operations = equivalence['checks']

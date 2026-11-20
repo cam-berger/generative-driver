@@ -862,8 +862,8 @@ class DeviceFirstRunTests(RunCase):
         self.assertEqual((given / 'model.json').read_bytes(),
                          (Path(handoff['artifacts'][0]['path']) / 'model.json').read_bytes())
         [package] = [a for h in self.handoffs(result, 'emit') for a in h['artifacts']]
-        self.assertEqual(json.loads((Path(package['path']) / 'driver' / 'model.json').read_text(encoding='utf-8')),
-                         model())
+        from interface_runtime.package import the_driver, verify_package
+        self.assertEqual(the_driver(verify_package(package['path']))[1], model())
         [reused] = self.assigned('reuse')
         self.assertEqual(list(reused['inputs'].values()), [package['sha256']])
 

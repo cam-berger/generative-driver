@@ -44,15 +44,15 @@ def _call_with_cancellation(method, params, home, *, cancel=None, cancel_method,
 class ManagedDriver:
     def __init__(self, package, session_id, *, home=None):
         from interface_runtime.contracts import contract_view
-        from interface_runtime.package import verify_package, digest
-        from interface_runtime.evidence import read_json
+        from interface_runtime.package import verify_package, the_driver
         self.package = Path(package).expanduser().resolve()
         checked = verify_package(self.package)
-        if not checked['ok'] or checked['manifest']['schema'] != 'interface-package/2':
-            raise ValueError('Managed use requires a verified driver-contract package: '+str(checked.get('defects')))
-        self.manifest_sha256 = digest(self.package/'manifest.json')
+        if not checked['ok']:
+            raise ValueError('Managed use requires a package that passes the check: '
+                             + '; '.join(defect['what'] for defect in checked['defects']))
+        self.manifest_sha256 = checked['manifest_sha256']
         # The driver contract is a view of the package's interface model, the one statement of its driver.
-        self.contract = contract_view(read_json(self.package/'driver/model.json'))
+        self.contract = contract_view(the_driver(checked)[1])
         self.session_id, self.home = session_id, home
 
     @classmethod

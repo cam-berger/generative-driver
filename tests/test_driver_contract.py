@@ -4,11 +4,7 @@ The interface model is the one statement of a driver (docs/adr/0010-a-package-is
 test that needs a meaning, a narrowed value or a precondition states it in the model and emits the package from it.
 """
 import json
-import hashlib
 from pathlib import Path
-import shutil
-import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -33,19 +29,9 @@ def emit_fixture(root, model=None, replay_data=None, probe_operation='measure'):
     return Path(emitted['package_dir']), emitted
 
 
-def rewrite_document(package, relative, document):
-    """Put `document` in the place of one file of a package and rebuild the unsigned checksums, so that a test of a
-    changed package reaches the check of what the file says, not the check of its hash. A test that needs a meaning
-    states it in the model and emits the package from that model."""
-    (package / relative).write_text(json.dumps(document))
-    manifest_path = package / 'manifest.json'
-    manifest = json.loads(manifest_path.read_text())
-    sha = hashlib.sha256((package / relative).read_bytes()).hexdigest()
-    manifest['files'][relative] = sha
-    key = 'mcp_catalog' if relative == 'mcp-tools.json' else Path(relative).stem
-    manifest[key + '_sha256'] = sha
-    manifest_path.write_text(json.dumps(manifest))
-    (package / 'manifest.sha256').write_text(hashlib.sha256(manifest_path.read_bytes()).hexdigest()+'\n')
+# The driver and the evidence of a package of the example model, and what its tools are named after.
+DRIVER, EVIDENCE = 'drivers/fictional_demonstration.json', 'evidence/fictional_demonstration.probe.json'
+TOOL = 'fictional_demonstration_'
 
 
 def controlled_model():
@@ -81,10 +67,12 @@ def narrowed_package(root, value):
     return package
 
 
-def invoke_package(package, *arguments):
-    return subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-        'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-        str(package), *arguments], cwd=package.parent, capture_output=True, text=True, timeout=30)
+def run_package(package, operation, parameters=None, grants=(), replay=None):
+    """The `driver-result/1` of one operation of `package` on the installed runtime, where the exchanges of the file
+    `replay` stand in for a device."""
+    from interface_runtime.driver import execute_package
+    return execute_package(package, operation, parameters, binding={}, allow_effects=grants,
+                           replay=json.loads(Path(replay).read_text()))
 
 
 class DriverContractTests(unittest.TestCase):
@@ -100,14 +88,14 @@ class DriverContractTests(unittest.TestCase):
             replay = root/'small-reply.json'
             trace = example_replay(); trace['transactions'][1]['rx']['max_bytes'] = 65536
             replay.write_text(json.dumps(trace))
-            result = json.loads(invoke_package(package, 'execute', 'measure', '--replay', str(replay)).stdout)
+            result = run_package(package, 'measure', replay=replay)
             self.assertFalse(result['ok'], 'potential output/evidence expansion must be bounded before any exchange')
             self.assertEqual(result['error']['code'], 'evidence_bound_exceeded')
             self.assertFalse(result['transport_open_attempted'])
             self.assertEqual(result['transactions'], [])
             # The warnings left out of the bounded result are the model's, so the result points there.
             self.assertEqual((result['warnings'], result['warnings_omitted'], result['warnings_ref']),
-                             ([], 301, 'driver/model.json'))
+                             ([], 301, DRIVER))
 
     def test_precondition_observation_preserves_its_scoped_caveats(self):
         # Removing guard metadata from execution must fail even when the guarded write has none.
@@ -126,8 +114,7 @@ class DriverContractTests(unittest.TestCase):
                 example_replay()['transactions'][0],
                 {'tx_hex': '41524d3f0a', 'rx_hex': '41524d3a300a',
                  'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}, 'timeout_ms': 500}]}))
-            outcome = json.loads(invoke_package(package, 'execute', 'set_level', '--parameters',
-                '{"level":37}', '--allow-effect', 'write', '--replay', str(replay)).stdout)
+            outcome = run_package(package, 'set_level', {'level': 37}, ('write',), replay)
             expected = {**caveat, 'scope': 'operations.read_armed.outputs.armed'}
             self.assertIn(expected, outcome['observations'][0]['result'].get('warnings', []))
             self.assertIn(expected, outcome['warnings'])
@@ -161,8 +148,7 @@ class DriverContractTests(unittest.TestCase):
             with self.subTest(constraint=constraint), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 package = narrowed_package(root, {'type': 'number', **constraint})
-                done = invoke_package(package, 'execute', 'measure', '--replay', str(root / 'reading.json'))
-                result = json.loads(done.stdout)
+                result = run_package(package, 'measure', replay=root / 'reading.json')
                 self.assertFalse(result['ok'], '21.5 violates this public output constraint')
                 self.assertEqual(result['error']['code'], 'output_schema_violation')
 
@@ -195,9 +181,7 @@ class DriverContractTests(unittest.TestCase):
                 example_replay()['transactions'][0],
                 {'tx_hex': '41524d3f0a', 'rx_hex': '62726f6b656e0a',
                  'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}, 'timeout_ms': 500}]}))
-            done = invoke_package(package, 'execute', 'set_level', '--parameters', '{"level":37}',
-                                  '--allow-effect', 'write', '--replay', str(replay))
-            result = json.loads(done.stdout)
+            result = run_package(package, 'set_level', {'level': 37}, ('write',), replay)
             self.assertEqual(result['error']['code'], 'precondition_unavailable')
             self.assertEqual(result['error']['fault'], 'model')
             self.assertFalse(result['requested_command_dispatched'])
@@ -208,12 +192,7 @@ class DriverContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             package, _ = emit_fixture(root)
-            done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(package), 'execute', 'measure', '--parameters', '[]',
-                '--replay', str(root / 'replay.json')], cwd=root,
-                capture_output=True, text=True, timeout=30)
-            result = json.loads(done.stdout)
+            result = run_package(package, 'measure', [], replay=root / 'replay.json')
             self.assertFalse(result['ok'], 'arguments must be an object even when there are no parameters')
             self.assertFalse(result['requested_command_dispatched'])
             self.assertEqual(result['transactions'], [])
@@ -223,11 +202,7 @@ class DriverContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             package = narrowed_package(root, {'type': 'integer'})
-            done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(package), 'execute', 'measure', '--replay', str(root / 'reading.json')],
-                cwd=root, capture_output=True, text=True, timeout=30)
-            result = json.loads(done.stdout)
+            result = run_package(package, 'measure', replay=root / 'reading.json')
             self.assertFalse(result['ok'], '21.5 cannot satisfy an integer output contract')
             self.assertEqual(result['error']['code'], 'output_schema_violation')
             self.assertTrue(result['requested_command_dispatched'])
@@ -243,13 +218,8 @@ class DriverContractTests(unittest.TestCase):
                 {'tx_hex': '41524d3f0a', 'rx_hex': '41524d3a300a',
                  'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}, 'timeout_ms': 500}]}
             replay = root / 'guard.json'; replay.write_text(json.dumps(trace))
-            done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(package), 'execute', 'set_level', '--parameters', '{"level":37}',
-                '--allow-effect', 'write', '--replay', str(replay)],
-                cwd=root, capture_output=True, text=True, timeout=30)
-            self.assertNotEqual(done.returncode, 0)
-            result = json.loads(done.stdout)
+            result = run_package(package, 'set_level', {'level': 37}, ('write',), replay)
+            self.assertFalse(result['ok'], result)
             self.assertEqual(result['error']['code'], 'precondition_failed')
             self.assertEqual(result['error']['precondition']['id'], 'armed_required')
             self.assertEqual(result['error']['precondition']['expected'], 1)
@@ -320,32 +290,21 @@ class DriverContractTests(unittest.TestCase):
                              ['44454d4f2d34320a', '543a32312e350a'])
             self.assertTrue(result['identity_verified'])
 
-    def test_session_and_sequence_enforce_the_public_precondition(self):
-        # Every package execution entrypoint must apply the model's preconditions; a raw model session bypasses them.
+    def test_a_package_session_enforces_the_public_precondition(self):
+        # A package's execution applies the model's preconditions; a raw model session bypasses them.
+        from interface_runtime.driver import PackageSession
         from test_device_sessions import demonstration_device
-        for entrypoint in ('session', 'sequence'):
-            with self.subTest(entrypoint=entrypoint), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory).resolve()
-                model = guarded_model(); model['channel'] = {'type': 'tcp'}
-                package, _ = emit_fixture(root, model)
-                state = {'armed': 0, 'writes': 0}
-                with demonstration_device(state) as binding:
-                    if entrypoint == 'sequence':
-                        done = invoke_package(package, 'sequence', '--steps',
-                            '[{"operation":"set_level","parameters":{"level":37}}]',
-                            '--binding', json.dumps(binding), '--allow-effect', 'write')
-                        result = json.loads(done.stdout)['results'][0]
-                    else:
-                        program = ('import sys,json; sys.path.insert(0,sys.argv[1]); import driver; '
-                            'session=driver.session(binding=json.loads(sys.argv[2]),allow_effects=("write",)); '
-                            '\nwith session as current:\n print(json.dumps(current.execute("set_level",{"level":37})))')
-                        done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', program,
-                            str(package), json.dumps(binding)], capture_output=True, text=True, timeout=20)
-                        self.assertEqual(done.returncode, 0, done.stderr)
-                        result = json.loads(done.stdout)
-                self.assertFalse(result['ok'], 'Public session/sequence must not skip the armed rule')
-                self.assertEqual(result['error']['code'], 'precondition_failed')
-                self.assertEqual(state['writes'], 0)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            model = guarded_model(); model['channel'] = {'type': 'tcp'}
+            package, _ = emit_fixture(root, model)
+            state = {'armed': 0, 'writes': 0}
+            with demonstration_device(state) as binding:
+                with PackageSession(package, binding=binding, allow_effects=('write',)) as current:
+                    result = current.execute('set_level', {'level': 37})
+            self.assertFalse(result['ok'], 'A package session must not skip the armed rule')
+            self.assertEqual(result['error']['code'], 'precondition_failed')
+            self.assertEqual(state['writes'], 0)
 
     def test_emission_preserves_authored_public_explanations(self):
         # Catches replacing driver-authored clarification with guessed/generated prose.
@@ -353,8 +312,11 @@ class DriverContractTests(unittest.TestCase):
         model = example_model()
         model['operations']['measure']['description'] = description
         with tempfile.TemporaryDirectory() as directory:
+            from interface_runtime.contracts import contract_view
             package, _ = emit_fixture(Path(directory).resolve(), model)
-            actual = json.loads((package / 'driver/contract.json').read_text())
+            written = json.loads((package / DRIVER).read_text())
+            self.assertEqual(written['operations']['measure']['description'], description)
+            actual = contract_view(written)
             self.assertEqual(actual['operations']['measure']['description'], description)
             self.assertEqual(actual['operations']['measure']['uncertainties'], [])
 
@@ -373,52 +335,6 @@ class DriverContractTests(unittest.TestCase):
             self.assertFalse(executed['ok'], 'malformed uncertainty must fail before the model runs')
             self.assertEqual((executed['_exit'], executed['transport_open_attempted']), (1, False), executed)
             self.assertIn('operations.measure.uncertainties', executed['error'])
-
-    def test_describe_preserves_operation_and_parameter_uncertainty(self):
-        # Catches silently presenting a bounded raw argument as a known physical quantity.
-        model = example_model()
-        model['operations']['set_level'] = {'effect': 'write',
-            'parameters': {'level': {'type': 'integer', 'minimum': 0, 'maximum': 100}},
-            'steps': [{'op': 'exchange', 'tx': [{'text': 'LEVEL '},
-                {'arg': 'level', 'format': 'ascii'}, {'text': '\n'}],
-                'rx': {'mode': 'exact', 'length': 0}, 'timeout_ms': 500}], 'outputs': {}}
-        model['provenance'].append({'item': 'operations.set_level', 'source': 'invented bounded wire command'})
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            package, _ = emit_fixture(root, model)
-            done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(package), 'describe'], cwd=root, capture_output=True, text=True, timeout=30)
-            self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
-            public = json.loads(done.stdout).get('contract')
-            self.assertIsInstance(public, dict, 'describe must expose the public contract')
-            operation = public['operations']['set_level']
-            self.assertTrue(operation['uncertainties'])
-            self.assertTrue(operation['parameters']['level']['uncertainties'])
-            self.assertIsNone(operation['parameters']['level']['unit'])
-            self.assertEqual(operation['parameters']['level']['schema'],
-                             {'type': 'integer', 'minimum': 0, 'maximum': 100})
-
-    def test_emitted_contract_drives_relocated_package(self):
-        # Catches emitting only the combined historical model or losing public units.
-        with tempfile.TemporaryDirectory(prefix='driver contract ') as directory:
-            root = Path(directory).resolve()
-            package, _ = emit_fixture(root)
-            moved = root / 'relocated driver'
-            shutil.move(package, moved)
-            self.assertTrue((moved / 'driver/contract.json').is_file(),
-                            'emit must freeze a separate public driver contract')
-            contract = json.loads((moved / 'driver/contract.json').read_text())
-            protocol = json.loads((moved / 'driver/protocol.json').read_text())
-            self.assertEqual(contract['operations']['measure']['outputs']['temperature']['unit'], 'degC')
-            self.assertNotIn('steps', contract['operations']['measure'])
-            self.assertNotIn('parameters', protocol['operations']['measure'])
-            done = subprocess.run([sys.executable, '-I', '-S', '-B', '-c',
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(moved), 'replay'], cwd=root, capture_output=True, text=True, timeout=30)
-            self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
-            self.assertEqual(json.loads(done.stdout)['results'][0]['outputs'], {'temperature': 21.5})
-
 
 def spec_model():
     """The example model with the operation the Spec of the one driver format shows: a described read with a described,
@@ -558,22 +474,6 @@ class ContractViewTests(unittest.TestCase):
         self.assertEqual(list(view['set_level']), ['effect', 'description', 'uncertainties', 'parameters', 'outputs',
                                                    'preconditions'])
         self.assertEqual(list(view['measure']), ['effect', 'description', 'uncertainties', 'parameters', 'outputs'])
-
-    def test_02_B4_the_protocol_view_is_the_wire_part_of_the_model(self):
-        from interface_runtime.contracts import protocol_view
-        model = spec_model()
-        model['operations']['measure']['uncertainties'] = [unknown('Operation measure')]
-        model['operations']['measure']['outputs']['temperature']['uncertainties'] = []
-        before = json.loads(json.dumps(model))
-        view = protocol_view(model)
-        self.assertEqual(model, before)
-        self.assertEqual(view, {
-            'schema': 'driver-protocol/1', 'runtime_schema': 'interface-model/7', 'channel': model['channel'],
-            'operations': {
-                'identify': {'steps': model['operations']['identify']['steps'], 'outputs': {}},
-                'measure': {'steps': model['operations']['measure']['steps'],
-                            'outputs': {'temperature': {'from': 'reply', 'kind': 'ascii_number', 'prefix': 'T:'}}}}})
-
 
 GUARD = {'id': 'armed_required', 'description': 'Device must be armed before changing level.',
          'observation': {'operation': 'read_armed', 'parameters': {}, 'output': 'armed'},
@@ -719,6 +619,7 @@ class PublicRuleTests(unittest.TestCase):
 
     def test_02_B5_the_replay_of_emit_check_applies_the_value_and_no_precondition(self):
         from generative_driver.toolkit import call_tool
+        from test_package_data import rewrite
         level = {'tx_hex': b'LEVEL 37\n'.hex(), 'rx_hex': '', 'rx': {'mode': 'exact', 'length': 0}, 'timeout_ms': 500}
         writes = {'parameters': {'level': 37}, 'allow_effects': ['write']}
         with tempfile.TemporaryDirectory() as directory:
@@ -743,17 +644,16 @@ class PublicRuleTests(unittest.TestCase):
             written = package_of('written', described_model(), 'set_level', replay_of(level), **writes)
             checked = check(written)
             self.assertEqual((checked['ok'], checked['replay_status']), (True, 'passed'), checked)
-            # A record of a reading of 21.5, taken with the same model bytes, replays in that package's place.
+            # A record of a reading of 21.5, taken with the same model bytes, replays too.
             measured = package_of('measured', described_model(), 'measure', replay_of(exchange(b'T\n', b'T:21.5\n')))
-            record = json.loads((measured / 'probe.json').read_text())
-            rewrite_document(written, 'probe.json', record)
-            self.assertTrue(check(written)['ok'])
+            self.assertTrue(check(measured)['ok'])
+            record = json.loads((measured / EVIDENCE).read_text())
             # Under a model whose value excludes that reading it no longer replays: the check applies the value.
             narrow = described_model()
             narrow['operations']['measure']['outputs']['temperature']['value']['maximum'] = 20
             narrowed = package_of('narrowed', narrow, 'set_level', replay_of(level), **writes)
-            record['model_sha256'] = json.loads((narrowed / 'manifest.json').read_text())['model_sha256']
-            rewrite_document(narrowed, 'probe.json', record)
+            record['model_sha256'] = json.loads((narrowed / 'manifest.json').read_text())['files'][DRIVER]
+            rewrite(narrowed, EVIDENCE, lambda document: (document.clear(), document.update(record)))
             refused = check(narrowed)
             self.assertEqual((refused['ok'], refused['_exit']), (False, 1), refused)
             self.assertIn('replayed outputs/transcripts differ', said(refused))
@@ -771,64 +671,39 @@ def files_of(folder):
 
 
 class EmitTests(unittest.TestCase):
-    """Emit shows what the worker wrote in the model: the package's contract and protocol are copies of the views, and
-    its tools are rendered from the contract view."""
-
-    def test_02_B6_emit_writes_the_model_byte_for_byte_and_the_two_views(self):
-        from generative_driver.toolkit import call_tool
-        from interface_runtime.contracts import contract_view, protocol_view
-        model = described_model()
-        written = (json.dumps(model, indent=3, sort_keys=True) + '\n\n').encode()
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            source = root / 'model'; source.mkdir()
-            (source / 'model.json').write_bytes(written)
-            (root / 'replay.json').write_text(json.dumps(replay_of(exchange(b'T\n', b'T:21.5\n'))))
-            probe = call_tool('probe_run', {'run_dir': str(root / 'run'), 'model_dir': str(source),
-                                            'operation': 'measure', 'n': 1, 'replay': str(root / 'replay.json')})
-            emitted = call_tool('emit_package', {'run_dir': str(root / 'run'), 'model_dir': str(source),
-                                                 'probe': probe['probe']})
-            self.assertTrue(emitted.get('ok'), emitted)
-            package = Path(emitted['package_dir'])
-            self.assertEqual((package / 'driver/model.json').read_bytes(), written)
-            self.assertEqual(json.loads((package / 'driver/contract.json').read_text()), contract_view(model))
-            self.assertEqual(json.loads((package / 'driver/protocol.json').read_text()), protocol_view(model))
-            contract = json.loads((package / 'driver/contract.json').read_text())
-            self.assertEqual(contract['operations']['measure']['description'], 'Read the temperature of the probe.')
-            self.assertEqual(contract['operations']['set_level']['preconditions'], [GUARD])
-            checked = call_tool('emit_check', {'run_dir': str(root / 'check'), 'package_dir': str(package)})
-            self.assertEqual((checked['ok'], checked['replay_status']), (True, 'passed'), checked)
+    """Emit shows what the worker wrote in the model: the package's tools are rendered from the contract view, and
+    nothing beside the model is read."""
 
     def test_02_B6_each_tool_shows_the_description_units_uncertainties_and_preconditions(self):
         with tempfile.TemporaryDirectory() as directory:
             package, _ = emit_fixture(Path(directory).resolve(), described_model())
-            catalog = json.loads((package / 'mcp-tools.json').read_text())
+            catalog = json.loads((package / 'mcp.json').read_text())
             tools = {tool['name']: tool for tool in catalog['tools']}
-            self.assertEqual(sorted(tools), ['device_identify', 'device_measure', 'device_read_armed',
-                                             'device_set_level'])
-            measure = tools['device_measure']
+            self.assertEqual(sorted(tools), [TOOL + name for name in ('identify', 'measure', 'read_armed',
+                                                                      'set_level')])
+            measure = tools[TOOL + 'measure']
             self.assertEqual(measure['description'].split('\n'),
                              ['Read the temperature of the probe.', 'Warning: ' + RANGE['message']])
             self.assertEqual(measure['outputSchema']['properties']['outputs']['properties']['temperature'], {
                 'type': 'number', 'minimum': -40, 'maximum': 25,
                 'description': 'Temperature of the probe.\nUnit: Cel.'})
-            set_level = tools['device_set_level']
+            set_level = tools[TOOL + 'set_level']
             self.assertEqual(set_level['description'].split('\n'),
                              ['Set the output level.', 'Precondition armed_required: ' + GUARD['description']])
             self.assertEqual(set_level['inputSchema']['properties']['level'], {
                 'type': 'integer', 'minimum': 0, 'maximum': 100,
                 'description': 'Level of the output.\nUnit: %.\nWarning: ' + STEP['message']})
-            armed = tools['device_read_armed']['outputSchema']['properties']['outputs']['properties']['armed']
+            armed = tools[TOOL + 'read_armed']['outputSchema']['properties']['outputs']['properties']['armed']
             self.assertIn('Warning: ' + ARMED['message'], armed['description'].split('\n'))
 
     def test_02_B6_a_contract_or_a_protocol_beside_the_model_is_not_read(self):
         from generative_driver.toolkit import call_tool
-        from interface_runtime.contracts import contract_view, protocol_view
+        from interface_runtime.contracts import contract_view
         model = described_model()
         other = contract_view(model)
         other['operations']['measure']['description'] = 'Another text that the model does not hold.'
         beside = {'neither': {}, 'both': {'contract.json': json.dumps(other),
-                                           'protocol.json': json.dumps(protocol_view(example_model()))},
+                                           'protocol.json': '{"schema": "driver-protocol/1", "operations": {}}'},
                   'a lone contract': {'contract.json': json.dumps(other)},
                   'a lone protocol': {'protocol.json': '{"schema": "driver-protocol/9"}'},
                   'text that is no JSON': {'contract.json': 'not JSON', 'protocol.json': '{'}}
@@ -851,33 +726,6 @@ class EmitTests(unittest.TestCase):
             with self.subTest(beside_the_model=case):
                 self.assertEqual(packages[case], packages['neither'])
 
-    def test_02_B6_the_package_check_refuses_a_view_file_that_differs_and_names_it(self):
-        from generative_driver.toolkit import call_tool
-
-        def described(contract):
-            contract['operations']['measure']['description'] = 'Another text that the model does not hold.'
-
-        def retagged(document):
-            document['schema'] = 'driver-format/9'
-        cases = (('driver/contract.json', described), ('driver/contract.json', retagged),
-                 ('driver/protocol.json',
-                  lambda protocol: protocol['operations']['measure']['steps'][0].update(timeout_ms=7)),
-                 ('driver/protocol.json', retagged))
-        for index, (relative, change) in enumerate(cases):
-            with self.subTest(file=relative, case=index), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory).resolve()
-                package, _ = emit_fixture(root, described_model())
-                document = json.loads((package / relative).read_text())
-                change(document)
-                rewrite_document(package, relative, document)
-                refused = call_tool('emit_check', {'run_dir': str(root / 'check'), 'package_dir': str(package)})
-                self.assertEqual((refused['ok'], refused['_exit']), (False, 1), refused)
-                self.assertIn(relative, said(refused), refused)
-                self.assertIn('differs', said(refused), refused)
-                # No tag of the file is checked: it is refused as a copy that differs, whatever it names.
-                self.assertNotIn('format', said(refused), refused)
-
-
 class UndocumentedTests(unittest.TestCase):
     """A driver says where its model gives no meaning, wherever the driver is shown."""
 
@@ -886,25 +734,22 @@ class UndocumentedTests(unittest.TestCase):
         model = controlled_model()
         self.assertNotIn('description', json.dumps(model))
 
-        def marked(subject, *unit):
-            return '\n'.join(('Meaning not documented.', *unit, 'Warning: ' + unknown(subject)['message']))
+        bare = 'Meaning not documented.'
         with tempfile.TemporaryDirectory() as directory:
             package, _ = emit_fixture(Path(directory).resolve(), model)
-            tools = {tool['name']: tool for tool in json.loads((package / 'mcp-tools.json').read_text())['tools']}
+            tools = {tool['name']: tool for tool in json.loads((package / 'mcp.json').read_text())['tools']}
             shown = {name: (tool['description'],
                             {key: value['description'] for key, value in tool['inputSchema']['properties'].items()
                              if key != '_request_id'},
                             {key: value['description']
                              for key, value in tool['outputSchema']['properties']['outputs']['properties'].items()})
                      for name, tool in tools.items()}
+            # A tool says once that a meaning is not documented; a number it gives always has a unit line.
             self.assertEqual(shown, {
-                'device_identify': (marked('Operation identify'), {}, {}),
-                'device_measure': (marked('Operation measure'), {},
-                                   {'temperature': marked('Output temperature', 'Unit: degC.')}),
-                'device_read_armed': (marked('Operation read_armed'), {},
-                                      {'armed': marked('Output armed', 'Unit: unknown.')}),
-                'device_set_level': (marked('Operation set_level'),
-                                     {'level': marked('Parameter level', 'Unit: unknown.')}, {})})
+                TOOL + 'identify': (bare, {}, {}),
+                TOOL + 'measure': (bare, {}, {'temperature': bare + '\nUnit: degC.'}),
+                TOOL + 'read_armed': (bare, {}, {'armed': bare + '\nUnit: unknown.'}),
+                TOOL + 'set_level': (bare, {'level': bare}, {})})
             with PackageSession(package, replay=replay_of(exchange(b'T\n', b'T:21.5\n'))) as session:
                 measured = session.execute('measure')
             self.assertEqual(measured['warnings'], [
@@ -928,14 +773,15 @@ class UndocumentedTests(unittest.TestCase):
         model['provenance'].append({'item': 'operations.read_level', 'source': 'independent invented device'})
         with tempfile.TemporaryDirectory() as directory:
             package, _ = emit_fixture(Path(directory).resolve(), model)
-            tools = {tool['name']: tool for tool in json.loads((package / 'mcp-tools.json').read_text())['tools']}
+            tools = {tool['name']: tool for tool in json.loads((package / 'mcp.json').read_text())['tools']}
             unit = lambda name: tools[name]['outputSchema']['properties']['outputs']['properties']['armed'][
                 'description'].split('\n')[1]
-            self.assertEqual(unit('device_read_armed'), 'Unit: not stated by the device.')
-            self.assertEqual(unit('device_read_level'), 'Unit: unknown.')
+            self.assertEqual(unit(TOOL + 'read_armed'), 'Unit: not stated by the device.')
+            self.assertEqual(unit(TOOL + 'read_level'), 'Unit: unknown.')
+            # A parameter has a unit line only for a unit the model states.
             self.assertEqual(
-                tools['device_set_level']['inputSchema']['properties']['level']['description'].split('\n')[1],
-                'Unit: unknown.')
+                tools[TOOL + 'set_level']['inputSchema']['properties']['level']['description'].split('\n'),
+                ['Meaning not documented.'])
 
 
 if __name__ == '__main__':

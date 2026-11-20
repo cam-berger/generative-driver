@@ -1,8 +1,8 @@
-"""The driver contract and the declarative protocol, as views of an interface model.
+"""The driver contract, as a view of an interface model.
 
 The interface model is the one statement of a driver. Its public part (operations, meanings, value schemas, units,
-scoped caveats and preconditions) and its wire part are computed from it wherever they are shown, so no second file has
-to be kept equal to the model (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
+scoped caveats and preconditions) is computed from it wherever it is shown, so no second file has to be kept equal to
+the model (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
 """
 from copy import deepcopy
 
@@ -11,9 +11,8 @@ from . import meanings
 # What a view shows where the model gives no description, with the caveat that says so.
 UNDOCUMENTED = 'Meaning not documented.'
 _UNKNOWN = 'semantics_unknown'
-# The fields of a parameter and of an output's decoder that state a meaning; the rest is the wire.
+# The fields of a parameter that state a meaning; the rest is the wire.
 _PARAMETER_MEANINGS = ('description', 'unit', 'uncertainties')
-_OUTPUT_MEANINGS = ('description', 'unit', 'uncertainties', 'value')
 
 
 def operation_warnings(operation, scope):
@@ -33,6 +32,9 @@ def _metadata(value):
         raise ValueError('Unit must be text or explicitly unknown')
 
 
+_MARKING = ' meaning and operating assumptions are not documented.'
+
+
 def _meaning(definition, subject):
     """The description and the uncertainties a view shows for `definition`: what the model says, or the marking of a
     missing description after the uncertainties the worker wrote, unless one of them says so already."""
@@ -40,9 +42,16 @@ def _meaning(definition, subject):
     if 'description' in definition:
         return definition['description'], caveats
     if not any(caveat['code'] == _UNKNOWN for caveat in caveats):
-        caveats.append({'code': _UNKNOWN, 'message': subject + ' meaning and operating assumptions are not documented.',
-                        'evidence_refs': []})
+        caveats.append({'code': _UNKNOWN, 'message': subject + _MARKING, 'evidence_refs': []})
     return UNDOCUMENTED, caveats
+
+
+def stated_uncertainties(definition):
+    """The uncertainties the model states for `definition`, an operation, a parameter or an output of a driver
+    contract: all it holds but the marking a view adds where the model gives no description."""
+    return [caveat for caveat in definition['uncertainties']
+            if not (definition['description'] == UNDOCUMENTED and caveat['code'] == _UNKNOWN
+                    and caveat['evidence_refs'] == [] and caveat['message'].endswith(_MARKING))]
 
 
 def _parameter_schema(spec):
@@ -76,14 +85,3 @@ def contract_view(model):
     return {'schema': 'driver-contract/1', 'device': deepcopy(model['device']),
             'identity': deepcopy(model['identity']), 'operations': operations,
             'provenance': deepcopy(model['provenance'])}
-
-
-def protocol_view(model):
-    """The declarative protocol of `model`, an interface model that validates: its channel and, for each operation,
-    its steps and its decoders without what they say of meaning, in the shape `driver-protocol/1`."""
-    return {'schema': 'driver-protocol/1', 'runtime_schema': model['schema'], 'channel': deepcopy(model['channel']),
-            'operations': {name: {'steps': deepcopy(operation['steps']),
-                                  'outputs': {key: {field: deepcopy(value) for field, value in decoder.items()
-                                                    if field not in _OUTPUT_MEANINGS}
-                                              for key, decoder in operation['outputs'].items()}}
-                           for name, operation in model['operations'].items()}}

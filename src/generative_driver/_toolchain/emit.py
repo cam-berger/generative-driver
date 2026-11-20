@@ -3,18 +3,16 @@ writing: every file of the package is rendered from the model and the probe outp
 model.
 
 These are the stage's three tools as a client calls them. Each hands its call to `interface.py`, which builds, checks
-and runs the interface package; `emit_check` adds the rule for which failures are the host's. The register package
-this module once rendered, with a conversion module a worker wrote, is deleted
-(docs/adr/0010-a-package-is-data-in-one-format.md).
+and runs the interface package; `emit_check` adds the rule for which failures are the host's. A package is a folder of
+data that holds no code. The register package this module once rendered, with a conversion module a worker wrote, is
+deleted (docs/adr/0010-a-package-is-data-in-one-format.md).
 """
-import subprocess
-
 from . import core
 
 
 @core.tool("emit_package")
 def emit_package(run_dir, model_dir, probe, name=None, version="1.0.0", **_):
-    """Generate the device package from the model and the probe output."""
+    """Write the package of a model and the probe record that model wrote: five files of data and no code."""
     from . import interface
     return interface.emit_package(run_dir, model_dir, probe, name=name, version=version)
 
@@ -22,21 +20,21 @@ def emit_package(run_dir, model_dir, probe, name=None, version="1.0.0", **_):
 # What only the host can make fail. The check reads the package's and the model's bytes inside its own handlers and
 # refuses what it cannot read, so an OSError or ImportError that reaches emit_check came from the host's side of the
 # check.
-HOST_FAULTS = (OSError, ImportError, subprocess.TimeoutExpired, MemoryError)
+HOST_FAULTS = (OSError, ImportError, MemoryError)
 
 
 @core.tool("emit_check")
 def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None, **_):
     """Does the package do what its model says, and nothing else?
 
-    The package's files are checked against its manifest, and its recorded exchanges are replayed on the installed
-    runtime over the package's data. No ground truth and no device knowledge.
+    The package's files are checked against its manifest, `README.md` and `mcp.json` against what the tool renders
+    from the package's driver and evidence, and its recorded exchanges are replayed in this process on the installed
+    runtime. No ground truth and no device knowledge.
 
     A package or argument the check refuses is a failed check (exit 1), whatever the package bytes made fail,
-    including bytes it cannot read or parse. Only a failure outside the package bytes is the host's: a file or
-    process failure around the check (its temporary folder, reading back its own snapshot copy, starting the replay
-    or a replay process that ends without a result), an import, a timeout or memory exhaustion. That result is
-    fault host with exit 4: it says nothing about the package.
+    including bytes it cannot read or parse. Only a failure outside the package bytes is the host's: a file failure
+    around the check (its temporary folder, reading back its own copy), an import or memory exhaustion. That result
+    is fault host with exit 4: it says nothing about the package.
     """
     from . import interface
     try:
@@ -51,9 +49,10 @@ def emit_test_live(package_dir, run_dir=None, binding=None, operations=None, par
                    model_dir=None, expected_manifest_sha256=None, **_):
     """Run operations of the package on the live device.
 
-    Each of `operations` (default the model's identity operation) runs once through the installed runtime and driver
-    entry over the package's data, with the caller's `binding`, the `parameters` given for it and the `allow_effects`
-    grants; `manifest_sha256` names the package's own manifest. Exit 4 means a transport fault, inconclusive."""
+    Each of `operations` (default the model's identity operation) runs once in a child process on the installed
+    runtime over the package's data, with the caller's `binding`, the `parameters` given for it and the
+    `allow_effects` grants; `manifest_sha256` names the package's own manifest. Exit 4 means a transport fault,
+    inconclusive."""
     from . import interface
     return interface.emit_test_live(run_dir, package_dir, binding, operations=operations, parameters=parameters,
                                     allow_effects=allow_effects, model_dir=model_dir,

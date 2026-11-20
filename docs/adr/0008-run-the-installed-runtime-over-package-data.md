@@ -2,6 +2,8 @@
 
 Status: Accepted, 2026-11-13.
 
+Replaced in part, 2026-11-19: [ADR 0010](0010-a-package-is-data-in-one-format.md) replaced the compatibility rule of this decision. A package carries no copy of the runtime and has no command line of its own. The tool reads one package format and one driver format, and refuses a package of an earlier format by name. The rule that the tool runs its installed runtime over a package's data stays.
+
 An interface package carries the data that describes its driver: `driver/model.json`, `probe.json` and, in `interface-package/2`, `driver/contract.json`, `driver/protocol.json` and `mcp-tools.json`. It also carries a copy of the kit's runtime (`interface_runtime/*.py`) and driver entry (`driver/*.py`), so that it runs on its own. Until this decision the kit refused to use a package whose copy differed by a byte from its installed runtime. A kit upgrade, even a comment edit, therefore stopped every earlier driver in managed sessions, fresh reuse, `emit_test_live` and the `emit_check` replay.
 
 ## Decision

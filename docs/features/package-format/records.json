@@ -1,0 +1,11 @@
+{
+  "approvals": [
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "22267fa48e2caf363984ac09476ab2c1cec25e9e18504d981dd302077b116334",
+      "at": "2026-11-20T01:10:09+00:00"
+    }
+  ],
+  "done": []
+}

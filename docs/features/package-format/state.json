@@ -1,0 +1,41 @@
+{
+  "goal": "Make a package data in one format: one driver document for each controller, a container that shows the driver, the MCP side and the documentation, no register model family, and one command that serves a package (ADR 0010).",
+  "slug": "package-format",
+  "branch": "mdk/package-format",
+  "stage": "breakdown",
+  "awaiting": null,
+  "current": null,
+  "features": [
+    {
+      "id": "01",
+      "slug": "register-family",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "02",
+      "slug": "driver-document",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "03",
+      "slug": "serve",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "04",
+      "slug": "data-package",
+      "status": "pending",
+      "base": null
+    },
+    {
+      "id": "05",
+      "slug": "documents",
+      "status": "pending",
+      "base": null
+    }
+  ],
+  "escalation": null
+}

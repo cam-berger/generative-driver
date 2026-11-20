@@ -84,6 +84,30 @@ Give `serial_number` when more than one probe is attached; otherwise leave it ou
 
 Save the run ID. Reconnect with `driver_status` or `driver_result`; provide independent observations with `driver_respond`. Cancel explicitly. Resume after resolving the reported cause and checking uncertain physical effects.
 
+An uncertain effect is a write or an actuation that may have been sent to the device and whose outcome the configurator does not know. While one remains, reads go on and every call that would change the device is refused. Stop the earlier execution yourself, check the device, then resolve the effect with one statement:
+
+| Field | Value |
+|---|---|
+| `effect_resolution` | `confirmed_safe` |
+| `observation` | An object with the three fields below. |
+| `source` | Who or what observed the device: text that is not blank. |
+| `message` | What was observed: text that is not blank. |
+| `prior_execution_stopped` | `true`: the earlier execution has stopped. |
+
+The command line and `driver_respond` send the observation alone, so put `effect_resolution` inside it. An `observation.json` for `respond`:
+
+```json
+{"effect_resolution": "confirmed_safe", "source": "operator at the bench", "message": "The earlier worker has stopped and the output reads off.", "prior_execution_stopped": true}
+```
+
+```sh
+python -m generative_driver respond RUN_ID --observation observation.json
+```
+
+A statement that lacks a field is refused and changes nothing. A `respond` without `effect_resolution` is an operator message and resolves nothing. A managed session takes the same statement through `device.reconcile(observation, effect_resolution="confirmed_safe")`, as the [extension guide](extending-drivers-and-mcp.md#managed-use-and-generated-mcp) shows.
+
+After a restart of the configurator, a run that was queued or running is blocked until you resume it. It is uncertain only when it holds a pending effect: the stored mark of a write or an actuation whose outcome is not known. A run granted `write` or `actuate` with no pending write or actuation resumes without a statement.
+
 Budgets count wall time from the original start, including stopped time. With explicit approval, extend the total:
 
 ```sh

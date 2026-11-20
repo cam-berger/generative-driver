@@ -13,4 +13,4 @@ description: Generate a device interface from firmware, or reconnect to an exist
 
 Six stages: acquire → interpret → probe → ground → emit → reuse. Pass notes forward except fresh reuse, which gets only package/objective and permitted operating information. Ground tests meanings against the device. Device differences drive bounded repair; after budget exhaustion continue with the best revision. Record one verdict, then `completed` regardless of equivalence. A package's structure does not prove its behavior.
 
-Workers see instrument readings as device evidence and are not read-isolated. Interrupted writes stay uncertain until checked; never silently retry them.
+Workers see instrument readings as device evidence and are not read-isolated. Interrupted writes stay uncertain until checked; never silently retry them. An observation that resolves an uncertain effect holds `effect_resolution: "confirmed_safe"`, a `source` and a `message` that are not blank, and `prior_execution_stopped: true`.

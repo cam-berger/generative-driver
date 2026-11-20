@@ -907,6 +907,119 @@ class DeviceRepairTests(unittest.TestCase):
         self.assertEqual((finished['effectful'], finished['refused_before_open'], finished['effects_reconciled']),
                          (True, True, True), finished)
 
+    # The one refusal of a call that would change the device while an effect is uncertain.
+    UNCERTAIN = ('Outstanding effect is uncertain; nothing that would change the device is sent until the operator '
+                 'resolves it')
+    THERMOMETER = {b'ID': b'THERMO-1\n', b'T': b'21.5\n', b'R': b'OK\n'}
+
+    def test_01_B11_while_a_run_is_uncertain_the_gateway_refuses_a_write_before_it_starts_and_reads_go_on(self):
+        ran, seen = [], []
+        def work(call, assigned, workspace):
+            def attempt(name, operation, **arguments):
+                try:
+                    return call(name, model_dir=assigned, operation=operation, **arguments)
+                except ValueError as refusal:
+                    return str(refusal)
+            ran.extend([attempt('interface_execute', 'set_rate'), attempt('interface_execute', 'set_rate'),
+                        attempt('probe_run', 'set_rate', n=1), attempt('interface_execute', 'read_temperature')])
+        # The device takes the write and never answers it: the command went out and its execution did not succeed.
+        silent = {line: reply for line, reply in self.THERMOMETER.items() if line != b'R'}
+        with tempfile.TemporaryDirectory() as directory, line_device(silent, seen) as binding:
+            result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work, None, stage='probe',
+                model=self.writing_thermometer(), real=('interface_execute', 'probe_run'), effects=['read', 'write'],
+                binding=binding)
+        lost, again, probed, read = ran
+        self.assertEqual((lost['ok'], lost['error']['code']), (False, 'timeout'), lost)
+        self.assertEqual((again, probed), (self.UNCERTAIN, self.UNCERTAIN))
+        self.assertEqual((read['ok'], read['outputs']), (True, {'temperature_c': 21.5}), read)
+        # Neither refused write reached the device, and neither is recorded as started.
+        self.assertEqual(seen, [b'ID', b'R', b'ID', b'T'])
+        started = [e['data'] for e in events if e['kind'] == 'tool.started']
+        self.assertEqual([(e['name'], e['effectful']) for e in started],
+                         [('interface_execute', True), ('interface_execute', False)])
+        refused = [e['data'] for e in events if e['kind'] == 'tool.refused']
+        self.assertEqual([(e['name'], e['reason']) for e in refused],
+                         [('interface_execute', self.UNCERTAIN), ('probe_run', self.UNCERTAIN)])
+        self.assertEqual((result['status'], result['outcome_category'], result['uncertain_effect']),
+                         ('blocked', 'safety', True), result)
+
+    def test_01_B7_a_gateway_write_stays_uncertain_only_when_its_command_may_have_gone_out_and_did_not_succeed(self):
+        # The real tools run the model's write on a scripted line device. `sent` is what the device then received:
+        # only a write whose own step went out and did not succeed stays uncertain.
+        device = self.THERMOMETER
+        cases = (('the write succeeded', device, [b'ID', b'R'], True, False),
+                 ('the identity read failed', {**device, b'ID': b'OTHER\n'}, [b'ID'], False, False),
+                 ('nothing listens at the binding', None, [], False, False),
+                 ('the device never answered the write', {b'ID': device[b'ID']}, [b'ID', b'R'], False, True))
+        for case, replies, sent, succeeded, uncertain in cases:
+            for tool, more in (('interface_execute', {}), ('probe_run', {'n': 1})):
+                seen = []
+                work = lambda call, assigned, workspace: call(tool, model_dir=assigned, operation='set_rate', **more)
+                with self.subTest(case=case, tool=tool), tempfile.TemporaryDirectory() as directory, \
+                        line_device(replies or {}, seen) as binding:
+                    # With no repair budget the probe worker runs once, whatever its device difference.
+                    result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work, None, stage='probe',
+                        model=self.writing_thermometer(), real=('interface_execute', 'probe_run'), max_revisions=0,
+                        effects=['read', 'write'], binding=binding if replies else {'host': '127.0.0.1', 'port': 1})
+                    self.assertEqual(seen, sent)
+                    [finished] = [e['data'] for e in events if e['kind'] == 'tool.finished']
+                    self.assertEqual((finished['effectful'], finished['ok'], finished['effects_reconciled']),
+                                     (True, succeeded, not uncertain), finished)
+                    # The device was opened, or the open was tried: none of these is a refusal before the open.
+                    self.assertIs(finished['refused_before_open'], False)
+                    self.assertEqual((result['uncertain_effect'], result['outcome_category'] == 'safety'),
+                                     (uncertain, uncertain), result)
+
+    def test_01_B8_a_gateway_write_whose_result_holds_no_execution_record_is_read_as_a_whole(self):
+        # What the toolkit returns when a tool ends before it wrote a record: a refusal or a host fault it declares
+        # before its first device call, and an error it does not declare, which may have come after the device was
+        # contacted.
+        stopped = {'ok': False, 'transport_open_attempted': False}
+        rows = (('a refusal before the first device call',
+                 {**stopped, 'error': 'ValueError: model_dir holds no model.json', '_exit': 1}, True, False),
+                ('a host fault before the first device call',
+                 {**stopped, 'fault': 'host', 'error': 'PermissionError: copy locked', '_exit': 4}, False, False),
+                ('an error the tool did not declare', {'ok': False, 'error': 'OSError: disk full', '_exit': 1},
+                 False, True))
+        for case, returned, refused, uncertain in rows:
+            work = lambda call, assigned, workspace: call('interface_execute', model_dir=assigned, operation='set_rate')
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work,
+                    lambda name, arguments: returned, stage='probe', model=self.writing_thermometer(),
+                    effects=['read', 'write'], max_revisions=0)
+                [finished] = [e['data'] for e in events if e['kind'] == 'tool.finished']
+                self.assertEqual((finished['effectful'], finished['ok'], finished['refused_before_open'],
+                                  finished['effects_reconciled']), (True, False, refused, not uncertain), finished)
+                self.assertEqual((result['uncertain_effect'], result['outcome_category'] == 'safety'),
+                                 (uncertain, uncertain), result)
+
+    def test_01_B5_the_gateway_records_a_dispatch_as_started_and_as_finished_with_the_fields_of_the_journal(self):
+        def work(call, assigned, workspace):
+            call('interface_execute', model_dir=assigned, operation='set_rate')
+            call('probe_run', model_dir=assigned, operation='read_temperature', n=1)
+        with tempfile.TemporaryDirectory() as directory, line_device(self.THERMOMETER) as binding:
+            result, events, _, _ = self.run_device_stage(Path(directory) / 'home', work, None, stage='probe',
+                model=self.writing_thermometer(), real=('interface_execute', 'probe_run'), effects=['read', 'write'],
+                binding=binding)
+            self.assertEqual(result['status'], 'completed', result)
+            [assigned] = [e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'probe']
+            model = next(sha for path, sha in assigned['inputs'].items() if (Path(path) / 'model.json').is_file())
+        started = [e for e in events if e['kind'] == 'tool.started']
+        finished = [e['data'] for e in events if e['kind'] == 'tool.finished']
+        self.assertEqual((len(started), len(finished)), (2, 2))
+        for start, end, name, marked in zip(started, finished, ('interface_execute', 'probe_run'), (True, False)):
+            with self.subTest(name=name):
+                # The record's fields, and the gateway's own facts: that it supplied the connection, and what ran.
+                recorded = {'stage': 'probe', 'assignment_id': assigned['id'], 'name': name, 'actor': 'worker',
+                            'effectful': marked, 'connected': True, 'argument_sha256': {'model_dir': model}}
+                self.assertEqual(start['data'], recorded)
+                result_of, artifacts = end.pop('result'), end.pop('artifacts')
+                self.assertEqual(end, {**recorded, 'ok': True, 'dispatch_id': str(start['id']),
+                                       'effects_reconciled': marked, 'refused_before_open': False})
+                self.assertIs(result_of['ok'], True)
+                # A probe's record in the stage's workspace is an artifact of the call, by its hash.
+                self.assertEqual(list(artifacts), [result_of['probe']] if name == 'probe_run' else [])
+
     def test_01_B7_a_device_call_of_a_model_format_the_runtime_does_not_know_is_refused_at_the_gateway(self):
         # A model is data the installed runtime executes. The gateway reads a model's schema before it classifies a
         # device call by its effects, so a model of a format the runtime does not know is refused there, whatever the
@@ -1656,9 +1769,48 @@ class FinalVerdictTests(unittest.TestCase):
                 finally:
                     controller.close()
 
+    def test_01_B3_fresh_reuse_reads_a_missing_result_as_failed_never_as_succeeded(self):
+        # The verdict reads the stored result, not the event's `ok`: a finished call with no result object is no
+        # success, so it leaves the verdict unsettled.
+        from generative_driver.configurator import _fresh_reuse
+        event = {'name': 'interface_execute', 'connected': True, 'ok': True, 'dispatch_id': '1'}
+        check, _ = _fresh_reuse(None, [event], grants=['read'])
+        self.assertEqual([(o['outcome'], o['ok']) for o in check['operations']], [('inconclusive', False)])
+
+    def test_01_B3_the_verdict_and_the_emit_check_ask_the_reading_and_hold_no_copy(self):
+        import inspect
+        from generative_driver import configurator
+        from generative_driver.supplied import stages
+        for name in ('_live_outcome', '_answered', '_host_fault', '_toolchain_fault'):
+            with self.subTest(name):
+                self.assertFalse(hasattr(configurator, name), 'the configurator holds ' + name)
+        self.assertNotIn('_host_fault', inspect.getsource(stages._host))
+        self.assertIn('dispatch_outcome', inspect.getsource(stages._host))
+
+    def test_01_B1_the_gateway_and_the_device_access_hold_no_copy_of_the_success_test_or_of_the_record(self):
+        import inspect
+        import re
+        import generative_driver
+        from generative_driver import configurator, device_access
+        # The last two copies of the success test were in the gateway's finish and in the device access's.
+        for holder in (configurator.Controller._dispatch, device_access):
+            self.assertNotIn("get('available'", inspect.getsource(holder))
+        for name in ('_before_contact', '_declared_refusal'):
+            self.assertFalse(hasattr(configurator, name), 'the configurator holds ' + name)
+        for name in ('begin', 'finish'):
+            self.assertFalse(hasattr(device_access.DeviceAccess, name), 'the device access holds ' + name)
+        # Only the record's SQL names the pending effects and writes the flag of a run or a session.
+        package = Path(generative_driver.__file__).parent
+        for path in sorted(package.rglob('*.py')):
+            if path.name != 'dispatch_record.py':
+                with self.subTest(module=path.relative_to(package).as_posix()):
+                    source = path.read_text(encoding='utf-8')
+                    self.assertNotIn('pending_effects', source)
+                    self.assertIsNone(re.search(r'\bSET\b[^\'"]*\buncertain\s*=', source))
+
     def test_only_a_named_host_failure_is_a_host_fault(self):
         """The emit stage stops for the host only on a positive list; any other toolchain error refuses the content."""
-        from generative_driver.configurator import _host_fault, _toolchain_fault
+        from generative_driver.dispatch_outcome import read
         for error, host in (('OSError: [Errno 28] No space left on device', True), ('PermissionError: denied', True),
                             ('FileNotFoundError: no temporary directory', True), ('ModuleNotFoundError: no module', True),
                             ('MemoryError: ', True), ('TimeoutExpired: Command timed out after 260 seconds', True),
@@ -1668,11 +1820,14 @@ class FinalVerdictTests(unittest.TestCase):
                             ('RecursionError: maximum recursion depth exceeded', False),
                             ('ZeroDivisionError: division by zero', False), ('ModelError: identity', False)):
             with self.subTest(error=error):
-                self.assertIs(_host_fault({'ok': False, 'error': error, '_exit': 1}), host)
-        self.assertIs(_host_fault({'ok': False, 'fault': 'host', '_exit': 4}), True)
+                self.assertIs(read('emit_check', {'ok': False, 'error': error, '_exit': 1}).host_fault, host)
+        self.assertIs(read('emit_check', {'ok': False, 'fault': 'host', '_exit': 4}).host_fault, True)
         # A timeout is named as one, so an undeclared one reads as a host fault (TimeoutExpired), not an unnamed error.
-        self.assertEqual(_toolchain_fault({'error': 'TimeoutExpired: Command timed out after 260 seconds'}), 'TimeoutExpired')
-        self.assertIs(_host_fault({'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1}), False)
+        timeout = read('emit_check', {'ok': False, 'error': 'TimeoutExpired: Command timed out after 260 seconds',
+                                      '_exit': 1})
+        self.assertEqual((timeout.outcome, timeout.detail), ('inconclusive', 'host fault (TimeoutExpired)'))
+        self.assertIs(read('emit_check', {'ok': False, 'defects': [{'where': 'probe', 'what': 'invalid'}], '_exit': 1})
+                      .host_fault, False)
 
     def test_03_B6_functions_the_operator_did_not_grant_leave_the_verdict_unscored_never_not_equivalent(self):
         """The frozen package's only function writes and the operator granted read alone: the gateway refuses every call
@@ -2177,7 +2332,8 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         stopped = wait_stopped(controller, run)
                 self.assertEqual((stopped['status'], stopped['outcome_category']), ('blocked', 'safety'), stopped)
-                controller.call('respond', {**run, 'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'})
+                controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+                    'source': 'scripted operator', 'message': 'Checked the device', 'prior_execution_stopped': True}})
                 with controller._db() as db:
                     # The wall-clock budget has lapsed since the verdict.
                     db.execute('UPDATE runs SET created=created-? WHERE id=?', (10 * 86400, run['run_id']))
@@ -2282,7 +2438,9 @@ class FinalVerdictTests(unittest.TestCase):
                             self.assertIn('uncertain', recovered['reason'])
                             with self.assertRaisesRegex(ValueError, 'uncertain'):
                                 reopened.call('resume', run)
-                            reopened.call('respond', {**run, 'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'})
+                            reopened.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+                                'source': 'scripted operator', 'message': 'Checked the device',
+                                'prior_execution_stopped': True}})
                             resume_when_idle(self, reopened, run)
                             recovered = wait_stopped(reopened, run)
                         self.assertEqual((recovered['status'], recovered['outcome_category'], recovered['reason']),
@@ -2850,6 +3008,82 @@ class RealToolVerdictTests(unittest.TestCase):
     def reads(call, package, workspace):
         """The fresh-reuse worker that runs the frozen package's read once."""
         return call('read_temperature')
+
+    def test_01_B11_while_a_run_is_uncertain_a_generated_write_is_refused_before_it_starts_and_reads_go_on(self):
+        replies, seen, ran = {**self.DEVICE, b'R': b'OK\n'}, [], []
+        def reuse(call, package, workspace):
+            # From here on the device takes the write and never answers it.
+            del replies[b'R']
+            del seen[:]
+            ran.extend([call('set_rate'), call('set_rate'), call('read_temperature')])
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(Path(directory) / 'home', reuse, replies=replies, seen=seen,
+                                              model=DeviceRepairTests.writing_thermometer(), effects=['read', 'write'])
+        lost, refused, read = ran
+        self.assertEqual((lost['ok'], lost['requested_command_dispatched']), (False, True), lost)
+        self.assertIsInstance(refused, ValueError, refused)
+        self.assertEqual(str(refused), DeviceRepairTests.UNCERTAIN)
+        self.assertEqual((read['ok'], read['outputs']), (True, {'temperature_c': 21.5}), read)
+        # The refused write reached no device and is not recorded as started.
+        self.assertEqual(seen, [b'ID', b'R', b'ID', b'T'])
+        reused = lambda kind: [e['data'] for e in events if e['kind'] == kind and e['data']['stage'] == 'reuse']
+        self.assertEqual([(e['name'], e['effectful']) for e in reused('tool.started')],
+                         [(self.tool('set_rate'), True), (self.tool('read_temperature'), False)])
+        self.assertEqual([(e['name'], e['reason']) for e in reused('tool.refused')],
+                         [(self.tool('set_rate'), DeviceRepairTests.UNCERTAIN)])
+        self.assertEqual((result['status'], result['outcome_category'], result['uncertain_effect']),
+                         ('blocked', 'safety', True), result)
+
+    def test_01_B5_a_generated_tool_call_is_recorded_as_started_and_as_finished_with_the_fields_of_the_journal(self):
+        from generative_driver.configurator import digest
+        ran, packages = [], []
+        def reuse(call, package, workspace):
+            packages.append(digest(package))
+            ran.extend([call('set_rate'), call('read_temperature')])
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(Path(directory) / 'home', reuse, replies={**self.DEVICE, b'R': b'OK\n'},
+                                              model=DeviceRepairTests.writing_thermometer(), effects=['read', 'write'])
+        self.assertEqual(result['status'], 'completed', result)
+        [assigned] = [e['data'] for e in events if e['kind'] == 'stage.assigned' and e['data']['stage'] == 'reuse']
+        reused = lambda kind: [e for e in events if e['kind'] == kind and e['data']['stage'] == 'reuse']
+        started, finished = reused('tool.started'), reused('tool.finished')
+        self.assertEqual((len(started), len(finished)), (2, 2))
+        for start, end, reply, operation, marked in zip(started, finished, ran, ('set_rate', 'read_temperature'),
+                                                         (True, False)):
+            with self.subTest(operation=operation):
+                # The record's fields, and the facts of a generated call: the package that ran and its operation.
+                recorded = {'stage': 'reuse', 'assignment_id': assigned['id'], 'name': self.tool(operation),
+                            'actor': 'worker', 'effectful': marked, 'connected': True,
+                            'argument_sha256': {'package_dir': packages[0]}, 'operation': operation, 'parameters': {}}
+                self.assertEqual(start['data'], recorded)
+                data = dict(end['data'])
+                stored = data.pop('result')
+                self.assertEqual(data, {**recorded, 'ok': True, 'artifacts': {}, 'dispatch_id': str(start['id']),
+                                        'effects_reconciled': marked, 'refused_before_open': False})
+                # The worker gets the recorded result with the ids of the run, the invocation and both events.
+                self.assertEqual(stored['mcp']['dispatch_id'], str(start['id']))
+                self.assertEqual(reply, {**stored, 'session_id': result['run_id'], 'request_id': reply['request_id'],
+                                         'dispatch_id': str(start['id']), 'evidence_id': str(end['id'])})
+
+    def test_01_B7_a_generated_write_whose_identity_read_failed_leaves_no_uncertain_effect(self):
+        replies, seen, ran = {**self.DEVICE, b'R': b'OK\n'}, [], []
+        def reuse(call, package, workspace):
+            # From here on the device answers the identity read with another name.
+            replies[b'ID'] = b'OTHER\n'
+            del seen[:]
+            ran.append(call('set_rate'))
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(Path(directory) / 'home', reuse, replies=replies, seen=seen,
+                                              model=DeviceRepairTests.writing_thermometer(), effects=['read', 'write'])
+        [write] = ran
+        self.assertEqual((write['ok'], write['requested_command_dispatched'], write['transport_open_attempted']),
+                         (False, False, True), write)
+        # The write's own command never went out, so it left nothing uncertain and the run got its verdict.
+        self.assertEqual(seen, [b'ID'])
+        [finished] = [e['data'] for e in events if e['kind'] == 'tool.finished' and e['data']['stage'] == 'reuse']
+        self.assertEqual((finished['effectful'], finished['effects_reconciled'], finished['refused_before_open']),
+                         (True, True, False), finished)
+        self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
 
     def test_03_B6_fresh_reuse_must_run_a_function_of_the_frozen_package_beyond_its_identity(self):
         """Identity alone is not evidence of function: self-evidence needs fresh reuse to run, with a generated tool, at
@@ -3586,29 +3820,250 @@ class ConfiguratorTests(unittest.TestCase):
             finally:
                 controller.close()
 
-    def test_recovery_preserves_uncertainty_until_operator_reconciles_it(self):
+    # The operator's statement that resolves an uncertain effect, without its `effect_resolution`.
+    STATEMENT = {'source': 'scripted operator', 'message': 'The earlier execution has stopped; the device is safe.',
+                 'prior_execution_stopped': True}
+    INCOMPLETE = ('Resolving an uncertain effect requires effect_resolution "confirmed_safe" and an observation with '
+                  'source, message and prior_execution_stopped true')
+
+    def _idle_run(self, controller, **start):
+        """A running run whose acquire worker idles, and that worker's assignment."""
+        run = controller.call('start', {'goal': 'Scripted statement contract', **start,
+            'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(20)']}})
+        until = time.monotonic() + 5
+        while time.monotonic() < until:
+            assignment = next((e['data'] for e in controller.call('events', run)['events']
+                               if e['kind'] == 'stage.assigned'), None)
+            if assignment and controller.call('status', run)['status'] == 'running':
+                return run, assignment
+            time.sleep(.02)
+        self.fail('no running acquire assignment')
+
+    @staticmethod
+    def _pending_write(controller, run, assignment):
+        """The id of a write dispatched for the run's worker that has not ended: its pending effect stays."""
+        return controller.dispatch_record.begin(run['run_id'], kind='run', name='interface_execute', actor='worker',
+            effects=['write'], stage=assignment['stage'], assignment_id=assignment['id'])
+
+    @staticmethod
+    def _responses(controller, run):
+        return [e['data'] for e in controller.call('events', run)['events'] if e['kind'] == 'operator.response']
+
+    def test_01_B12_recovery_preserves_uncertainty_only_for_a_pending_effect_until_the_operator_resolves_it(self):
+        from generative_driver.configurator import Controller
+        for pending in (False, True):
+            with self.subTest(pending_effect=pending), tempfile.TemporaryDirectory() as directory:
+                controller=Controller(Path(directory))
+                # The run is granted a write. Only a write that was dispatched and has not ended leaves a pending
+                # effect.
+                run,assignment=self._idle_run(controller,effects=['read','write'])
+                dispatch=self._pending_write(controller,run,assignment) if pending else None
+                self.assertEqual(controller.call('status',run)['uncertain_effect'],pending)
+                controller.close()
+                reopened=Controller(Path(directory))
+                try:
+                    state=reopened.call('status',run)
+                    self.assertEqual((state['status'],state['reason']),
+                                     ('blocked','Configurator restarted; explicit resume required'))
+                    # The restart leaves the flag as it was.
+                    self.assertEqual(state['uncertain_effect'],pending)
+                    events=reopened.call('events',run)['events']
+                    self.assertEqual([e['data'] for e in events if e['kind']=='run.recovered'],
+                                     [{'uncertain_effect':pending}])
+                    self.assertEqual(len([e for e in events if e['kind']=='stage.assigned']),1)
+                    if pending:
+                        with self.assertRaisesRegex(ValueError,'uncertain'):
+                            reopened.call('resume',run)
+                        reconciled=reopened.call('respond',{**run,'observation':{
+                            **self.STATEMENT,'effect_resolution':'confirmed_safe'}})
+                        self.assertFalse(reconciled['uncertain_effect'])
+                        self.assertEqual(self._responses(reopened,run)[0]['resolved_dispatch_ids'],[str(dispatch)])
+                    # Without a pending effect the run resumes with no statement.
+                    self.assertIn(reopened.call('resume',run)['status'],('queued','running'))
+                finally:
+                    reopened.close()
+
+    def test_01_B14_a_respond_with_an_incomplete_statement_is_refused_and_changes_nothing(self):
         from generative_driver.configurator import Controller
         with tempfile.TemporaryDirectory() as directory:
-            controller=Controller(Path(directory))
-            run=controller.call('start',{'goal':'Scripted recovery contract','effects':['read','write'],
-                'executor_config':{'command':[sys.executable,'-c','import time; time.sleep(20)']}})
-            until=time.monotonic()+3
-            while time.monotonic()<until and controller.call('status',run)['status']!='running':
-                time.sleep(.01)
-            controller.close()
-            reopened=Controller(Path(directory))
+            controller = Controller(Path(directory))
             try:
-                state=reopened.call('status',run)
-                self.assertEqual(state['status'],'blocked')
-                self.assertTrue(state['uncertain_effect'])
-                with self.assertRaisesRegex(ValueError,'uncertain'):
-                    reopened.call('resume',run)
-                self.assertEqual(len([e for e in reopened.call('events',run)['events'] if e['kind']=='stage.assigned']),1)
-                reconciled=reopened.call('respond',{**run,'observation':{'source':'scripted operator','effect_resolution':'confirmed_safe','evidence':'No device attached in contract test'}})
-                self.assertFalse(reconciled['uncertain_effect'])
-                self.assertIn(reopened.call('resume',run)['status'],('queued','running'))
+                run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                dispatch = self._pending_write(controller, run, assignment)
+                # The caller's own refusal comes before the check of the statement.
+                with self.assertRaisesRegex(ValueError, 'Respond only while the run is stopped'):
+                    controller.call('respond', {**run, 'message': 'Checked', 'effect_resolution': 'confirmed_safe'})
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                stated = {**self.STATEMENT, 'effect_resolution': 'confirmed_safe'}
+                for label, params in (
+                        ('a message alone', {'message': 'Checked the device', 'effect_resolution': 'confirmed_safe'}),
+                        ('another resolution', {'observation': self.STATEMENT, 'effect_resolution': 'probably_safe'}),
+                        ('another resolution in the observation',
+                         {'observation': {**self.STATEMENT, 'effect_resolution': 'unknown'}}),
+                        ('no source', {'observation': {key: stated[key] for key in stated if key != 'source'}}),
+                        ('a source that is no text', {'observation': {**stated, 'source': 7}}),
+                        ('a blank message', {'observation': {**stated, 'message': ' '}}),
+                        ('execution not stated as stopped',
+                         {'observation': {**stated, 'prior_execution_stopped': 'yes'}})):
+                    with self.subTest(statement=label):
+                        with self.assertRaises(ValueError) as refused:
+                            controller.call('respond', {**run, **params})
+                        self.assertEqual(str(refused.exception), self.INCOMPLETE)
+                self.assertTrue(controller.call('status', run)['uncertain_effect'])
+                self.assertEqual(self._responses(controller, run), [])
+                pending = controller.dispatch_record.pending(run['run_id'])
+                self.assertEqual([effect['dispatch_id'] for effect in pending], [dispatch])
+                with self.assertRaisesRegex(ValueError, 'uncertain'):
+                    controller.call('resume', run)
+            finally:
+                controller.close()
+
+    def test_01_B14_a_complete_statement_resolves_the_runs_pending_effects_and_its_event_lists_them(self):
+        from generative_driver.configurator import Controller
+        # `respond` reads the resolution from its parameters or, when absent there, from the observation.
+        for where, params in (('parameters', {'observation': self.STATEMENT, 'effect_resolution': 'confirmed_safe'}),
+                              ('observation',
+                               {'observation': {**self.STATEMENT, 'effect_resolution': 'confirmed_safe'}})):
+            with self.subTest(resolution_in=where), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory))
+                try:
+                    run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                    dispatch = self._pending_write(controller, run, assignment)
+                    controller.call('cancel', run)
+                    self.assertTrue(wait_stopped(controller, run)['uncertain_effect'])
+                    resolved = controller.call('respond', {**run, **params})
+                    self.assertFalse(resolved['uncertain_effect'])
+                    [response] = self._responses(controller, run)
+                    self.assertEqual((response['effect_resolution'], response['resolved_dispatch_ids']),
+                                     ('confirmed_safe', [str(dispatch)]))
+                    self.assertEqual(response['observation'], params['observation'])
+                    self.assertEqual(controller.dispatch_record.pending(run['run_id']), [])
+                    self.assertIn(resume_when_idle(self, controller, run)['status'], ('queued', 'running'))
+                finally:
+                    controller.close()
+
+    def test_01_B14_a_complete_statement_on_a_run_that_is_not_uncertain_is_accepted_and_lists_no_dispatch(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, _ = self._idle_run(controller)
+                controller.call('cancel', run)
+                self.assertFalse(wait_stopped(controller, run)['uncertain_effect'])
+                accepted = controller.call('respond', {**run, 'observation': self.STATEMENT,
+                                                       'effect_resolution': 'confirmed_safe'})
+                self.assertFalse(accepted['uncertain_effect'])
+                [response] = self._responses(controller, run)
+                self.assertEqual((response['effect_resolution'], response['resolved_dispatch_ids']),
+                                 ('confirmed_safe', []))
+            finally:
+                controller.close()
+
+    def test_01_B14_a_respond_that_states_no_resolution_stays_an_operator_message_and_resolves_nothing(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._idle_run(controller, effects=['read', 'write'])
+                dispatch = self._pending_write(controller, run, assignment)
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                # The statement's fields alone state no resolution: the observation is kept as the operator's message.
+                for params in ({'message': 'The cable was loose'}, {'observation': self.STATEMENT}):
+                    self.assertTrue(controller.call('respond', {**run, **params})['uncertain_effect'])
+                first, second = self._responses(controller, run)
+                self.assertEqual(first, {'message': 'The cable was loose', 'observation': None,
+                                         'effect_resolution': None})
+                self.assertEqual((second['observation'], second['effect_resolution']), (self.STATEMENT, None))
+                self.assertNotIn('resolved_dispatch_ids', second)
+                pending = controller.dispatch_record.pending(run['run_id'])
+                self.assertEqual([effect['dispatch_id'] for effect in pending], [dispatch])
+            finally:
+                controller.close()
+
+    def test_01_B16_a_flag_an_earlier_version_set_on_a_run_stays_until_the_statement_which_lists_no_dispatch(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory))
+            try:
+                run, assignment = self._idle_run(controller)
+                with controller._db() as db:
+                    # As an earlier version left it: the flag is set and no pending effect is recorded.
+                    db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['run_id'],))
+                self.assertEqual(controller.dispatch_record.pending(run['run_id']), [])
+                # The end of a read does not clear it.
+                with patch('generative_driver.toolkit.call_tool', return_value={'available': True, '_exit': 0}):
+                    controller.call('tool', {**run, 'assignment_id': assignment['id'],
+                                             'name': 'acquire_firmware_artifact', 'arguments': {}})
+                [finished] = [e['data'] for e in controller.call('events', run)['events']
+                              if e['kind'] == 'tool.finished']
+                self.assertEqual((finished['ok'], finished['effectful']), (True, False), finished)
+                self.assertTrue(controller.call('status', run)['uncertain_effect'])
+            finally:
+                controller.close()
+            # Neither does a restart, nor a cancellation.
+            reopened = Controller(Path(directory))
+            try:
+                state = reopened.call('status', run)
+                self.assertEqual((state['status'], state['uncertain_effect']), ('blocked', True), state)
+                recovered = [e['data'] for e in reopened.call('events', run)['events'] if e['kind'] == 'run.recovered']
+                self.assertEqual(recovered, [{'uncertain_effect': True}])
+                cancelled = reopened.call('cancel', run)
+                self.assertEqual((cancelled['status'], cancelled['uncertain_effect']), ('cancelled', True), cancelled)
+                with self.assertRaisesRegex(ValueError, 'uncertain'):
+                    reopened.call('resume', run)
+                resolved = reopened.call('respond', {**run, 'observation': self.STATEMENT,
+                                                     'effect_resolution': 'confirmed_safe'})
+                self.assertFalse(resolved['uncertain_effect'])
+                [response] = self._responses(reopened, run)
+                self.assertEqual(response['resolved_dispatch_ids'], [])
+                self.assertIn(resume_when_idle(self, reopened, run)['status'], ('queued', 'running'))
             finally:
                 reopened.close()
+
+    def test_01_B9_a_gateway_write_that_succeeded_while_its_run_was_cancelled_leaves_no_uncertain_effect(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        steps = lambda *operations: [{'operation': operation, 'step': 0, 'op': 'exchange', 'tx_hex': '', 'rx_hex': '',
+                                      'status': 'completed'} for operation in operations]
+        record = {'schema': 'interface-result/1', 'operation': 'set_rate', 'outputs': {}, 'units': {},
+                  'identity_verified': True, 'transcript': steps('identify', 'set_rate'), 'evidence_kind': 'live'}
+        lost = {**record, 'ok': False, 'transport_open_attempted': True, '_exit': 1,
+                'error': {'code': 'timeout', 'message': 'timed out', 'fault': 'model'}}
+        # What the runtime writes for a write that succeeded, and for one whose step went out and was never answered.
+        for case, written, uncertain in (('the write succeeded', {**record, 'ok': True, '_exit': 0}, False),
+                                         ('the write was never answered', lost, True)):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                controller = Controller(Path(directory))
+                try:
+                    with patch.dict('generative_driver.configurator.STAGE_TOOLS', {'acquire': ['interface_execute']}):
+                        run, assignment = self._idle_run(controller, effects=['read', 'write'],
+                                                         binding={'host': '127.0.0.1', 'port': 9})
+                    model = Path(assignment['workspace']) / 'model'; model.mkdir(parents=True)
+                    (model / 'model.json').write_text(json.dumps(DeviceRepairTests.writing_thermometer()))
+                    def cancelled_meanwhile(name, arguments):
+                        # The operator cancels the run while the tool runs its write.
+                        self.assertEqual(controller.call('cancel', run)['status'], 'cancelled')
+                        return dict(written)
+                    with patch('generative_driver.toolkit.call_tool', cancelled_meanwhile):
+                        controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'interface_execute',
+                                                 'arguments': {'model_dir': str(model), 'operation': 'set_rate'}})
+                    [finished] = [e['data'] for e in controller.call('events', run)['events']
+                                  if e['kind'] == 'tool.finished']
+                    self.assertEqual((finished['effectful'], finished['ok'], finished['effects_reconciled']),
+                                     (True, not uncertain, not uncertain))
+                    stopped = wait_stopped(controller, run)
+                    self.assertEqual((stopped['status'], stopped['uncertain_effect']), ('cancelled', uncertain))
+                    if uncertain:
+                        with self.assertRaisesRegex(ValueError, 'uncertain'):
+                            controller.call('resume', run)
+                    else:
+                        # Nothing is left to resolve: the run resumes with no statement.
+                        self.assertIn(resume_when_idle(self, controller, run)['status'], ('queued', 'running'))
+                finally:
+                    controller.close()
 
     def test_binding_is_exclusive_until_the_active_run_stops(self):
         from generative_driver.configurator import Controller

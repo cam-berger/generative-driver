@@ -250,31 +250,37 @@ class ReplayCandidateTests(ServiceCase):
         self.assertEqual(list((self.home / 'runs').glob('*')) if (self.home / 'runs').is_dir() else [], [])
 
 
-CLEANUP_FAILED = 'Cleanup failed; operator reconciliation required'
+class FailedCleanupTests(ServiceCase):
+    """A failed cleanup is an event of the run and changes neither its status nor its flag (01-B17). The status text
+    of 08-B8 for it no longer exists."""
 
+    def stopped(self, **start):
+        """The status of a generic run whose worker cannot be launched, once it has stopped, and the run."""
+        run = self.controller.call('start', {'executor_config': {'command': ['no-such-worker-runtime']}, **start})
+        until = time.monotonic() + 60
+        while True:
+            status = self.call('status', **run)
+            if status['status'] not in ('queued', 'running') and not status['stopping']:
+                return status, run
+            self.assertLess(time.monotonic(), until, status)
+            time.sleep(.02)
 
-class CleanupTextTests(ServiceCase):
-    """The tool's status text for a failed cleanup is in the tool's terms (08-B8)."""
-
-    def test_08_B8_a_run_whose_release_raised_before_its_verdict_is_blocked_for_the_host_with_the_tools_text(self):
+    def test_01_B17_a_run_whose_release_raised_keeps_the_status_and_reason_its_stage_left_and_is_not_uncertain(self):
         from generative_driver.configurator import Controller
+        left, _ = self.stopped(goal='A run whose release succeeds')
+        self.assertEqual((left['status'], left['uncertain_effect']), ('blocked', False), left)
         with patch.object(Controller, '_release', side_effect=RuntimeError('scripted release failure')):
-            run = self.controller.call('start', {'goal': 'A run whose release fails',
-                                                 'executor_config': {'command': ['no-such-worker-runtime']}})
-            until = time.monotonic() + 60
-            while True:
-                status = self.call('status', **run)
-                if status['status'] not in ('queued', 'running') and not status['stopping']:
-                    break
-                self.assertLess(time.monotonic(), until, status)
-                time.sleep(.02)
-        self.assertEqual((status['status'], status['reason'], status['outcome_category']),
-                         ('blocked', CLEANUP_FAILED, 'host'))
-        self.assertIsNone(status['equivalence'])
-        # Its effect is marked uncertain, and the failure is an event of the run, as before.
-        self.assertIs(status['uncertain_effect'], True)
+            status, run = self.stopped(goal='A run whose release fails')
+        # The run stopped as the other one did: the failed cleanup changed neither status nor reason nor flag.
+        for key in ('status', 'reason', 'outcome_category', 'stage', 'uncertain_effect', 'equivalence'):
+            with self.subTest(key=key):
+                self.assertEqual(status[key], left[key])
+        self.assertNotIn('Cleanup failed', status['reason'])
+        # The failure is an event of the run, as before.
         failed = [event['data'] for event in self.call('events', **run)['events'] if event['kind'] == 'cleanup.failed']
         self.assertEqual(failed, [{'reason': 'RuntimeError: scripted release failure'}])
+        # Nothing is left for the operator to resolve: the run resumes without a statement.
+        self.assertIn(self.call('resume', **run)['status'], ('queued', 'running'))
 
 
 RECORDS = 'Records on disk'

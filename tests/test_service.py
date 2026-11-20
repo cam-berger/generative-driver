@@ -239,7 +239,9 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 self.assertEqual(cancelled['status'],'cancelled')
                 self.assertTrue(cancelled['stopping'], cancelled)
                 self.assertLess(time.monotonic()-started,2)
-                reconciliation=call('respond',{**run,'observation':{'source':'scripted test','effect_resolution':'confirmed_safe'}},home)
+                reconciliation=call('respond',{**run,'observation':{'source':'scripted test',
+                    'message':'The tool has stopped','prior_execution_stopped':True,
+                    'effect_resolution':'confirmed_safe'}},home)
                 self.assertFalse(reconciliation['ok'])
                 self.assertIn('stopping',reconciliation['reason'])
             finally:

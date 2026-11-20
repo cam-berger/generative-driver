@@ -1,0 +1,5 @@
+# Breakdown: one record of a dispatch and one reading of its outcome
+
+For the operator and for whoever changes the tool. The rule for an uncertain effect is written twice today and the copies disagree; a tool's result is read in about ten places. After this Run one module reads a result and one module records a dispatch, and both follow the owner's five decisions of 2026-11-19. The operator is stopped for an uncertain effect only when a write or actuation may really have gone out, and resolves it with one statement for runs and device sessions alike.
+
+01. dispatch-outcome — One pure module reads a tool's name and result (did the call succeed, what did each execution send, how did it end for the verdict, whose fault was a pending effect), and one module records every dispatch of the worker gateway, generated tools and device sessions. Only a write or an actuation that may have been sent and did not succeed stays uncertain; a cancellation keeps no successful write uncertain; the operator resolves an uncertain effect of a run with the same statement as for a device session; a restart marks a run only for a recorded pending effect; and the documents describe this.

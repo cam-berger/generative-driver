@@ -299,9 +299,11 @@ class FailureEventEntryTests(ControllerCase):
         class Device:
             def observe(self):
                 raise DeviceUnavailable('scripted provider silence')
-        refused = controller._device_call({'id': run['run_id']}, assignment, 'interface_execute', {}, Device(),
-                                          lambda: self.fail('the call was made'))
+        refused, undispatched = controller._device_call({'id': run['run_id']}, assignment, 'interface_execute', {},
+                                                        Device(), lambda: self.fail('the call was made'))
         self.assertEqual(refused['error']['code'], 'device_unavailable')
+        # The call never started: the second value says so, and no field of the result does.
+        self.assertIs(undispatched, True)
         lost = self.events(controller, run['run_id'], 'device.unavailable')
         self.assertEqual([(event['phase'], event['reason']) for event in lost],
                          [('before', 'scripted provider silence')])
@@ -318,10 +320,9 @@ class FailureEventEntryTests(ControllerCase):
         # A write the runtime attributed to the model after it opened the device, as the configurator records one.
         call = {'stage': 'acquire', 'assignment_id': assignment['id'], 'name': 'interface_execute', 'effectful': True,
                 'actor': 'worker'}
+        started = controller.dispatch_record.begin(run_id, kind='run', name='interface_execute', actor='worker',
+                                                   effects=['write'], stage='acquire', assignment_id=assignment['id'])
         with controller._db() as db:
-            started = controller._event(run_id, 'tool.started', call, db)
-            db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)', (started, run_id, assignment['id'], 'worker'))
-            db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run_id,))
             controller._event(run_id, 'tool.finished', {**call, 'ok': False, 'dispatch_id': str(started),
                 'effects_reconciled': False, 'result': {'schema': 'interface-result/1', 'ok': False,
                     'identity_verified': True, 'transport_open_attempted': True, 'transcript': [{'tx': '00'}],

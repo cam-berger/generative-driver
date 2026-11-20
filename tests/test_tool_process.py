@@ -443,8 +443,9 @@ class AbandonedTests(ChildProcessCase):
         self.assertTrue(self.ended(controller, run)['uncertain_effect'])
         with self.assertRaisesRegex(ValueError, 'Outstanding effect is uncertain'):
             controller.call('resume', run)
-        confirmed = controller.call('respond', {**run, 'message': 'The operator checked the device',
-                                                'effect_resolution': 'confirmed_safe'})
+        confirmed = controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+            'source': 'scripted operator', 'message': 'The operator checked the device',
+            'prior_execution_stopped': True}})
         self.assertFalse(confirmed['uncertain_effect'])
 
     def test_04_B8_a_tool_process_that_ends_without_a_result_is_abandoned_with_what_ended_it(self):
@@ -478,6 +479,37 @@ class AbandonedTests(ChildProcessCase):
         # The run is still the service's to run: the same worker's next call is answered.
         self.assertEqual(controller.call('status', run)['status'], 'running')
         controller.call('cancel', run)
+
+    def test_01_B10_a_gateway_call_that_ends_without_a_result_is_abandoned_and_only_a_write_stays_pending(self):
+        controller = self.controller()
+        run, assignment = self.assigned(controller, effects=['read', 'write'])
+        model = bus_model(Path(assignment['workspace']) / 'model')
+        replies = []
+        # The tool's process ends without a result, first in the model's read and then in its write.
+        for name, operation in (('interface_execute', 'identify'), ('probe_run', 'configure')):
+            self.plan('exit')
+            replies.append(controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': name,
+                                                    'arguments': {'model_dir': str(model), 'operation': operation}}))
+        ended = ' did not finish: its process ended without a result (exit status 7)'
+        # The reply says an effect is uncertain only for the write: the read left no pending effect.
+        self.assertEqual(replies, [
+            {'ok': False, 'abandoned': 'raised', 'reason': 'interface_execute' + ended},
+            {'ok': False, 'abandoned': 'raised', 'reason': 'probe_run' + ended, 'uncertain_effect': True}])
+        read, write = self.dispatch_ids(controller, run)
+        self.assertEqual([(event['name'], event['dispatch_id'], event['reason'], event['type'])
+                          for event in self.events(controller, run, 'tool.abandoned')],
+                         [('interface_execute', read, 'raised', 'ToolProcessExit'),
+                          ('probe_run', write, 'raised', 'ToolProcessExit')])
+        self.assertEqual(self.events(controller, run, 'tool.finished'), [])
+        self.assertTrue(controller.call('status', run)['uncertain_effect'])
+        # The operator's statement resolves the one pending effect, the write's.
+        controller.call('cancel', run)
+        self.ended(controller, run)
+        controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe', 'observation': {
+            'source': 'scripted operator', 'message': 'The operator checked the device',
+            'prior_execution_stopped': True}})
+        [response] = self.events(controller, run, 'operator.response')
+        self.assertEqual(response['resolved_dispatch_ids'], [write])
 
     @staticmethod
     def raising(name, arguments):

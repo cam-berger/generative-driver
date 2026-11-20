@@ -15,7 +15,8 @@ import uuid
 
 
 class DeviceAccess:
-    """One owner of binding claims, pending effects and finalized-package use."""
+    """One owner of binding claims and finalized-package use. Its dispatches go through the configurator's dispatch
+    record, which owns the pending effects."""
 
     def __init__(self, owner):
         self.owner = owner
@@ -31,16 +32,21 @@ class DeviceAccess:
             db.execute('''CREATE TABLE IF NOT EXISTS device_cancellations (
                 owner_id TEXT NOT NULL, request_id TEXT NOT NULL, result TEXT NOT NULL,
                 PRIMARY KEY(owner_id, request_id))''')
-            interrupted = db.execute('''SELECT DISTINCT session_id FROM device_invocations
-                                        JOIN device_sessions ON device_sessions.id=session_id
-                                        WHERE result IS NULL''').fetchall()
-            for invocation in interrupted:
-                session_id = invocation['session_id']
-                db.execute("UPDATE device_sessions SET status='blocked',uncertain=1,updated=? WHERE id=?",
+            unfinished = db.execute('''SELECT session_id,dispatch_id,uncertain FROM device_invocations
+                                       JOIN device_sessions ON device_sessions.id=session_id
+                                       WHERE result IS NULL AND status!='closed' ''').fetchall()
+            abandoned = {(event['run_id'], json.loads(event['payload']).get('dispatch_id')) for event in db.execute(
+                "SELECT run_id,payload FROM events WHERE kind='tool.abandoned'")} if unfinished else set()
+            # An invocation was in flight when the owner stopped if it has no result and its dispatch was not
+            # recorded as abandoned. Its session is blocked, and is as uncertain as it was.
+            interrupted = {invocation['session_id']: invocation['uncertain'] for invocation in unfinished
+                           if (invocation['session_id'], str(invocation['dispatch_id'])) not in abandoned}
+            for session_id, uncertain in interrupted.items():
+                db.execute("UPDATE device_sessions SET status='blocked',updated=? WHERE id=?",
                            (time.time(), session_id))
                 owner._event(session_id, 'device.recovered', {
                     'reason': 'Owner restarted with an unfinished invocation; confirm prior execution has stopped before reconciliation',
-                    'uncertain_effect': True}, db)
+                    'uncertain_effect': bool(uncertain)}, db)
 
     @contextmanager
     def lease(self, owner_id):
@@ -69,98 +75,52 @@ class DeviceAccess:
         if prior and prior['run_id'] != owner_id:
             key = prior['run_id']
             row = db.execute('SELECT status,uncertain FROM runs WHERE id=?', (key,)).fetchone()
+            on = ('queued', 'running', 'open')
             if row is None:
                 row = db.execute('SELECT status,uncertain FROM device_sessions WHERE id=?', (key,)).fetchone()
-            if row and (row['status'] in ('queued', 'running', 'open') or row['uncertain']
+                # The call that blocked a session may still run in a child of an earlier owner: the session, and
+                # only a session, holds its lease until it is closed.
+                on += ('blocked',)
+            if row and (row['status'] in on or row['uncertain']
                         or key in self.owner._workers or key in self.owner._inflight):
                 raise SafetyError(refusal)
         db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)', (identity, owner_id))
 
     @staticmethod
-    def _table(kind):
-        return {'run': 'runs', 'session': 'device_sessions'}[kind]
-
-    @staticmethod
     def _effectful(effect, channel, grants):
-        """Opening a resetting transport is an effect even for a public read operation."""
+        """Refuse an operation whose effect the operator has not granted. Opening a transport that resets the device
+        needs the `reset` grant even for a read, and nothing more: a reset marks nothing."""
         resets = channel.get('resets_on_open') is True
         if (effect != 'read' and effect not in grants) or (resets and 'reset' not in grants):
             raise ValueError('Operation or transport opening requires an effect grant the operator has not supplied')
-        return effect != 'read' or resets
 
-    def begin(self, owner_id, *, kind='run', stage=None, assignment_id=None,
-              actor='worker', name, effectful=False, request_id=None, request_payload=None, facts=None):
-        owner = self.owner
-        table = self._table(kind)
-        with owner._lock, owner._db() as db:
-            row = db.execute(f'SELECT status,cancelled,uncertain FROM {table} WHERE id=?', (owner_id,)).fetchone()
-            if owner._closing or row is None or row['cancelled'] or row['status'] not in ('running', 'open'):
+    def _unstopped(self, owner_id, request_id):
+        """What the dispatch record asks before it marks the dispatch of an invocation: refuse it while the
+        configurator is stopping, and give it up without an error when its request was cancelled while it was queued."""
+        def before_mark(db):
+            if self.owner._closing:
                 raise ValueError('Device operation requires active ownership')
-            if kind == 'run' and assignment_id is not None:
-                current = db.execute('SELECT state,payload FROM assignments WHERE id=? AND run_id=?', (assignment_id, owner_id)).fetchone()
-                active = db.execute('SELECT stage FROM runs WHERE id=?', (owner_id,)).fetchone()
-                saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (owner_id,)).fetchone()
-                revision = json.loads(saved['payload']).get('revision', 0) if saved else 0
-                if not current or current['state'] != 'active' or active['stage'] != stage or json.loads(current['payload']).get('revision', 0) != revision:
-                    raise ValueError('Worker assignment became inactive before dispatch')
-            if request_id is not None and db.execute('SELECT 1 FROM device_cancellations WHERE owner_id=? AND request_id=?', (owner_id, request_id)).fetchone():
-                return None
-            if effectful and row['uncertain']:
-                raise ValueError('Outstanding effect is uncertain; reconcile it before another effectful operation')
-            if effectful:
-                db.execute(f'UPDATE {table} SET uncertain=1 WHERE id=?', (owner_id,))
-            dispatch = owner._event(owner_id, 'tool.started', {'stage': stage,
-                'assignment_id': assignment_id, 'actor': actor, 'name': name,
-                'effectful': effectful, **(facts or {})}, db)
-            if effectful:
-                db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',
-                           (dispatch, owner_id, assignment_id, actor))
-            if request_id is not None:
-                db.execute('INSERT INTO device_invocations VALUES(?,?,?,?,NULL,?)',
-                           (owner_id, request_id, request_payload, dispatch, time.time()))
-            return dispatch
+            return db.execute('SELECT 1 FROM device_cancellations WHERE owner_id=? AND request_id=?',
+                              (owner_id, request_id)).fetchone() is None
+        return before_mark
 
-    def finish(self, owner_id, dispatch, result, *, kind='run', stage=None,
-               assignment_id=None, actor='worker', name, effectful=False, artifacts=None, request_id=None, facts=None):
-        owner = self.owner
-        table = self._table(kind)
-        success = result.get('_exit', 0) == 0 and bool(result.get('ok', result.get('available', True)))
-        executions = result.get('results') if name == 'probe_run' else [result]
-        refused_before_open = (type(executions) is list and bool(executions) and all(
-            type(item) is dict and item.get('schema') in ('interface-result/1', 'driver-result/1')
-            and item.get('transport_open_attempted') is False for item in executions))
-        refused = (type(executions) is list and bool(executions) and all(
-            type(item) is dict and item.get('schema') in ('interface-result/1', 'driver-result/1')
-            and (item.get('transport_open_attempted') is False
-                 or (item.get('schema') == 'driver-result/1'
-                     and item.get('requested_command_dispatched') is False
-                     and (item.get('error') or {}).get('code') == 'precondition_failed'
-                     and (item.get('error') or {}).get('fault') == 'operator'
-                     and item.get('observations') and all(observation.get('result', {}).get('ok') is True
-                         for observation in item['observations']))) for item in executions))
-        with owner._lock, owner._db() as db:
-            row = db.execute(f'SELECT cancelled FROM {table} WHERE id=?', (owner_id,)).fetchone()
-            acknowledged = result.get('fault') != 'host' if actor == 'evaluator' else success or refused
-            reconciled = bool(effectful and not row['cancelled'] and acknowledged)
-            if reconciled:
-                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?', (dispatch,))
-                db.execute(f'UPDATE {table} SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',
-                           (owner_id, owner_id))
-            payload = {'stage': stage, 'assignment_id': assignment_id, 'actor': actor,
-                       'name': name, 'ok': success, 'dispatch_id': str(dispatch),
-                       'effectful': effectful, 'effects_reconciled': reconciled, **(facts or {}),
-                       'refused_before_open': refused_before_open}
-            if actor == 'evaluator':
-                payload['evaluation_event_id'] = str(dispatch)
-            else:
-                payload.update(result=result, artifacts=artifacts or {})
-            evidence = owner._event(owner_id, 'tool.finished', payload, db)
-            if request_id is not None:
-                saved = {**result, 'session_id': owner_id, 'request_id': request_id,
-                         'dispatch_id': str(dispatch), 'evidence_id': str(evidence)}
-                db.execute('UPDATE device_invocations SET result=? WHERE session_id=? AND request_id=?',
-                           (json.dumps(saved, allow_nan=False), owner_id, request_id))
-            return evidence
+    @staticmethod
+    def _invocation_row(owner_id, request_id, payload):
+        """What the dispatch record writes with the start of a dispatch: the row of its invocation, with no result."""
+        def after_start(db, dispatch_id):
+            db.execute('INSERT INTO device_invocations VALUES(?,?,?,?,NULL,?)',
+                       (owner_id, request_id, payload, dispatch_id, time.time()))
+        return after_start
+
+    @staticmethod
+    def _saved_result(owner_id, request_id, dispatch_id, result):
+        """What the dispatch record writes with the end of a dispatch: the result of its invocation, with its ids."""
+        def after_finish(db, evidence_id):
+            saved = {**result, 'session_id': owner_id, 'request_id': request_id,
+                     'dispatch_id': str(dispatch_id), 'evidence_id': str(evidence_id)}
+            db.execute('UPDATE device_invocations SET result=? WHERE session_id=? AND request_id=?',
+                       (json.dumps(saved, allow_nan=False), owner_id, request_id))
+        return after_finish
 
     def _session(self, session_id):
         with self.owner._db() as db:
@@ -253,16 +213,24 @@ class DeviceAccess:
             if operation not in model['operations']:
                 raise ValueError('Unknown public operation')
             effect = model['operations'][operation]['effect']
-            effectful = self._effectful(effect, model['channel'], spec['effects'])
-            dispatch = self.begin(session_id, kind='session', actor='client',
-                                  name=operation, effectful=effectful,
-                                  request_id=request_id, request_payload=request_payload)
+            self._effectful(effect, model['channel'], spec['effects'])
+            dispatch = self.owner.dispatch_record.begin(
+                session_id, kind='session', name=operation, actor='client', effects=[effect],
+                before_mark=self._unstopped(session_id, request_id),
+                after_start=self._invocation_row(session_id, request_id, request_payload))
             if dispatch is None:
                 return self._invocation(session_id, request_id, operation, params.get('parameters', {}), row['uncertain'])[1]
-            result = self.invoke_package(package, spec['manifest_sha256'], operation,
-                                         params.get('parameters', {}), spec['binding'], spec['effects'])
-            evidence = self.finish(session_id, dispatch, result, kind='session', actor='client',
-                                   name=operation, effectful=effectful, request_id=request_id)
+            try:
+                result = self.invoke_package(package, spec['manifest_sha256'], operation,
+                                             params.get('parameters', {}), spec['binding'], spec['effects'])
+            except Exception as error:
+                # The call ended without a result: it is recorded as abandoned, and the client still gets the error.
+                self.owner.dispatch_record.abandon(session_id, dispatch, name=operation, actor='client',
+                                                   reason='raised', error=(type(error).__name__, str(error)))
+                raise
+            evidence = self.owner.dispatch_record.finish(
+                session_id, dispatch, result, kind='session', name=operation, actor='client', generated=True,
+                after_finish=self._saved_result(session_id, request_id, dispatch, result))
             return {**result, 'session_id': session_id, 'request_id': request_id,
                     'dispatch_id': str(dispatch), 'evidence_id': str(evidence)}
 
@@ -325,7 +293,7 @@ class DeviceAccess:
             return previous
         from .configurator import _is_serial_binding
         channel = model['channel']
-        effectful = self._effectful(effect, channel, assignment['effects'])
+        self._effectful(effect, channel, assignment['effects'])
         binding = assignment.get('binding')
         if not binding:
             raise ValueError('No operator-owned device binding for this stage')
@@ -343,12 +311,14 @@ class DeviceAccess:
         facts = {'connected': True, 'argument_sha256': {'package_dir': assignment['inputs'][str(package)]},
                  'operation': operation, 'parameters': arguments,
                  **({'device_session_id': (progress.get('device') or {}).get('session_id')} if spec.get('device') else {})}
-        dispatch = self.begin(run['id'], stage=assignment['stage'], assignment_id=assignment['id'],
-                              name=name, effectful=effectful, request_id=request_id, request_payload=request_payload, facts=facts)
+        dispatch = self.owner.dispatch_record.begin(
+            run['id'], kind='run', name=name, actor='worker', effects=[effect], stage=assignment['stage'],
+            assignment_id=assignment['id'], facts=facts, before_mark=self._unstopped(run['id'], request_id),
+            after_start=self._invocation_row(run['id'], request_id, request_payload))
         if dispatch is None:
             return self._invocation(run['id'], request_id, operation, arguments, run['uncertain'])[1]
         if marker is not None:
-            marker.update(dispatched=dispatch, effectful=effectful)
+            marker.update(dispatched=dispatch)
         proof = {'schema': 'driver-mcp-call/1', 'tool_name': name,
                  'catalog_sha256': configured['catalog_sha256'], 'manifest_sha256': configured['manifest_sha256'],
                  'session_id': run['id'],
@@ -356,16 +326,19 @@ class DeviceAccess:
                  'assignment_id': assignment['id'], 'dispatch_id': str(dispatch),
                  'request_id': params.get('request_id')}
         invoke = lambda: self.invoke_package(package, configured['manifest_sha256'], operation, arguments, binding, assignment['effects'])
+        undispatched = False
         if spec.get('device'):
             from .device_client import open_device
-            result = self.owner._device_call(run, assignment, 'package_execute',
+            result, undispatched = self.owner._device_call(run, assignment, 'package_execute',
                 {'package_dir': str(package), 'operation': operation, 'parameters': arguments, 'mcp': proof},
                 open_device(spec['device']), invoke, expected_session_id=(progress.get('device') or {}).get('session_id'))
         else:
             result = invoke()
         result = {**result, 'mcp': proof}
-        evidence = self.finish(run['id'], dispatch, result, stage=assignment['stage'],
-            assignment_id=assignment['id'], name=name, effectful=effectful, request_id=request_id, facts=facts)
+        evidence = self.owner.dispatch_record.finish(
+            run['id'], dispatch, result, kind='run', name=name, actor='worker', generated=True,
+            undispatched=undispatched, stage=assignment['stage'], assignment_id=assignment['id'], facts=facts,
+            after_finish=self._saved_result(run['id'], request_id, dispatch, result))
         return {**result, 'session_id': run['id'], 'request_id': request_id,
                 'dispatch_id': str(dispatch), 'evidence_id': str(evidence)}
 
@@ -409,8 +382,11 @@ class DeviceAccess:
                 raise ValueError('Unknown device session')
             if close and (row['uncertain'] or session_id in self.owner._inflight):
                 raise ValueError('Cannot close a session with an active invocation or uncertain effect')
+            # A cancelled session that is blocked stays blocked, so that it keeps its lease until it is closed, and one
+            # that is closed stays closed, so that no restart blocks it again.
             db.execute('UPDATE device_sessions SET status=?,cancelled=1,updated=? WHERE id=?',
-                       ('closed' if close else 'cancelled', time.time(), session_id))
+                       ('closed' if close else row['status'] if row['status'] in ('blocked', 'closed') else 'cancelled',
+                        time.time(), session_id))
             if close:
                 db.execute('DELETE FROM bindings WHERE run_id=?', (session_id,))
             self.owner._event(session_id, 'device.closed' if close else 'device.cancelled', {}, db)
@@ -419,21 +395,18 @@ class DeviceAccess:
     def reconcile(self, params):
         session_id = params['session_id']
         observation = params.get('observation')
-        if (params.get('effect_resolution') != 'confirmed_safe' or type(observation) is not dict
-                or observation.get('prior_execution_stopped') is not True
-                or not isinstance(observation.get('source'), str) or not observation['source'].strip()
-                or not isinstance(observation.get('message'), str) or not observation['message'].strip()):
-            raise ValueError('Reconciliation requires confirmed_safe and a sourced observation confirming prior execution stopped')
         with self.owner._lock, self.owner._db() as db:
             row, spec = self._session(session_id)
             if row['status'] == 'closed' or not row['uncertain']:
                 raise ValueError('Only an owned session with an uncertain outcome can be reconciled')
             if session_id in self.owner._inflight:
                 raise ValueError('Prior invocation is still running; reconcile only after it stops')
-            pending = db.execute('SELECT dispatch_id FROM pending_effects WHERE run_id=?', (session_id,)).fetchall()
+            resolved = self.owner.dispatch_record.resolve_by_operator(
+                session_id, kind='session', effect_resolution=params.get('effect_resolution'), observation=observation,
+                db=db)
             evidence = self.owner._event(session_id, 'device.reconciled', {
                 'observation': observation, 'effect_resolution': 'confirmed_safe',
-                'resolved_dispatch_ids': [str(item['dispatch_id']) for item in pending]}, db)
+                'resolved_dispatch_ids': resolved}, db)
             interrupted = db.execute('SELECT * FROM device_invocations WHERE session_id=? AND result IS NULL',
                                      (session_id,)).fetchall()
             for invocation in interrupted:
@@ -444,8 +417,7 @@ class DeviceAccess:
                         'message': 'Original outcome remains unknown; operator confirmed execution stopped and inspected the device.'}}
                 db.execute('UPDATE device_invocations SET result=? WHERE session_id=? AND request_id=?',
                            (json.dumps(result), session_id, invocation['request_id']))
-            db.execute('DELETE FROM pending_effects WHERE run_id=?', (session_id,))
-            db.execute('UPDATE device_sessions SET uncertain=0,status=?,updated=? WHERE id=?',
+            db.execute('UPDATE device_sessions SET status=?,updated=? WHERE id=?',
                        ('cancelled' if row['cancelled'] else 'open', time.time(), session_id))
         return self.status(params)
 
@@ -475,7 +447,9 @@ class DeviceAccess:
             if not prior:
                 result.update(requested_command_dispatched=False, transport_open_attempted=False)
             else:
-                result.update(dispatch_id=str(prior['dispatch_id']), uncertain_effect=True)
+                pending = self.owner.dispatch_record.pending(owner_id, db)
+                result.update(dispatch_id=str(prior['dispatch_id']), uncertain_effect=any(
+                    effect['dispatch_id'] == prior['dispatch_id'] for effect in pending))
             db.execute('INSERT OR IGNORE INTO device_cancellations VALUES(?,?,?)', (owner_id, request_id, json.dumps(result)))
             self.owner._event(owner_id, 'device.invocation_cancelled', {'request_id': request_id,
                 'assignment_id': params.get('assignment_id'), 'dispatch_id': str(prior['dispatch_id']) if prior else None}, db)

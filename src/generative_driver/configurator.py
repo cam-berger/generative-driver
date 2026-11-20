@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
-from . import debug_probe, run_status, service_log, tool_process
+from . import debug_probe, dispatch_outcome, dispatch_record, run_status, service_log, tool_process
 from .service_log import LOG_NAME, ServiceLog
 # Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
 from .integrity import IntegrityError, digest
@@ -419,18 +419,6 @@ def _replaced(value, replacements):
     return {key: _replaced(item, replacements) for key, item in value.items()} if isinstance(value, dict) else value
 
 
-def _answered(event):
-    """Whether a probe_run's record holds what the device did on the connection the configurator supplied: a live run
-    that succeeded, or a failure the runtime attributes to the model after the transport opened."""
-    result = _result_of(event)
-    if event.get('name') != 'probe_run' or event.get('connected') is not True or result.get('evidence_kind', 'live') != 'live':
-        return False
-    if event.get('ok') is True:
-        return True
-    failed = [r for r in _listed(result.get('results')) if r.get('ok') is False]
-    return result.get('fault') == 'model' and bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
-
-
 def _probe_records(events):
     """The probe records one assignment's runs leave to hand on, from the configurator's own record of its tools.
 
@@ -451,7 +439,8 @@ def _probe_records(events):
         if path in last:
             superseded.append(last[path][1].get('dispatch_id'))
         last[path] = (sha, event)
-    return {path: kept for path, kept in last.items() if _answered(kept[1])}, superseded
+    return {path: kept for path, kept in last.items() if kept[1].get('connected') is True
+            and dispatch_outcome.read(kept[1].get('name'), kept[1].get('result')).answered}, superseded
 
 
 def _record_writers(accepted):
@@ -502,7 +491,8 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     # Records a probe_diff may compare: those handed on that the assigned model wrote, and those the assigned model's
     # runs wrote here as the device answered. A record of another model says what the device did for that model.
     handed = {sha for sha in inputs if inputs & (writers or {}).get(sha, set())}
-    compared = handed | {record_of(event) for event in events if live(event) and _answered(event)}
+    compared = handed | {record_of(event) for event in events
+                         if live(event) and dispatch_outcome.read(event.get('name'), event.get('result')).answered}
     probes = [_result_of(event)['probe'] for event in events
               if event.get('name') == 'probe_run' and isinstance(_result_of(event).get('probe'), str)]
     replacements = sorted(((path, Path(path).name) for path in [*paths, *probes]), key=lambda item: -len(item[0]))
@@ -684,86 +674,6 @@ def _observed_packages(named, built, given, unseen):
     return observed, not_handed_off, dropped
 
 
-def _toolchain_fault(result):
-    """The exception type a toolchain error result names ('OSError' for 'OSError: ...'), or 'toolchain error'."""
-    error = result.get('error')
-    kind = error.split(':', 1)[0].strip() if isinstance(error, str) and ':' in error else ''
-    return kind if re.fullmatch(r'[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt|Expired)', kind) else 'toolchain error'
-
-
-def _host_fault(result):
-    """Whether a tool result says the host, not its input, failed, by a positive list: the tool says so (fault host),
-    or it is a toolchain error naming a host failure (the OSError family, ImportError, MemoryError or a subprocess
-    timeout), or an error that names no exception type, which the toolkit returns when even its own record of the call
-    failed. Any other error, such as an AttributeError or RecursionError on content a worker wrote, is no host fault."""
-    if result.get('fault') == 'host':
-        return True
-    if not isinstance(result.get('error'), str):
-        return False
-    import builtins
-    kind = _toolchain_fault(result)
-    cls = getattr(builtins, kind, None)
-    return (kind == 'toolchain error' or kind.rsplit('.', 1)[-1] == 'TimeoutExpired'
-            or isinstance(cls, type) and issubclass(cls, (OSError, ImportError, MemoryError)))
-
-
-def _before_contact(result):
-    """Whether a tool declared that it stopped before it contacted the device: its own result, with no execution
-    record, says no transport was opened (the runtime's interface-result/1 does the same for one execution)."""
-    return result.get('transport_open_attempted') is False and not _listed(result.get('results'))
-
-
-def _declared_refusal(result):
-    """Whether a tool declared that it refused before it contacted the device (`_before_contact`). A host fault it
-    declares there (its temporary folder, a snapshot copy it cannot read back) is no refusal: nothing reached the
-    device, but the call says nothing about its input either, so it is inconclusive."""
-    return _before_contact(result) and result.get('fault') != 'host'
-
-
-def _live_outcome(event):
-    """How one live operation the configurator dispatched ended, from its own record of the tool result:
-
-    - 'succeeded': it succeeded, or some of its operations passed on the device and every one that did not was
-      refused before the device was contacted (a refused operation is not a live operation);
-    - 'refused': refused before the device was contacted, so not a live operation. Either the runtime's preflight
-      refused it (no execution passed and none that failed attempted to open the transport), or the tool declared
-      that it refused before its first device call (transport_open_attempted false and no execution record: an
-      argument, binding, grant, snapshot or integrity refusal);
-    - 'failed': the model it ran failed on the device: the runtime attributes a failure to the model after the
-      transport opened. The verdict counts it as the driver's only when the operation ran the frozen bytes;
-    - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4), a
-      host fault the tool declared before its first device call, or a toolchain error the tool did not declare as a
-      refusal, which may have come after the device was contacted (labelled a host fault only when it names one,
-      `_host_fault`). It says nothing about the driver.
-
-    Returns (outcome, fault detail for an inconclusive one)."""
-    from interface_runtime.faults import classify_failure
-    result = _result_of(event)
-    if event.get('ok') is True:
-        return 'succeeded', None
-    executions = (_listed(result['results']) if isinstance(result.get('results'), list) else
-                  [result] if result.get('schema') in ('interface-result/1', 'driver-result/1') else [])
-    failed = [r for r in executions if r.get('ok') is not True]
-    refused = bool(failed) and all(r.get('transport_open_attempted') is False for r in failed)
-    if event.get('refused_before_open') is True or _declared_refusal(result) or (refused and len(failed) == len(executions)):
-        return 'refused', None
-    fault = lambda r: classify_failure(r) if r.get('schema') == 'interface-result/1' else (r.get('error') or {}).get('fault', r.get('fault'))
-    if any(fault(r) == 'model' and r.get('transport_open_attempted', True) is True for r in failed):
-        return 'failed', None
-    if refused and result.get('fault') is None:
-        return 'succeeded', None
-    if executions or 'fault' in result or result.get('_exit') == 4:
-        first = failed[0] if failed else result
-        error = first.get('error') if isinstance(first.get('error'), dict) else {}
-        named = _toolchain_fault(first) if isinstance(first.get('error'), str) else 'toolchain error'
-        code = first.get('error_code') or error.get('code') or (named if named != 'toolchain error' else None)
-        return 'inconclusive', str((fault(first) if failed else result.get('fault')) or 'unclassified') + ' fault' + (
-            ' (' + str(code) + ')' if code else '')
-    # The tool raised without declaring a refusal: say whether that names a host failure, never guess one.
-    return 'inconclusive', ('host fault' if _host_fault(result) else 'undeclared toolchain error') + (
-        ' (' + _toolchain_fault(result) + ')')
-
-
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes through the runtime's check of the package
     (`interface_runtime.package`): its content digest, its manifest's digest (which the proof of a generated call
@@ -914,7 +824,8 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
                 and proof.get('dispatch_id') == event.get('dispatch_id')
                 and proof.get('tool_name') == event.get('name'))
     def outcome_of(event):
-        outcome, detail = _live_outcome(event)
+        reading = dispatch_outcome.read(event.get('name'), event.get('result'))
+        outcome, detail = reading.outcome, reading.detail
         if outcome == 'failed' and not emitted(event):
             return 'inconclusive', 'model fault outside the emitted driver'
         return outcome, detail
@@ -1086,6 +997,9 @@ class Controller:
         self._operations = {}
         self._inflight = set()
         self._closing = False
+        # The record looks `_db` and `_event` up at each call: a replacement of either on this object takes effect.
+        self.dispatch_record = dispatch_record.DispatchRecord(lambda: self._db(), self._lock,
+                                                              lambda *event: self._event(*event))
         with self._db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS runs (
@@ -1109,8 +1023,6 @@ class Controller:
                     state TEXT NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS bindings (
                     identity TEXT PRIMARY KEY, run_id TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS pending_effects (
-                    dispatch_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, assignment_id TEXT, actor TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS progress (
                     run_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
             ''')
@@ -1137,7 +1049,7 @@ class Controller:
                     self._event(row['id'], 'run.recovered', {'terminal_final_failure': True}, db)
                     continue
                 spec = json.loads(row['spec'])
-                uncertain = row['uncertain'] or bool(set(spec.get('effects',[])) & {'write','actuate'})
+                uncertain = row['uncertain']
                 reason = 'Configurator restarted; explicit resume required'
                 try:
                     progress = self._workflow_progress(row['id'], db)
@@ -1146,8 +1058,6 @@ class Controller:
                     reason = str(error)
                 else:
                     if progress['next_stage'] in ('finalize', None):
-                        # Reuse was accepted and finalize dispatches nothing: only a recorded pending effect is outstanding.
-                        uncertain = row['uncertain']
                         if spec.get('device') and not uncertain:
                             # A supplied run's finalize only records that its frozen driver awaits its client's verdict.
                             db.execute('INSERT OR REPLACE INTO progress VALUES(?,?)', (row['id'], _json(
@@ -1157,8 +1067,8 @@ class Controller:
                             db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                             self._event(row['id'], 'run.recovered', {'awaiting_evaluation': True, 'uncertain_effect': False}, db)
                             continue
-                db.execute("UPDATE runs SET status='blocked',reason=?,uncertain=?,updated=? WHERE id=?",
-                           (reason, int(uncertain),time.time(),row['id']))
+                db.execute("UPDATE runs SET status='blocked',reason=?,updated=? WHERE id=?",
+                           (reason, time.time(),row['id']))
                 db.execute("UPDATE assignments SET state='interrupted' WHERE run_id=? AND state='active'", (row['id'],))
                 self._event(row['id'],'run.recovered',{'uncertain_effect':bool(uncertain)},db)
 
@@ -1348,12 +1258,12 @@ class Controller:
                 if resolution is not None and (run_id in self._inflight or run_id in self._workers):
                     raise ValueError('Previous worker or operation is still stopping; reconcile after it finishes')
             with self._db() as db:
+                resolved = {}
                 if resolution is not None:
-                    if resolution != 'confirmed_safe':
-                        raise ValueError('effect_resolution must be confirmed_safe after checking the device')
-                    db.execute('UPDATE runs SET uncertain=0 WHERE id=?',(run_id,))
-                    db.execute('DELETE FROM pending_effects WHERE run_id=?',(run_id,))
-                self._event(run_id,'operator.response',{'message':message,'observation':observation,'effect_resolution':resolution},db)
+                    resolved = {'resolved_dispatch_ids': self.dispatch_record.resolve_by_operator(
+                        run_id, kind='run', effect_resolution=resolution, observation=observation, db=db)}
+                self._event(run_id,'operator.response',{'message':message,'observation':observation,
+                                                        'effect_resolution':resolution,**resolved},db)
             return self.call('status', {'run_id': run_id})
         if method in ('attach_device', 'resume') and self._row(run_id)['sealed']:
             # Before anything asks the device, so a stray resume cannot turn a fault into an integrity failure.
@@ -1909,33 +1819,18 @@ class Controller:
         return failures
 
     def _settle_release(self, run_id, failures):
-        """Before a final verdict a release that failed (`cleanup.failed`: giving up what the run holds raised) retains
-        the lease as uncertain. After the verdict each failure is an event; the verdict and the completed status stand
-        unless an effect is uncertain, which blocks for safety. So does an uncertain effect on a run that completed
-        awaiting its independent grade, which an uncertain run cannot record. This relies on the configurator owning no
-        device resource once a verdict exists: a run without a supplied device owns nothing, and the client, not the
-        configurator, stops and seals a supplied device."""
+        """Each failure of the release is an event of the run and nothing more: a failed cleanup (`cleanup.failed`:
+        giving up what the run holds raised) changes neither the run's status nor its flag, so the run keeps what its
+        stage left. An effect that is uncertain after the final verdict blocks the run for safety. So does an uncertain
+        effect on a run that completed awaiting its independent grade, which an uncertain run cannot record. The
+        configurator owns no device resource itself: a run without a supplied device owns nothing, and the client, not
+        the configurator, stops and seals a supplied device."""
         with self._db() as db:
             final = _final_verdict(db, run_id)
             saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run_id,)).fetchone()
         awaiting = final is None and saved is not None and json.loads(saved['payload']).get('equivalence') == 'pending'
-        if any(kind != 'device.release_failed' for kind, _, _ in failures):
-            awaiting = False  # The failed cleanup blocks the run for the host below.
         for kind, reason, detail in failures:
-            if kind == 'device.release_failed':
-                # The client still owns the device and stops it after the run; the run's status stands.
-                self._event(run_id, kind, {'reason': reason})
-                continue
-            # Before the verdict, a failed stop may leave an external resource live: retain
-            # its lease until explicit reconciliation, even after this worker exits.
-            with self._lock:
-                with self._db() as db:
-                    if final is None:
-                        db.execute('UPDATE runs SET uncertain=1 WHERE id=?',(run_id,))
-                    self._event(run_id, kind, {'reason': reason}, db)
-                if final is None:
-                    self._state(run_id,'blocked','Cleanup failed; operator reconciliation required',
-                                outcome_category='host')
+            self._event(run_id, kind, {'reason': reason})
         if (final is not None or awaiting) and self._row(run_id)['uncertain']:
             # The operator's reconciliation and resume complete a run awaiting its grade again.
             self._state(run_id, 'blocked', UNCERTAIN_AFTER_VERDICT if final is not None else UNCERTAIN_AWAITING,
@@ -2450,7 +2345,10 @@ class Controller:
         stops the stage for the operator. The caller holds the run's operation lock (every tool call does), so one live
         call at a time is inside the window and its readings are its own. A device that offers no readings is still
         observed, since that refuses a call when its provider fails, but neither its result nor the journal holds
-        them."""
+        them.
+
+        The result comes with a second value that says whether the call never started. Only then did the configurator
+        write the result itself, and only that value says so: no field of a result does."""
         from .device_client import DeviceUnavailable, offers_readings, reading
         started, result, before, after, lost = False, None, None, None, None
         try:
@@ -2473,14 +2371,14 @@ class Controller:
             item = {'schema': 'interface-result/1', 'ok': False, 'transport_open_attempted': False, 'outputs': {},
                     'units': {}, 'transcript': [], 'error': {'fault': 'operator', 'code': 'device_unavailable',
                     'message': 'The device provider is unavailable; nothing was dispatched: ' + lost[1]}}
-            return {'ok': False, 'results': [item], 'error': item['error']} if name == 'probe_run' else item
+            return ({'ok': False, 'results': [item], 'error': item['error']} if name == 'probe_run' else item), True
         spec = json.loads(run['spec'])
         from .supplied.stages import record_call
         record_call(self.home / 'runs' / run['id'], assignment['stage'], name, arguments, result, before, after,
                     {'assignment_id': assignment['id'], 'device': spec.get('device')})
         if not offers_readings(spec.get('device')):
-            return result
-        return {**result, 'before_observation': before, **({'observation': after} if after else {})}
+            return result, False
+        return {**result, 'before_observation': before, **({'observation': after} if after else {})}, False
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('device'):
@@ -2621,7 +2519,7 @@ class Controller:
                 result = self._check_tool(call_tool, run_dir.name, stage, 'emit_check',
                                           {'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
                 # A check that did not finish says nothing about the host: the package is rejected with the cause.
-                if not result.get('unfinished') and _host_fault(result):
+                if not result.get('unfinished') and dispatch_outcome.read('emit_check', result).host_fault:
                     # The host could not run the check, which says nothing about the package: stop for the host
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
@@ -2815,8 +2713,7 @@ class Controller:
                 if progress['device'].get('binding'):
                     db.execute('DELETE FROM bindings WHERE identity=? AND run_id=?', (_lease(progress['device']['binding']), run_id))
                 self._claim_binding(recovery['receipt']['binding'], run_id, db)
-                db.execute('DELETE FROM pending_effects WHERE run_id=?', (run_id,))
-                db.execute('UPDATE runs SET uncertain=0 WHERE id=?', (run_id,))
+                self.dispatch_record.resolve_by_replacement(run_id, db)
             db.execute('INSERT INTO handoffs VALUES(?,?,?,?,?)', (assignment['id'],run_id,assignment['stage'],_json(handoff),time.time()))
             db.execute('UPDATE assignments SET state=? WHERE id=?', ('accepted', assignment['id']))
             if revise:
@@ -2959,13 +2856,12 @@ class Controller:
             self.log.abandoned(unfinished, run_id=run['id'], stage=assignment['stage'])
         else:
             self.log.error(error, tool=name, run_id=run['id'], stage=assignment['stage'])
-        self._event(run['id'], 'tool.abandoned', {
-            'stage': assignment['stage'], 'assignment_id': assignment['id'], 'name': name,
-            'dispatch_id': str(marker['dispatched']), 'reason': unfinished.reason,
-            **({'type': unfinished.kind, 'message': unfinished.message} if unfinished.reason == 'raised' else {}),
-            'actor': 'worker'})
+        pending = self.dispatch_record.abandon(
+            run['id'], marker['dispatched'], name=name, actor='worker', reason=unfinished.reason,
+            stage=assignment['stage'], assignment_id=assignment['id'],
+            error=(unfinished.kind, unfinished.message) if unfinished.reason == 'raised' else None)
         return {'ok': False, 'abandoned': unfinished.reason, 'reason': str(unfinished),
-                **({'uncertain_effect': True} if marker.get('effectful') else {})}
+                **({'uncertain_effect': True} if pending else {})}
 
     def _tool(self, method, params, run, expires=None):
         """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
@@ -3167,8 +3063,7 @@ class Controller:
                 raise ValueError(refused)
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
-        effectful=bool(effects & {'write','actuate'})
-        if effectful and name in ('probe_run','interface_execute'):
+        if dispatch_record.marks(effects) and name in ('probe_run','interface_execute'):
             # Refused here, never marked uncertain: the runtime would refuse it before opening the device.
             _refuse_invalid_model(arguments['model_dir'])
         device = invoke = None
@@ -3190,36 +3085,22 @@ class Controller:
         # A generic run's kit tool runs in a child process within the call's limits, when the service turned that on.
         kit_tool = device is None
         limits = self._limits(run['id'], spec, run['created'], marker['expires']) if kit_tool else None
-        # The uncertain flag is persisted before dispatch. A crash or cancellation
-        # cannot turn an outstanding physical effect into an automatic retry.
-        with self._lock:
-            with self._db() as db:
-                active = db.execute('SELECT status,stage,cancelled,uncertain FROM runs WHERE id=?',(run['id'],)).fetchone()
-                # The assignment is checked again where the dispatch is marked: one whose stage was accepted, superseded
-                # or left since the call arrived dispatches nothing, so no call runs outside the stage that observes it.
-                current = db.execute('SELECT state FROM assignments WHERE id=? AND run_id=?', (assignment['id'], run['id'])).fetchone()
-                saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run['id'],)).fetchone()
-                if (active['cancelled'] or active['status'] != 'running' or not current or current['state'] != 'active'
-                        or assignment['stage'] != active['stage']
-                        or assignment.get('revision', 0) != (json.loads(saved['payload']) if saved else {}).get('revision', 0)):
-                    raise ValueError('Worker assignment became inactive before dispatch')
-                passed = limits.passed() if limits is not None else None
-                if passed:
-                    # Refused, never started: nothing is marked, so the call leaves no uncertain effect.
-                    late = "The run's budget ran out" if passed == 'budget' else "The call's deadline passed"
-                    raise ValueError(late + ' before it was dispatched; nothing was dispatched')
-                if (effectful or condition_requested) and active['uncertain']:
-                    raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
-                if effectful:
-                    db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
-                # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
-                dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
-                    **facts, 'actor':'worker'}, db)
-                if effectful:
-                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],'worker'))
-        marker.update(dispatched=dispatch_id, effectful=effectful)
+        def in_time(db):
+            passed = limits.passed() if limits is not None else None
+            if passed:
+                # Refused, never started: nothing is marked, so the call leaves no uncertain effect.
+                late = "The run's budget ran out" if passed == 'budget' else "The call's deadline passed"
+                raise ValueError(late + ' before it was dispatched; nothing was dispatched')
+        # The record checks the assignment again where the dispatch is marked: one whose stage was accepted, superseded
+        # or left since the call arrived dispatches nothing, so no call runs outside the stage that observes it.
+        # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
+        dispatch_id = self.dispatch_record.begin(run['id'], kind='run', name=name, actor='worker', effects=effects,
+            stage=assignment['stage'], assignment_id=assignment['id'], facts=facts, condition=condition_requested,
+            before_mark=in_time)
+        marker.update(dispatched=dispatch_id)
+        undispatched = False
         if device is not None:
-            result = self._device_call(run, assignment, name, arguments, device, invoke,
+            result, undispatched = self._device_call(run, assignment, name, arguments, device, invoke,
                 condition_id=condition_id, expected_session_id=(progress.get('device') or {}).get('session_id'))
         else:
             result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
@@ -3237,29 +3118,9 @@ class Controller:
                 path = Path(raw).resolve()
                 if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
-        with self._db() as db:
-            cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']
-            success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
-            # A trusted runtime preflight refusal never attempted to open the device, nor did a refusal the toolchain
-            # declared before its first device call. Empty transcripts alone cannot establish this: opening may
-            # itself reset it.
-            executions = result.get('results') if name == 'probe_run' else [result]
-            refused_before_open = ((name in ('interface_execute', 'probe_run')
-                and type(executions) is list and bool(executions)
-                and all(type(item) is dict and item.get('schema') == 'interface-result/1'
-                        and item.get('transport_open_attempted') is False for item in executions))
-                or (name in ('interface_execute', 'probe_run', 'emit_test_live') and _declared_refusal(result)))
-            # A host fault the tool declared before its first device call refused nothing, but it reached no device
-            # either, so it leaves no effect to reconcile.
-            before_contact = refused_before_open or (name in ('interface_execute', 'probe_run', 'emit_test_live')
-                                                     and _before_contact(result))
-            effects_reconciled = bool(effectful and not cancelled and (success or before_contact))
-            if effects_reconciled:
-                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
-                db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
-            evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
-                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
-                'refused_before_open':refused_before_open,**facts,'actor':'worker'}, db)
+        self.dispatch_record.finish(run['id'], dispatch_id, result, kind='run', name=name, actor='worker',
+            undispatched=undispatched, stage=assignment['stage'], assignment_id=assignment['id'], facts=facts,
+            artifacts=observed_artifacts)
         return result
 
     def close(self, timeout=10):

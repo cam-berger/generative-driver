@@ -1,14 +1,16 @@
 """Real owner IPC and a scripted localhost device; no physical or model evidence."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 import signal
 import socketserver
+import sqlite3
 import tempfile
 import threading
 from pathlib import Path
 import unittest
 
+from line_device import line_device
 from test_driver_contract import (ARMED, RANGE, STEP, controlled_model, described_model, emit_fixture, guarded_model,
                                   unknown, warned)
 from test_package import example_model, example_replay
@@ -37,6 +39,8 @@ def demonstration_device(state=None):
                     state['writes'] += 1
                     if state.get('reset_on_reconnect') and not state.get('armed'):
                         state['unsafe_writes'] = state.get('unsafe_writes', 0) + 1
+                    if state.get('on_write'):
+                        state['on_write']()
                     if state.get('drop_write_reply'):
                         return
                     self.wfile.write(b'OK\n')
@@ -60,6 +64,25 @@ def reachable(model):
     model['channel'] = {'type': 'tcp'}
     model['operations']['set_level']['steps'][0]['rx'] = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 128}
     return model
+
+
+# The operator's statement that resolves an uncertain effect, without its `effect_resolution`.
+STATEMENT = {'source': 'scripted independent fixture inspection',
+             'message': 'Prior execution has stopped; observed level 37.', 'prior_execution_stopped': True}
+INCOMPLETE = ('Resolving an uncertain effect requires effect_resolution "confirmed_safe" and an observation with '
+              'source, message and prior_execution_stopped true')
+# The one refusal of a call that would change the device while an effect is uncertain.
+UNCERTAIN = ('Outstanding effect is uncertain; nothing that would change the device is sent until the operator '
+             'resolves it')
+
+
+def recorded(home, session_id, kind):
+    """The events of `kind` the service recorded for the session, read from the database in its home as a client on
+    the same machine may read them."""
+    with closing(sqlite3.connect(Path(home) / 'runs.sqlite3')) as db:
+        rows = db.execute('SELECT payload FROM events WHERE run_id=? AND kind=? ORDER BY seq',
+                          (session_id, kind)).fetchall()
+    return [json.loads(row[0]) for row in rows]
 
 
 class ModelRuleSessionTests(unittest.TestCase):
@@ -173,43 +196,477 @@ class DeviceSessionTests(unittest.TestCase):
             finally:
                 call('shutdown', home=home, autostart=False)
 
-    def test_owner_loss_blocks_a_session_while_its_old_child_may_still_run(self):
-        from generative_driver.sdk import ManagedDriver
+    def test_01_B14_a_device_reconcile_with_an_incomplete_statement_is_refused_with_the_one_text(self):
         from generative_driver.client import call
-        started, release = threading.Event(), threading.Event()
-        def stalled_read():
-            started.set()
-            release.wait(10)
-        state = {'writes': 0, 'on_measurement': stalled_read}
+        state = {'writes': 0, 'drop_write_reply': True}
         with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
             root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            home = root/'owner'
+            try:
+                opened = call('device_open', {'package_dir': str(package), 'binding': binding,
+                                             'effects': ['write']}, home)
+                session = {'session_id': opened['session_id']}
+                failed = call('device_execute', {**session, 'operation': 'set_level', 'parameters': {'level': 37},
+                                                 'request_id': 'lost-ack'}, home, autostart=False)
+                self.assertFalse(failed['ok'], failed)
+                safe = {'effect_resolution': 'confirmed_safe'}
+                for label, params in (
+                        ('no resolution', {'observation': STATEMENT}),
+                        ('the resolution only in the observation', {'observation': {**STATEMENT, **safe}}),
+                        ('another resolution', {'observation': STATEMENT, 'effect_resolution': 'probably_safe'}),
+                        ('no observation', safe),
+                        ('no source', {**safe, 'observation': {key: STATEMENT[key] for key in STATEMENT
+                                                               if key != 'source'}}),
+                        ('a message that is no text', {**safe, 'observation': {**STATEMENT, 'message': 37}}),
+                        ('a blank source', {**safe, 'observation': {**STATEMENT, 'source': ' '}}),
+                        ('execution not stated as stopped',
+                         {**safe, 'observation': {**STATEMENT, 'prior_execution_stopped': 1}})):
+                    with self.subTest(statement=label):
+                        refused = call('device_reconcile', {**session, **params}, home, autostart=False)
+                        self.assertEqual((refused['ok'], refused['reason']), (False, INCOMPLETE), refused)
+                self.assertTrue(call('device_status', session, home, autostart=False)['uncertain_effect'])
+                self.assertEqual(recorded(home, opened['session_id'], 'device.reconciled'), [])
+                reconciled = call('device_reconcile', {**session, **safe, 'observation': STATEMENT}, home,
+                                  autostart=False)
+                self.assertEqual((reconciled['status'], reconciled['uncertain_effect']), ('open', False), reconciled)
+                # The event lists the dispatch the statement resolved.
+                self.assertEqual(recorded(home, opened['session_id'], 'device.reconciled'), [
+                    {'observation': STATEMENT, 'effect_resolution': 'confirmed_safe',
+                     'resolved_dispatch_ids': [failed['dispatch_id']]}])
+            finally:
+                call('shutdown', home=home, autostart=False)
+
+    def test_01_B14_a_sessions_own_refusals_come_before_the_check_of_the_statement(self):
+        from generative_driver.client import call
+        with tempfile.TemporaryDirectory() as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
             model = example_model(); model['channel'] = {'type': 'tcp'}
-            model['operations']['measure']['steps'][0]['timeout_ms'] = 5000
-            replay = example_replay(); replay['transactions'][1]['timeout_ms'] = 5000
+            package, _ = emit_fixture(root, model)
+            home = root/'owner'
+            try:
+                opened = call('device_open', {'package_dir': str(package), 'binding': binding}, home)
+                session = {'session_id': opened['session_id']}
+                own = 'Only an owned session with an uncertain outcome can be reconciled'
+                # Neither a session that is not uncertain nor a closed one is asked for a complete statement.
+                for label, stated in (('incomplete', {'effect_resolution': 'confirmed_safe'}),
+                                      ('complete', {'effect_resolution': 'confirmed_safe', 'observation': STATEMENT})):
+                    with self.subTest(statement=label):
+                        refused = call('device_reconcile', {**session, **stated}, home, autostart=False)
+                        self.assertEqual((refused['ok'], refused['reason']), (False, own), refused)
+                self.assertEqual(call('device_close', session, home, autostart=False)['status'], 'closed')
+                refused = call('device_reconcile', {**session, 'effect_resolution': 'confirmed_safe'}, home,
+                               autostart=False)
+                self.assertEqual((refused['ok'], refused['reason']), (False, own), refused)
+            finally:
+                call('shutdown', home=home, autostart=False)
+
+    def test_01_B16_a_flag_an_earlier_version_set_on_a_session_stays_until_the_statement_which_lists_no_dispatch(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
+            model = example_model(); model['channel'] = {'type': 'tcp'}
+            package, _ = emit_fixture(root, model)
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding})
+                session = {'session_id': opened['session_id']}
+                with owner._db() as db:
+                    # As an earlier version left it: the flag is set and no pending effect is recorded.
+                    db.execute('UPDATE device_sessions SET uncertain=1 WHERE id=?', (opened['session_id'],))
+                self.assertEqual(owner.dispatch_record.pending(opened['session_id']), [])
+                # The end of a read does not clear it.
+                read = owner.call('device_execute', {**session, 'operation': 'measure', 'request_id': 'read'})
+                self.assertTrue(read['ok'], read)
+                self.assertTrue(owner.call('device_status', session)['uncertain_effect'])
+            finally:
+                owner.close()
+            # Neither does a restart, nor a cancellation.
+            reopened = Controller(root/'owner')
+            try:
+                status = reopened.call('device_status', session)
+                self.assertEqual((status['status'], status['uncertain_effect']), ('open', True), status)
+                cancelled = reopened.call('device_cancel', session)
+                self.assertEqual((cancelled['status'], cancelled['uncertain_effect']), ('cancelled', True), cancelled)
+                with self.assertRaisesRegex(ValueError, 'uncertain effect'):
+                    reopened.call('device_close', session)
+                reconciled = reopened.call('device_reconcile', {**session, 'effect_resolution': 'confirmed_safe',
+                                                                'observation': STATEMENT})
+                self.assertFalse(reconciled['uncertain_effect'], reconciled)
+                [event] = recorded(reopened.home, opened['session_id'], 'device.reconciled')
+                self.assertEqual(event['resolved_dispatch_ids'], [])
+                self.assertEqual(reopened.call('device_close', session)['status'], 'closed')
+            finally:
+                reopened.close()
+
+    @contextmanager
+    def interrupted(self, operation):
+        """A session whose invocation of `operation` was in flight when its service was killed, once the service runs
+        again: the service's home, the session, the request that was in flight, what opens a session on the same
+        binding, and the device's state. The device holds the old service's child in the call until the block ends."""
+        from generative_driver.client import call
+        started, release = threading.Event(), threading.Event()
+        def stalled():
+            started.set()
+            release.wait(10)
+        write = operation == 'set_level'
+        state = {'writes': 0, 'on_write' if write else 'on_measurement': stalled}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            model = reachable(controlled_model())
+            model['operations'][operation]['steps'][0]['timeout_ms'] = 5000
+            replay = example_replay()
+            replay['transactions'][1]['timeout_ms'] = model['operations']['measure']['steps'][0]['timeout_ms']
             package, _ = emit_fixture(root, model, replay_data=replay)
             home = root/'owner'
             pending = None
             try:
-                device = ManagedDriver.open(package, binding=binding, home=home)
-                pending = threading.Thread(target=lambda: device.invoke('measure', request_id='interrupted'), daemon=True)
+                opening = {'package_dir': str(package), 'binding': binding, 'effects': ['write'] if write else ['read']}
+                session = {'session_id': call('device_open', opening, home)['session_id']}
+                request = {**session, 'operation': operation, 'request_id': 'interrupted',
+                           **({'parameters': {'level': 37}} if write else {})}
+                pending = threading.Thread(target=lambda: call('device_execute', request, home, autostart=False),
+                                           daemon=True)
                 pending.start()
                 self.assertTrue(started.wait(5))
-                endpoint = json.loads((home/'service.json').read_text())
-                os.kill(endpoint['pid'], signal.SIGTERM)
+                os.kill(json.loads((home/'service.json').read_text())['pid'], signal.SIGTERM)
                 pending.join(5)
                 call('ping', home=home)
-                status = device.status('interrupted')
-                self.assertEqual(status['status'], 'blocked', status)
-                self.assertTrue(status['uncertain_effect'], status)
-                self.assertEqual(status['invocation_status'], 'interrupted')
-                refused = device.invoke('measure', request_id='must-not-overlap')
-                self.assertFalse(refused['ok'], refused)
-                self.assertEqual(state['measurements'], 1)
+                yield home, session, request, opening, state
             finally:
                 release.set()
                 if pending:
                     pending.join(5)
                 call('shutdown', home=home, autostart=False)
+
+    def test_01_B13_owner_loss_blocks_a_session_while_its_old_child_may_still_run(self):
+        from generative_driver.client import call
+        with self.interrupted('measure') as (home, session, request, opening, state):
+            status = call('device_status', {**session, 'request_id': 'interrupted'}, home, autostart=False)
+            self.assertEqual(status['status'], 'blocked', status)
+            # The interrupted call was a read: it leaves no uncertain effect.
+            self.assertIs(status['uncertain_effect'], False, status)
+            self.assertEqual(status['invocation_status'], 'interrupted')
+            refused = call('device_execute', {**request, 'request_id': 'must-not-overlap'}, home, autostart=False)
+            self.assertFalse(refused['ok'], refused)
+            self.assertEqual(state['measurements'], 1)
+            # The session keeps its binding until it is closed, which needs no statement.
+            competing = call('device_open', opening, home, autostart=False)
+            self.assertEqual((competing['ok'], competing.get('reason')),
+                             (False, 'Device binding is already owned by another run or session'), competing)
+            self.assertEqual(call('device_close', session, home, autostart=False)['status'], 'closed')
+            self.assertTrue(call('device_open', opening, home, autostart=False)['ok'])
+
+    def test_01_B13_a_blocked_session_with_no_uncertain_effect_stays_blocked_until_it_is_closed_and_never_after(self):
+        from generative_driver.client import call
+        with self.interrupted('measure') as (home, session, request, opening, state):
+            recovered = lambda: recorded(home, session['session_id'], 'device.recovered')
+            # The restart records the flag as it was.
+            self.assertEqual([event['uncertain_effect'] for event in recovered()], [False])
+            # No statement is asked for, and none is taken.
+            refused = call('device_reconcile', {**session, 'effect_resolution': 'confirmed_safe',
+                                                'observation': STATEMENT}, home, autostart=False)
+            self.assertEqual((refused['ok'], refused['reason']),
+                             (False, 'Only an owned session with an uncertain outcome can be reconciled'), refused)
+            # A cancellation is recorded and leaves the session blocked, with its binding.
+            cancelled = call('device_cancel', session, home, autostart=False)
+            self.assertEqual((cancelled['status'], cancelled['cancelled'], cancelled['uncertain_effect']),
+                             ('blocked', True, False), cancelled)
+            self.assertEqual(recorded(home, session['session_id'], 'device.cancelled'), [{}])
+            self.assertFalse(call('device_open', opening, home, autostart=False)['ok'])
+            # A session still blocked at a later restart is recorded again.
+            call('shutdown', home=home, autostart=False)
+            call('ping', home=home)
+            self.assertEqual(call('device_status', session, home, autostart=False)['status'], 'blocked')
+            self.assertEqual([event['uncertain_effect'] for event in recovered()], [False, False])
+            self.assertFalse(call('device_open', opening, home, autostart=False)['ok'])
+            # Once closed it is never blocked again, although its invocation still has no result: not after a
+            # cancellation of the closed session either.
+            self.assertEqual(call('device_close', session, home, autostart=False)['status'], 'closed')
+            self.assertEqual(call('device_cancel', session, home, autostart=False)['status'], 'closed')
+            call('shutdown', home=home, autostart=False)
+            call('ping', home=home)
+            status = call('device_status', {**session, 'request_id': 'interrupted'}, home, autostart=False)
+            self.assertEqual((status['status'], status['invocation_status'], status['result']),
+                             ('closed', 'interrupted', None), status)
+            self.assertEqual(len(recovered()), 2)
+            self.assertTrue(call('device_open', opening, home, autostart=False)['ok'])
+
+    def test_01_B13_a_session_whose_write_was_in_flight_is_blocked_and_uncertain_and_needs_the_statement(self):
+        from generative_driver.client import call
+        with self.interrupted('set_level') as (home, session, request, opening, state):
+            status = call('device_status', {**session, 'request_id': 'interrupted'}, home, autostart=False)
+            self.assertEqual((status['status'], status['uncertain_effect'], status['invocation_status']),
+                             ('blocked', True, 'interrupted'), status)
+            self.assertEqual([event['uncertain_effect']
+                              for event in recorded(home, session['session_id'], 'device.recovered')], [True])
+            refused = call('device_execute', {**request, 'request_id': 'must-not-overlap'}, home, autostart=False)
+            self.assertFalse(refused['ok'], refused)
+            self.assertFalse(call('device_close', session, home, autostart=False)['ok'])
+            self.assertFalse(call('device_open', opening, home, autostart=False)['ok'])
+            reconciled = call('device_reconcile', {**session, 'effect_resolution': 'confirmed_safe',
+                                                   'observation': STATEMENT}, home, autostart=False)
+            self.assertEqual((reconciled['status'], reconciled['uncertain_effect']), ('open', False), reconciled)
+            settled = call('device_status', {**session, 'request_id': 'interrupted'}, home, autostart=False)
+            self.assertEqual(settled['result']['error']['code'], 'invocation_interrupted', settled)
+            [event] = recorded(home, session['session_id'], 'device.reconciled')
+            self.assertEqual(event['resolved_dispatch_ids'], [settled['result']['dispatch_id']])
+            self.assertEqual(state['writes'], 1)
+
+    def test_01_B13_an_invocation_whose_dispatch_is_recorded_as_abandoned_was_not_in_flight(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
+            model = example_model(); model['channel'] = {'type': 'tcp'}
+            package, _ = emit_fixture(root, model)
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding})
+                session = {'session_id': opened['session_id']}
+                request = {**session, 'operation': 'measure', 'request_id': 'raised'}
+                with patch.object(owner.device_access, 'invoke_package', side_effect=RuntimeError('scripted')):
+                    with self.assertRaisesRegex(RuntimeError, 'scripted'):
+                        owner.call('device_execute', request)
+                # The call ended without a result, and the session recorded its dispatch as abandoned (01-B10).
+                dispatch = owner.call('device_execute', request)['dispatch_id']
+                self.assertEqual([event['dispatch_id']
+                                  for event in recorded(owner.home, opened['session_id'], 'tool.abandoned')],
+                                 [dispatch])
+            finally:
+                owner.close()
+            reopened = Controller(root/'owner')
+            try:
+                status = reopened.call('device_status', {**session, 'request_id': 'raised'})
+                self.assertEqual((status['status'], status['uncertain_effect'], status['invocation_status']),
+                                 ('open', False, 'interrupted'), status)
+                self.assertEqual(recorded(reopened.home, opened['session_id'], 'device.recovered'), [])
+                self.assertTrue(reopened.call('device_execute', {**request, 'request_id': 'next'})['ok'])
+            finally:
+                reopened.close()
+
+    def test_01_B5_a_session_records_a_dispatch_as_started_and_as_finished_with_the_fields_of_the_journal(self):
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding,
+                                                   'effects': ['write']})
+                session = {'session_id': opened['session_id']}
+                replies = [owner.call('device_execute', {**session, 'operation': 'set_level',
+                                                         'parameters': {'level': 37}, 'request_id': 'write'}),
+                           owner.call('device_execute', {**session, 'operation': 'measure', 'request_id': 'read'})]
+                with owner._db() as db:
+                    events = [(row['seq'], row['kind'], json.loads(row['payload'])) for row in db.execute(
+                        "SELECT seq,kind,payload FROM events WHERE run_id=? AND kind LIKE 'tool.%' ORDER BY seq",
+                        (opened['session_id'],))]
+            finally:
+                owner.close()
+        self.assertEqual([kind for _, kind, _ in events], ['tool.started', 'tool.finished'] * 2)
+        for (start, _, started), (end, _, finished), reply, name, marked in zip(
+                events[::2], events[1::2], replies, ('set_level', 'measure'), (True, False)):
+            with self.subTest(name=name):
+                # A session's dispatch has no stage and no assignment, and its actor is the client.
+                recorded_start = {'stage': None, 'assignment_id': None, 'name': name, 'actor': 'client',
+                                  'effectful': marked}
+                self.assertEqual(started, recorded_start)
+                result = finished.pop('result')
+                self.assertEqual(finished, {**recorded_start, 'ok': True, 'artifacts': {}, 'dispatch_id': str(start),
+                                            'effects_reconciled': marked, 'refused_before_open': False})
+                # The client gets the recorded result with the ids of the session, the invocation and both events.
+                self.assertEqual(reply, {**result, **session, 'request_id': 'write' if marked else 'read',
+                                         'dispatch_id': str(start), 'evidence_id': str(end)})
+
+    def test_01_B11_while_a_session_is_uncertain_a_write_is_refused_before_it_starts_and_reads_go_on(self):
+        from generative_driver.client import call
+        state = {'writes': 0, 'drop_write_reply': True}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            home = root/'owner'
+            try:
+                opened = call('device_open', {'package_dir': str(package), 'binding': binding,
+                                             'effects': ['write']}, home)
+                session = {'session_id': opened['session_id']}
+                write = {**session, 'operation': 'set_level', 'parameters': {'level': 37}}
+                # The device takes the write and never acknowledges it.
+                lost = call('device_execute', {**write, 'request_id': 'lost-ack'}, home, autostart=False)
+                self.assertEqual((lost['ok'], lost['requested_command_dispatched']), (False, True), lost)
+                refused = call('device_execute', {**write, 'request_id': 'another'}, home, autostart=False)
+                self.assertEqual((refused['ok'], refused['reason']), (False, UNCERTAIN), refused)
+                read = call('device_execute', {**session, 'operation': 'measure', 'request_id': 'read'}, home,
+                            autostart=False)
+                self.assertTrue(read['ok'], read)
+                # The refused write reached no device and is not recorded as started: its invocation is unknown.
+                self.assertEqual(state['writes'], 1)
+                self.assertEqual([(event['name'], event['effectful'])
+                                  for event in recorded(home, opened['session_id'], 'tool.started')],
+                                 [('set_level', True), ('measure', False)])
+                status = call('device_status', {**session, 'request_id': 'another'}, home, autostart=False)
+                self.assertEqual((status['invocation_status'], status['uncertain_effect']), ('unknown', True), status)
+            finally:
+                call('shutdown', home=home, autostart=False)
+
+    def test_01_B7_a_session_write_stays_uncertain_only_when_its_command_may_have_gone_out_and_did_not_succeed(self):
+        from generative_driver.configurator import Controller
+        # The installed runtime runs the package's write on a scripted line device. `sent` is what the device then
+        # received: only a write whose own step went out and did not succeed stays uncertain.
+        device = {b'ID?': b'DEMO-42\n', b'LEVEL 37': b'OK\n'}
+        cases = (('the write succeeded', device, [b'ID?', b'LEVEL 37'], True, False),
+                 ('the identity read failed', {**device, b'ID?': b'OTHER\n'}, [b'ID?'], False, False),
+                 ('nothing listens at the binding', None, [], False, False),
+                 ('the device never answered the write', {b'ID?': device[b'ID?']}, [b'ID?', b'LEVEL 37'], False, True))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            owner = Controller(root/'owner')
+            try:
+                for case, replies, sent, succeeded, uncertain in cases:
+                    seen = []
+                    with self.subTest(case=case), line_device(replies or {}, seen) as binding:
+                        opened = owner.call('device_open', {
+                            'package_dir': str(package), 'effects': ['write'],
+                            'binding': binding if replies else {'host': '127.0.0.1', 'port': 1}})
+                        session = {'session_id': opened['session_id']}
+                        result = owner.call('device_execute', {**session, 'operation': 'set_level',
+                                                               'parameters': {'level': 37}, 'request_id': 'write'})
+                        self.assertEqual((result['ok'], seen), (succeeded, sent), result)
+                        [finished] = recorded(owner.home, opened['session_id'], 'tool.finished')
+                        self.assertEqual((finished['effectful'], finished['effects_reconciled']),
+                                         (True, not uncertain), finished)
+                        self.assertIs(owner.call('device_status', session)['uncertain_effect'], uncertain)
+                        if not uncertain:
+                            # Nothing is left to resolve: the session closes with no statement.
+                            self.assertEqual(owner.call('device_close', session)['status'], 'closed')
+            finally:
+                owner.close()
+
+    def test_01_B9_a_session_write_that_succeeded_while_its_session_was_cancelled_leaves_no_uncertain_effect(self):
+        from generative_driver.configurator import Controller
+        state = {'writes': 0}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding,
+                                                   'effects': ['write']})
+                session = {'session_id': opened['session_id']}
+                # The client cancels the session while the device holds the write, which it then acknowledges.
+                state['on_write'] = lambda: owner.call('device_cancel', session)
+                written = owner.call('device_execute', {**session, 'operation': 'set_level',
+                                                        'parameters': {'level': 37}, 'request_id': 'write'})
+                self.assertTrue(written['ok'], written)
+                self.assertEqual(recorded(owner.home, opened['session_id'], 'device.cancelled'), [{}])
+                status = owner.call('device_status', {**session, 'request_id': 'write'})
+                self.assertEqual((status['status'], status['cancelled'], status['uncertain_effect']),
+                                 ('cancelled', True, False), status)
+                self.assertEqual(status['result'], written)
+                [finished] = recorded(owner.home, opened['session_id'], 'tool.finished')
+                self.assertEqual((finished['effectful'], finished['ok'], finished['effects_reconciled']),
+                                 (True, True, True), finished)
+                # Nothing is left to resolve: the session closes with no statement.
+                self.assertEqual(owner.call('device_close', session)['status'], 'closed')
+                self.assertEqual(state['writes'], 1)
+            finally:
+                owner.close()
+
+    def test_01_B10_a_session_call_that_ends_without_a_result_is_abandoned_and_a_write_stays_uncertain(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        from generative_driver.device_access import DeviceAccess
+        state = {'writes': 0}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding,
+                                                   'effects': ['write']})
+                session = {'session_id': opened['session_id']}
+                read = {**session, 'operation': 'measure', 'request_id': 'read'}
+                write = {**session, 'operation': 'set_level', 'parameters': {'level': 37}, 'request_id': 'write'}
+                # The package call of a read raises: the client gets the error.
+                with patch.object(owner.device_access, 'invoke_package', side_effect=RuntimeError('scripted')):
+                    with self.assertRaisesRegex(RuntimeError, 'scripted'):
+                        owner.call('device_execute', read)
+                real = DeviceAccess.invoke_package
+                def changed_meanwhile(access, package, *call):
+                    # The session's copy of the package changes after the session checked it, so the configurator
+                    # refuses the copy it would run: it could not start the operation at all.
+                    manifest = Path(package)/'manifest.json'
+                    kept = manifest.read_bytes()
+                    manifest.write_bytes(kept + b' ')
+                    try:
+                        return real(access, package, *call)
+                    finally:
+                        manifest.write_bytes(kept)
+                with patch.object(DeviceAccess, 'invoke_package', changed_meanwhile):
+                    with self.assertRaisesRegex(ValueError, 'manifest pin mismatch') as refused:
+                        owner.call('device_execute', write)
+                # Both dispatches are recorded as abandoned, never as finished, with what ended them.
+                abandoned = recorded(owner.home, opened['session_id'], 'tool.abandoned')
+                self.assertEqual(recorded(owner.home, opened['session_id'], 'tool.finished'), [])
+                self.assertEqual([{key: event[key] for key in event if key != 'dispatch_id'} for event in abandoned], [
+                    {'stage': None, 'assignment_id': None, 'name': 'measure', 'reason': 'raised',
+                     'type': 'RuntimeError', 'message': 'scripted', 'actor': 'client'},
+                    {'stage': None, 'assignment_id': None, 'name': 'set_level', 'reason': 'raised',
+                     'type': 'ValueError', 'message': str(refused.exception), 'actor': 'client'}])
+                # Neither invocation has a saved result, and each names its abandoned dispatch.
+                pending = [owner.call('device_execute', request) for request in (read, write)]
+                self.assertEqual([result['error']['code'] for result in pending], ['invocation_pending'] * 2)
+                self.assertEqual([result['dispatch_id'] for result in pending],
+                                 [event['dispatch_id'] for event in abandoned])
+                for request in (read, write):
+                    status = owner.call('device_status', {**session, 'request_id': request['request_id']})
+                    self.assertEqual((status['invocation_status'], status['result']), ('interrupted', None), status)
+                # The write stays uncertain although nothing reached the device; the read left nothing.
+                self.assertEqual(state['writes'], 0)
+                self.assertIs(owner.call('device_status', session)['uncertain_effect'], True)
+                with self.assertRaisesRegex(ValueError, 'Outstanding effect is uncertain'):
+                    owner.call('device_execute', {**write, 'request_id': 'another'})
+                reconciled = owner.call('device_reconcile', {**session, 'effect_resolution': 'confirmed_safe',
+                                                             'observation': STATEMENT})
+                self.assertFalse(reconciled['uncertain_effect'], reconciled)
+                [resolved] = recorded(owner.home, opened['session_id'], 'device.reconciled')
+                self.assertEqual(resolved['resolved_dispatch_ids'], [abandoned[1]['dispatch_id']])
+            finally:
+                owner.close()
+
+    def test_01_B6_the_cancellation_of_an_invocation_without_a_result_says_whether_an_effect_is_pending(self):
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        state = {'writes': 0}
+        with tempfile.TemporaryDirectory() as directory, demonstration_device(state) as binding:
+            root = Path(directory).resolve()
+            package, _ = emit_fixture(root, reachable(controlled_model()))
+            owner = Controller(root/'owner')
+            try:
+                opened = owner.call('device_open', {'package_dir': str(package), 'binding': binding,
+                                                   'effects': ['write']})
+                session = {'session_id': opened['session_id']}
+                real, cancelled = owner.device_access.invoke_package, {}
+                def cancelled_meanwhile(package, pin, operation, *call):
+                    # The client cancels the invocation while its package call is in flight.
+                    cancelled[operation] = owner.call('device_cancel_invocation', {**session, 'request_id': operation})
+                    return real(package, pin, operation, *call)
+                with patch.object(owner.device_access, 'invoke_package', side_effect=cancelled_meanwhile):
+                    read = owner.call('device_execute', {**session, 'operation': 'measure', 'request_id': 'measure'})
+                    write = owner.call('device_execute', {**session, 'operation': 'set_level',
+                                                          'parameters': {'level': 37}, 'request_id': 'set_level'})
+                # Only the write had a pending effect while it ran.
+                for operation, result, pending in (('measure', read, False), ('set_level', write, True)):
+                    reply = cancelled[operation]
+                    self.assertEqual((reply['ok'], reply['error']['code'], reply['dispatch_id']),
+                                     (False, 'cancelled', result['dispatch_id']), reply)
+                    self.assertIs(reply['uncertain_effect'], pending)
+                # A dispatched call is not undone: both ran, were recorded and left nothing uncertain.
+                self.assertEqual((read['ok'], write['ok'], state['writes']), (True, True, 1))
+                self.assertIs(owner.call('device_status', session)['uncertain_effect'], False)
+            finally:
+                owner.close()
 
     def test_guard_and_requested_command_keep_one_connection(self):
         from generative_driver.sdk import ManagedDriver

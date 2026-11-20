@@ -193,3 +193,34 @@ Existing tests that change:
 - The texts that refuse `resume`, `attach_device` and `record_evaluation` while a run is uncertain.
 
 ## Deviations
+
+- `outcome` and `detail` are read from the result and never from an event's stored `refused_before_open`. — 01-B3 asks for a reading of the result alone. The stored field added one case, a record with `ok` true whose transport was not opened, which the runtime never writes.
+- A result item whose `error` is no object reads as an unclassified fault; `_live_outcome` raised on it. — The record's `finish` reads every result, and a crash there would lose the finish.
+- `executions` is empty for a result that is not trusted, whatever records it holds. — 01-B2 states opened and sent only for a trusted result, and 01-B8 follows from it.
+- The trusted tools are the table `TRUSTED_TOOLS`, each name with its reason. `generated` and `undispatched` are arguments of `read`, and the comment above the table gives their reasons. — Two entries of the Spec's list are no tool names.
+- `outcome` counts every object in `results`, as `_live_outcome` did, while `executions` and `leaves_uncertain` count only the execution records of 01-B2. — `outcome` must equal `_live_outcome`, and 01-B8 says a result of `emit_test_live` holds no execution record.
+- Each record is read on its own also when the call succeeded: a failed record whose command may have gone out keeps the effect uncertain. — The literal text of 01-B7; it errs toward uncertain.
+- `Execution` is a public named tuple of `ok`, `opened` and `sent`. — It is the item of the attribute `executions` the Spec names.
+- The tests that a module holds no copy of the success test or of the record read that module's source. — 01-B1 and 01-B4 state a property of the code, which no call can show.
+- `device_recovery.diagnostic_faults` reads a stored result that is no object as not generated. — Without the guard the proof check raises on it; every journal the earlier code could read gives the same faults.
+- A field of the record wins over a caller's fact of the same name in `tool.started` and `tool.finished`. — The record's own fields (`effectful`, `dispatch_id`) cannot be replaced by a caller.
+- `abandon` takes no lock. — It writes one event and reads one row in one transaction, and nothing resolves an effect while its call is in flight.
+- The statement's `prior_execution_stopped` must be `true` itself; a value that is merely truthy is refused. — The session's check before this Feature, and the Spec's word "true".
+- A `kind` other than `run` or `session` raises `KeyError`. — Only a mistake in the configurator's own code can pass one.
+- `finish` does not check that the owner exists or is active, and it takes the reading before it takes the lock. — A call that returned is recorded also when its owner was cancelled (01-B9); the reading is pure.
+- `docs/design.md` is edited where it stood, and `docs/setup.md` names the SDK call as `device.reconcile(...)`. — 01-B18 asks that no sentence describe the old rule; the name matches `docs/extending-drivers-and-mcp.md`.
+- `device_cancel` on a closed session leaves it `closed`. — Otherwise a close, a cancel and a restart would block the session again, against 01-B13.
+- `device_recovery.unresolved_outcomes` takes the record as its first argument. — It "takes the pending effects from the record".
+- `device_reconcile` makes the session's own refusals before the check of the statement, and a `respond` that states no resolution writes no `resolved_dispatch_ids`. — 01-B14: a caller's own refusals come first, and such a `respond` stays an operator message.
+- A failed cleanup before the verdict no longer keeps the binding's lease. — The lease check reads the flag, and 01-B17 says a failed cleanup does not set it. `cleanup.failed` is written only when giving up what the run holds raises; a failed release of the device itself was an event only before this Feature too.
+- The record is `Controller.dispatch_record`, built before the tables of runs, so a new database gets `pending_effects` first. — The record must exist before the restart reads the runs.
+- Existing tests were renamed to carry their Behaviour: one each in `tests/test_configurator.py`, `tests/test_device_sessions.py` and `tests/test_client_surface.py`, and the three of `tests/test_owner_generated_integration.py` the Spec lists, two of them rewritten for decision 1. — The Standards name a test after its Behaviour.
+- `Controller._device_call` returns the pair of the result and whether the call never started. — The Spec allows the change of shape; only the branch in which the configurator writes the result itself gives true.
+- `DeviceAccess` has three private helpers for what a dispatch keeps with its start and its end (`_unstopped`, `_invocation_row`, `_saved_result`), and `_table` is gone. `_effectful` keeps its name though it only checks grants now. — The Spec names the record's three hooks, not what fills them, and it forbids renames.
+- A session's call that ends without a result is abandoned with the reason `raised`, the gateway's word for the same case. `execute` catches `Exception`: after anything else the invocation has no result and no abandon event, so the next restart blocks the session and the pending effect stays. — The Spec gives no reason word for a session.
+- A generated tool of a run that is refused while the configurator stops gets the text `Device operation requires active ownership`, as a session's operation does. — "With today's text"; one text served both.
+- The reply to the cancellation of an invocation that has a row and no result always holds `uncertain_effect`, true or false. — The literal text of 01-B6.
+- Tests that need a call to end without a result replace the call of the package's child process (`invoke_package`) or of the tool (`call_tool`). — No scripted device makes the configurator's own child fail to return; both are the boundary to another process.
+- Some RED evidence was taken against the source as it stood before the last slice, and Behaviours that hold "as today" were shown with a deliberate break. — Tests of one shared code path were written in groups.
+- No test through a client call tells whether the gateway and `worker_tool` pass `undispatched` to `finish`. Fix round 1 removed the two tests that showed it by emptying `TRUSTED_TOOLS` and by recording the arguments of `finish`. — Every tool that reaches `_device_call` is trusted already, so the argument changes nothing a client sees. Its two ends are tested: the second value of `_device_call` in `tests/test_service_log.py`, and `finish` with `undispatched` in `tests/test_dispatch_record.py`.
+- The restart of a run that finalizes no longer reads the flag into a local name. — Decision 3 left the line without effect.

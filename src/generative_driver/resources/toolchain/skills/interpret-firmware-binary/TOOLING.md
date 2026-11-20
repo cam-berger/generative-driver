@@ -44,7 +44,7 @@ Run `python image_map_check.py image.bin` with configured Python 3.11+ before ch
 
 Record best mapping, checked pointers/targets and disagreements in `NOTES.md`; pair every provenance address with its original offset. Apply the map during import by carving or explicit base/file offset, never by later mental correction.
 
-## Ghidra 12.1.3 details
+## Ghidra 12.2 details
 
 Read installed `support/analyzeHeadlessREADME.md` before relying on these options:
 

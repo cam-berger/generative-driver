@@ -108,7 +108,7 @@ class ToolReleaseTests(unittest.TestCase):
 
     def test_the_repository_watches_its_native_reference_tools(self):
         repos = {pin.repo for pin in self.releases.find_pins(self.releases.watched_texts(REPO))}
-        self.assertLessEqual({"NationalSecurityAgency/ghidra", "adoptium/temurin21-binaries",
+        self.assertLessEqual({"NationalSecurityAgency/ghidra", "adoptium/temurin25-binaries",
                               "espressif/crosstool-NG"}, repos)
 
 

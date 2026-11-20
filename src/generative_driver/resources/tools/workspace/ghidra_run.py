@@ -15,9 +15,9 @@ its true exit status, classifies the log markers, reports the hostname diagnosti
 and verifies the exporter's files before it says ok. The verdict `ok` is true only when the exit status is
 0, the log says "Import succeeded", and the exports verify.
 
-Procedural facts and where each was read, in the local Ghidra 12.1.3 installation:
+Procedural facts and where each was read, in the local Ghidra 12.2 installation:
 
-  support/analyzeHeadless (lines 22-25 and 43): the launcher builds a JVM argument list and appends the
+  support/analyzeHeadless (lines 22-25 and 42): the launcher builds a JVM argument list and appends the
   environment variables GHIDRA_JAVA_OPTIONS and GHIDRA_HEADLESS_JAVA_OPTIONS to it, then hands the list
   to support/launch.sh as one string.
 
@@ -41,7 +41,7 @@ Procedural facts and where each was read, in the local Ghidra 12.1.3 installatio
   sends that documented form; on the local installation the loader logged "Successfully applied" for
   the offset spelled with and without a 0x prefix, and a full run then listed its first function at the mapped base.
 
-Measured on the local installation, 2026-09-18: `-loader BinaryLoader` and no `-loader` both import a
+Measured on the local installation, 2026-11-20: `-loader BinaryLoader` and no `-loader` both import a
 raw image as "Raw Binary" with exit 0; `ghidra.app.util.opinion.BinaryLoader`, `Binary Loader` and
 `Raw Binary` each end in exit 1 with `Invalid loader name specified` on stderr before any import.
 
@@ -77,12 +77,12 @@ NAVIGATION_TABLES = {
 }
 
 # Which `-loader` spellings the installed headless analyzer accepts, measured on the local installation
-# by importing a synthetic Thumb image with -noanalysis (bench/toolchain/tests/test_ghidra.py repeats the
-# accepted case). The display label Ghidra prints afterwards ("Using Loader: Raw Binary") and the Java
-# class name are not selectors. The README's -loader section documents the accepted spelling.
+# by importing a synthetic Thumb image with -noanalysis (tests/native_ghidra.py repeats the accepted case).
+# The display label Ghidra prints afterwards ("Using Loader: Raw Binary") and the Java class name are not
+# selectors. The README's -loader section documents the accepted spelling.
 LOADER_SELECTORS = {
-    "ghidra": "12.1.3_PUBLIC",
-    "probed": "2026-09-18",
+    "ghidra": "12.2_PUBLIC",
+    "probed": "2026-11-20",
     "accepted": ["BinaryLoader"],
     "rejected": ["ghidra.app.util.opinion.BinaryLoader", "Binary Loader", "Raw Binary"],
     "omitted": "with no -loader Ghidra selects Raw Binary for a raw image and applies -loader-baseAddr",

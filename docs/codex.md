@@ -34,7 +34,7 @@ Generated assets pin Python and the state directory. Supply a leading `--home DI
 
 After upgrading the package or moving the Python environment, run the same `setup` command again. It replaces the plugin it generated in that folder, so the registered marketplace holds the new build; it refuses a folder holding a plugin or marketplace file it did not generate. Then reinstall or refresh **Generative Driver** in Codex and start a new chat.
 
-Drivers built before an upgrade keep working, in device sessions and in reuse: the kit runs its installed runtime over each package's data, and a package keeps the tool catalog it was built with. `emit_check` on such a package reports `runtime_current: false` and replays it on the installed runtime.
+A driver in the current package format, `interface-package/3`, keeps working after an upgrade, in managed sessions and in reuse: a package is data, the installed tool runs it, and the tools an agent is served are rendered from the driver when the package is served. The tool refuses a package of an earlier format and names the format; a new run makes that driver again.
 
 `driver_doctor` called from Codex reports `plugin.state`: `current`, or `stale` with the command to run again. `python -m generative_driver doctor` from a terminal checks only the plugin `setup` last generated: `stale` when it is out of date, `unchecked` otherwise.
 

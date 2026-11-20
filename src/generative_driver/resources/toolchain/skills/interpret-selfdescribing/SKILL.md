@@ -1,11 +1,11 @@
 ---
 name: interpret-selfdescribing
-description: Derive and qualify an executable interface-model/6 from USB descriptors and any supplied protocol specification or vendor client source. Use when the workspace holds descriptor.json from the self-description rung.
+description: Derive and qualify an executable interface model (interface-model/7) with the meaning of each operation from USB descriptors and any supplied protocol specification or vendor client source. Use when the workspace holds descriptor.json from the self-description rung.
 ---
 
 # Interpret USB self-description
 
-Produce `model.json` (`interface-model/6`), `NOTES.md` and `replies.json` using `INTERFACE_MODEL.md`; no conversion module.
+Produce `model.json` (`interface-model/7`), `NOTES.md` and `replies.json` using `INTERFACE_MODEL.md`.
 
 ## Evidence
 
@@ -25,6 +25,10 @@ Descriptors alone do not define commands. Cite every `operations.<name>` and `op
 Effects: `read` changes nothing; `write` changes state/configuration; `actuate` drives pins/outputs/targets. Choose the stronger effect when uncertain. Omit unsupported fields or use null where allowed; never guess bounds/replies.
 
 USB `up_to` uses descriptor packet size, or a larger multiple only when protocol short-packet termination is supported. Use `exact` only for fixed unpadded replies. Length-framed replies need justified `max_bytes`/`max_reads`; composite length/padding needs source-backed bit layout. Use `match` only for proven echoed fields; a client parser alone does not prove echo. Pin reply headers and known error prefixes. Record data-dependent frame counts, unproved sequence rules and other runtime gaps instead of assuming short packets or leaving replies unguarded.
+
+## Meanings
+
+In `model.json`, write a `description` of each operation, parameter and output, the `unit` of each number, and an uncertainty where the evidence leaves a meaning open. A fresh agent that uses the emitted driver reads these and nothing of your evidence. `INTERFACE_MODEL.md` says how to write each of them, and when to narrow an output's `value` or write a precondition. `python3 validate.py .` lists what is still undocumented as `advice`.
 
 ## Finish
 

@@ -1,11 +1,11 @@
 ---
 name: interpret-interface
-description: Derive a bounded executable interface-model/4 or /5 from supplied firmware or protocol evidence, using only provided tools and inputs, and qualify it offline against its own predicted replies before finishing.
+description: Derive a bounded executable interface model (interface-model/7) with the meaning of each operation from supplied firmware or protocol evidence, using only provided tools and inputs, and qualify it offline against its own predicted replies before finishing.
 ---
 
 # Interpret an executable interface
 
-Read `INTERFACE_MODEL.md`. Deliver `model.json` (`interface-model/4` for lines, `/5` for binary frames), `replies.json` and `NOTES.md`; no conversion module or target-specific runtime. Use only supplied evidence/tools, no internet. Installed analysis executables/libraries may run outside the workspace; outputs, projects, caches and logs stay here. Input seals establish integrity, not filesystem/network isolation.
+Read `INTERFACE_MODEL.md`. Deliver `model.json` (`interface-model/7`), `replies.json` and `NOTES.md`; no target-specific runtime. Use only supplied evidence/tools, no internet. Installed analysis executables/libraries may run outside the workspace; outputs, projects, caches and logs stay here. Input seals establish integrity, not filesystem/network isolation.
 
 ## Inputs and analysis
 
@@ -25,7 +25,11 @@ Every operation needs provenance, bounded typed arguments, effect and response g
 
 Line replies: use `lines` ending at the firmware's completion line, never `up_to` or newline-only `until`. Identity separately pins firmware, version and machine tokens, plus `final_line_equals`/`final_line_token` and `reject_line_prefix`. Status pins its line shape; writes pin completion, not substring `ok`.
 
-Binary frames: use schema 5 `frame` with evidence-backed sync, length and integrity. TX `check` covers exactly the bytes verified by firmware, including arguments. Derive width/polynomial/init/shift/final complement and covered range from code. Pin response codes with `prefix_hex` and errors with `reject_prefix_hex`. Record unsupported framing rather than approximating it.
+Binary frames: use `frame` with evidence-backed sync, length and integrity. TX `check` covers exactly the bytes verified by firmware, including arguments. Derive width/polynomial/init/shift/final complement and covered range from code. Pin response codes with `prefix_hex` and errors with `reject_prefix_hex`. Record unsupported framing rather than approximating it.
+
+## Meanings
+
+In `model.json`, write a `description` of each operation, parameter and output, the `unit` of each number, and an uncertainty where the evidence leaves a meaning open. A fresh agent that uses the emitted driver reads these and nothing of your evidence. `INTERFACE_MODEL.md` says how to write each of them, and when to narrow an output's `value` or write a precondition. `python3 validate.py .` lists what is still undocumented as `advice`.
 
 ## Finish
 

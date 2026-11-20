@@ -2,7 +2,7 @@
 
 [Driver contracts and application MCP authoring](docs/extending-drivers-and-mcp.md)
 
-Turn a supported device’s firmware or documentation into a portable driver, with evidence that it works. Use Codex or the command line.
+Turn a supported device’s firmware or documentation into a driver, with evidence that it works. The driver is a package of data that the installed tool runs and serves to an agent. Use Codex or the command line.
 
 The workflow reads the input, infers commands, tests the device, checks independent observations, builds a package, and asks a fresh agent to use it. This is an experimental tool; see [supported paths](docs/support.md).
 
@@ -15,7 +15,17 @@ git clone https://github.com/cam-berger/generative-driver.git
 cd generative-driver
 ```
 
-macOS:
+With [uv](https://docs.astral.sh/uv/), on macOS or Windows 11+, one `uv sync` makes `.venv` and installs the pinned versions in `uv.lock` into it:
+
+```sh
+uv sync --extra dev
+uv run generative-driver doctor
+uv run generative-driver smoke
+```
+
+On Windows, also run `uv run generative-driver service start` in a standalone PowerShell window.
+
+Without uv, on macOS:
 
 ```sh
 python3 -m venv .venv
@@ -24,7 +34,7 @@ python3 -m venv .venv
 .venv/bin/python -m generative_driver smoke
 ```
 
-Windows 11+, in a standalone PowerShell window:
+Without uv, on Windows 11+, in a standalone PowerShell window:
 
 ```powershell
 py -3.13 -m venv .venv
@@ -34,17 +44,17 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m generative_driver service start
 ```
 
-With [uv](https://docs.astral.sh/uv/), on either system, replace the environment and install lines with one `uv sync`, which installs the pinned versions in `uv.lock` into `.venv`:
+The smoke runs one whole run through a service of its own, with a scripted worker and a stand-in device. It needs no AI account or hardware and measures no model performance.
+
+## Use a driver
+
+A run emits a package: five files of data that hold the driver, its MCP tools, its documentation and its evidence, and no code. One command serves a package's tools to an agent over MCP:
 
 ```sh
-uv sync --extra dev
-uv run generative-driver doctor
-uv run generative-driver smoke
+uv run generative-driver serve PACKAGE --binding '{"host": "127.0.0.1", "port": 12345}'
 ```
 
-On Windows, still run `uv run generative-driver service start` in a standalone PowerShell window.
-
-The smoke runs one whole run through a service of its own, with a scripted worker and a stand-in device. It needs no AI account or hardware and measures no model performance.
+The binding above is an example; the package's `README.md` gives the form for its device. The server and its tools are named after the device. See [the package](docs/extending-drivers-and-mcp.md#the-package) and [the command](docs/extending-drivers-and-mcp.md#serve-a-package).
 
 ## Next
 

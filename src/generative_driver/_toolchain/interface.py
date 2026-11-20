@@ -1,11 +1,10 @@
-"""Schema-3 integration of the shared runtime into the original pipeline.
+"""The tools that run an interface model and its package on the shared runtime.
 
-The kit runs a package through its own installed runtime over the package's data, never through the copy the package
-carries (docs/adr/0008-run-the-installed-runtime-over-package-data.md)."""
+A package is five files of data. The kit builds it, checks it and runs it with its own installed runtime
+(docs/adr/0010-a-package-is-data-in-one-format.md)."""
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -14,37 +13,21 @@ import tempfile
 from . import core
 
 import interface_runtime
-from interface_runtime.engine import SCHEMAS, validate_model
+from interface_runtime.engine import format_refusal, validate_model
 from interface_runtime.evidence import (read_json, read_json_hashed, run_samples, check_probe, MAX_EVIDENCE_BYTES,
-                                        probe_coverage, COVERAGE_SCOPE, ReplayFactory, _evidence_bound)
-from interface_runtime.package import digest, package_files, verify_package, inspect_package
+                                        ReplayFactory, _evidence_bound)
+from interface_runtime.package import digest, package_files, text_defect, verify_package, the_driver
+from interface_runtime.package import SCHEMA as PACKAGE
 from interface_runtime.faults import classify_failure, LEGACY_TRANSPORT_CODES as TRANSPORT_CODES
 from interface_runtime.transports import TransportError, capabilities, validate_binding
 
 RUNTIME = Path(interface_runtime.__file__).resolve().parent
-TEMPLATE = Path(core.BENCH)/'toolchain/template/interface_driver'
 
 
 def fault_class(code, identity_verified):
     """Compatibility for older callers; new callers consume the runtime's classified failure result."""
     fault = classify_failure({'ok':False, 'identity_verified':identity_verified, 'error':{'code':code}})
     return 'model' if fault == 'model' else 'transport'
-# The driver command line of a folder `_runnable` built (the installed driver entry and runtime over a package's data),
-# run without the caller's import path.
-BOOT = 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")'
-# The trusted binding a package needs, per channel type: the --binding form and what the operator supplies.
-BINDINGS = {
-    'uart': ('{"port": "<serial device path>"}', 'port is the host serial device the operator chooses.'),
-    'tcp': ('{"host": "<host name or address>", "port": <int>}', 'port is a JSON integer.'),
-    'i2c': ('{"url": "ftdi://<adapter>/<interface>"}', 'url selects the FTDI adapter and must start with ftdi://.'),
-    'spi': ('{"url": "ftdi://<adapter>/<interface>"}', 'url selects the FTDI adapter and must start with ftdi://.'),
-    'usb': ('{"vendor_id": <int>, "product_id": <int>, "serial_number": "<str>"}',
-            'vendor_id and product_id are JSON integers (decimal, never hex strings) that the operator supplies; '
-            'serial_number selects one unit and may be left out only when exactly one matching device is attached. '
-            'Two optional booleans, both false by default, widen what a session may do: allow_set_configuration lets '
-            'it select the default configuration of an unconfigured device, and allow_detach_kernel_driver lets it '
-            'detach a kernel driver from the interface the model names and reattach it on close.'),
-}
 
 
 def path(value):
@@ -52,9 +35,22 @@ def path(value):
     return p if p.is_absolute() else Path(core.BENCH)/p
 
 
+def document_bytes(document):
+    """The bytes a JSON file of a package holds for `document`, the same on every host."""
+    return (json.dumps(document, indent=2, allow_nan=False) + '\n').encode('utf-8')
+
+
 def load(model_dir):
     model_path = path(model_dir)/'model.json'
     return read_json_hashed(model_path, 1048576)
+
+
+def unknown_format(model):
+    """Why the kit refuses `model` for its format, naming the schema found and the one the installed runtime reads, or
+    None for that one format. A tool asks this before it reads any other file: a model is data the installed runtime
+    executes, so a model of another format is refused and nothing of its directory is loaded
+    (docs/adr/0010-a-package-is-data-in-one-format.md)."""
+    return format_refusal(model)
 
 
 @core.tool('interface_describe')
@@ -119,9 +115,9 @@ def interface_execute(model_dir, operation, parameters=None, binding=None, allow
 
 def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=None, allow_effects=None, replay=None):
     """Run one operation of a model `n` times and record the evidence. Every refusal before the transport opens (a
-    model.json that is missing, unreadable or not strict bounded JSON, an invalid model, a missing or unknown operation,
-    a sample count outside 1..100, an evidence bound the samples exceed, a replay fixture) is returned with
-    transport_open_attempted false and exit 1, and writes no record."""
+    model.json that is missing, unreadable or not strict bounded JSON, a format the runtime does not know, an invalid
+    model, a missing or unknown operation, a sample count outside 1..100, an evidence bound the samples exceed, a replay
+    fixture) is returned with transport_open_attempted false and exit 1, and writes no record."""
     grants = [] if allow_effects is None else allow_effects
     try:
         if not (path(model_dir)/'model.json').is_file():
@@ -130,8 +126,10 @@ def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=
     except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
         return before_contact(f'{type(exc).__name__}: {exc}')
     try:
+        if unknown_format(model):
+            raise ValueError(unknown_format(model))
         if operation is None:
-            raise ValueError('schema 3 probe requires an explicit operation name')
+            raise ValueError('a probe requires an explicit operation name')
         if type(n) is not int or not 1 <= n <= 100:
             raise ValueError('sample count must be integer 1..100')
         checked = validate_model(model)
@@ -200,8 +198,11 @@ def _failure_defects(evidence):
 
 def probe_diff(model_dir, probe):
     """Replay consistency for a successful probe; for a failed one, the failure itself as defects. Exit 4 when
-    every failure is an operator or host fault, since that probe says nothing about the model."""
+    every failure is an operator or host fault, since that probe says nothing about the model. A model of a format the
+    runtime does not know is refused as a defect (exit 1) before the probe is read."""
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'_exit':1}
     evidence = read_json(path(probe))
     checked = check_probe(model, evidence, sha)
     if checked['ok']:
@@ -218,276 +219,161 @@ def probe_diff(model_dir, probe):
     return {**checked,'defects':defects,'diagnostics':diagnostics,'_exit':1 if defects else 4}
 
 
-def binding_reference(model):
-    """REFERENCE.md paragraphs naming the binding form for the model's channel and the effect grants its
-    operations need; rendered from the channel type and the model, never from the device."""
-    kind = model['channel']['type']
-    form, note = BINDINGS[kind]
-    effects = {}
-    for name, operation in model['operations'].items():
-        effects.setdefault(operation['effect'], []).append(name)
-    grants = ' '.join(f'Operations that need `--allow-effect {effect}`: {", ".join(effects[effect])}.'
-                      for effect in ('write', 'actuate') if effect in effects) or 'Every operation is a read.'
-    reset = (' This channel resets the device when it opens, so every connection needs `--allow-effect reset`; '
-             'use `python -m driver sequence` to run several operations over one connection.'
-             if model['channel'].get('resets_on_open') else '')
-    return (f'The channel is {kind}. Supply its trusted physical binding as JSON:\n\n'
-            f"```sh\npython -m driver execute {model['identity']['operation']} --binding '{form}'\n```\n\n"
-            f'{note} The binding is the operator\'s choice; models cannot select host paths, devices or network '
-            'destinations.\n\n'
-            'Read effects are allowed by default; write and actuate each require an explicit grant, '
-            '`--allow-effect write` or `--allow-effect actuate`, repeated once per effect. '
-            f'{grants}{reset} These are grants to declarations, not proof arbitrary bytes are safe.\n\n')
-
-
-def coverage_reference(model, evidence):
-    rows = ['| Operation | Effect | Bundled status | Evidence | Samples attempted / passed / failed | Parameters |',
-            '| --- | --- | --- | --- | --- | --- |']
-    for name, entry in probe_coverage(model, evidence).items():
-        counts = entry['samples']
-        parameters = json.dumps(entry['parameters'],sort_keys=True,ensure_ascii=True).replace('|','\\u007c')
-        rows.append(f"| {name} | {entry['effect']} | {entry['status']} | {entry['evidence_kind'] or 'none'} | "
-                    f"{counts['attempted']} / {counts['passed']} / {counts['failed']} | `{parameters}` |")
-    return '## Bundled probe coverage\n\n' + '\n'.join(rows) + '\n\n' + COVERAGE_SCOPE + '\n\n'
+def rendered_files(drivers, evidence):
+    """The bytes of the two files of a package that the tool renders, `mcp.json` and `README.md`, for `drivers`, which
+    maps each driver's name to its interface model, and `evidence`, which maps the same names to their probe records."""
+    from interface_runtime.catalog import render_mcp
+    from .readme import render_readme
+    return {'mcp.json':document_bytes(render_mcp(drivers)),
+            'README.md':render_readme(drivers, evidence).encode('utf-8')}
 
 
 def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
+    """Build the package of a model and the probe record it wrote, in a new folder of the run's emit directory: five
+    files of data and no code (docs/adr/0010-a-package-is-data-in-one-format.md). A model of a format the runtime does
+    not know is refused before the probe is read, and no folder is made.
+
+    The driver file is the model byte for byte and the evidence file is the probe record byte for byte. `mcp.json` and
+    `README.md` are what the tool renders from them, so nothing else in the model directory is read. `name` names the
+    package; its driver is named after the device. A `name` or a `version` the package check would refuse in a
+    manifest is refused by the argument's name before anything is read or written."""
+    from interface_runtime.catalog import driver_name
+    # A package without a name of its own has its driver's name, which the check always accepts.
+    given = ([('name', name)] if name else []) + [('version', version)]
+    refused = [{'where':argument,'what':text_defect(argument, value)} for argument, value in given
+               if text_defect(argument, value) is not None]
+    if refused:
+        return {'ok':False,'defects':refused,'_exit':1}
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'_exit':1}
     evidence = read_json(path(probe))
     checked = check_probe(model, evidence, sha)
     if not checked['ok']:
         return {**checked,'_exit':1}
-    from interface_runtime.contracts import from_model, compile_contract
-    authored = [(path(model_dir)/name).is_file() for name in ('contract.json', 'protocol.json')]
-    if any(authored) and not all(authored):
-        raise ValueError('Authored contract.json and protocol.json must be supplied together')
-    contract, protocol = from_model(model)
-    if (path(model_dir)/'contract.json').is_file():
-        contract = read_json(path(model_dir)/'contract.json', 1048576)
-    if (path(model_dir)/'protocol.json').is_file():
-        protocol = read_json(path(model_dir)/'protocol.json', 1048576)
-    if compile_contract(contract, protocol) != model:
-        raise ValueError('Authored contract/protocol differ from the probed model projection')
+    driver = driver_name(model)
+    entry = {'name':driver,'model':f'drivers/{driver}.json','evidence':f'evidence/{driver}.probe.json',
+             'evidence_kind':evidence['evidence_kind']}
     parent = Path(core.resolve_run(run_dir))/'emit'; parent.mkdir(parents=True, exist_ok=True)
     pkg = Path(tempfile.mkdtemp(prefix='interface-package-', dir=parent))
-    shutil.copytree(TEMPLATE, pkg/'driver', ignore=shutil.ignore_patterns('__pycache__'))
-    shutil.copytree(RUNTIME, pkg/'interface_runtime', ignore=shutil.ignore_patterns('tests','__pycache__'))
-    shutil.copyfile(path(model_dir)/'model.json', pkg/'driver/model.json')
-    shutil.copyfile(path(probe), pkg/'probe.json')
-    if digest(pkg/'driver/model.json') != sha or read_json(pkg/'probe.json') != evidence:
+    for source, target in ((path(model_dir)/'model.json', entry['model']), (path(probe), entry['evidence'])):
+        (pkg/target).parent.mkdir()
+        shutil.copyfile(source, pkg/target)
+    if digest(pkg/entry['model']) != sha or read_json(pkg/entry['evidence']) != evidence:
         shutil.rmtree(pkg)
         raise ValueError('model or probe changed during packaging')
-    requires = {'uart':['pyserial>=3.5'],'usb':['pyusb>=1.2'],'i2c':['pyftdi>=0.55'],
-                'spi':['pyftdi>=0.55'],'tcp':[]}[model['channel']['type']]
-    (pkg/'requirements.txt').write_text('\n'.join(requires)+'\n', encoding="utf-8")
-    reference = (
-        '# Executable device interface\n\n'
-        f'This package executes its bundled {model["schema"]} with the same shared runtime as the toolchain. '
-        'Provenance entries are model claims. Replay confirms internal consistency, not physical correctness.\n\n'
-        f'Source evidence: **{evidence["evidence_kind"]}**. Model SHA-256: `{sha}`. '
-        'No accuracy, full device coverage or formal standard conformance is implied.\n\n'
-        'Use Python 3.11+ from this directory. Offline replay needs only the standard library. '
-        'Live transports require the optional packages listed in requirements.txt and OS/backend drivers.\n\n'
-        '```sh\npython -m driver describe\npython -m driver replay\n'
-        'python -m driver execute OPERATION --parameters \'{}\' --binding \'{}\'\n```\n\n'
-        + binding_reference(model) +
-        coverage_reference(model, evidence) +
-        'Identity is checked before the selected operation, which runs once without whole-command retry.\n\n'
-        'Manifest and file hashes detect alteration. Retain the emitted manifest SHA-256 outside the package '
-        'to verify against a trusted pin; an attacker replacing every file and checksum cannot be detected '
-        'by a self-contained checksum alone. Hardware verification requires a separate physical test.\n')
-    (pkg/'REFERENCE.md').write_text(reference, encoding="utf-8")
-    for filename, document in (('contract.json', contract), ('protocol.json', protocol)):
-        (pkg/'driver'/filename).write_text(json.dumps(document, indent=2, allow_nan=False)+'\n', encoding='utf-8')
-    from interface_runtime.catalog import render_catalog
-    catalog = render_catalog(contract, digest(pkg/'driver/contract.json'))
-    (pkg/'mcp-tools.json').write_text(json.dumps(catalog, indent=2, allow_nan=False)+'\n', encoding='utf-8')
-    manifest = {'schema':'interface-package/2','name':name or 'device-interface','version':version,
-                'model_sha256':sha,'probe_sha256':digest(pkg/'probe.json'),
-                'contract_sha256':digest(pkg/'driver/contract.json'),
-                'protocol_sha256':digest(pkg/'driver/protocol.json'),
-                'mcp_catalog_sha256':digest(pkg/'mcp-tools.json'),
-                'source_evidence_kind':evidence['evidence_kind'],'files':package_files(pkg)}
-    (pkg/'manifest.json').write_text(json.dumps(manifest,indent=2,allow_nan=False)+'\n', encoding="utf-8")
+    for filename, rendered in rendered_files({driver:model}, {driver:evidence}).items():
+        (pkg/filename).write_bytes(rendered)
+    manifest = {'schema':PACKAGE,'name':name or driver,'version':version,'drivers':[entry],
+                'files':package_files(pkg)}
+    (pkg/'manifest.json').write_bytes(document_bytes(manifest))
     manifest_sha = digest(pkg/'manifest.json')
-    (pkg/'manifest.sha256').write_text(manifest_sha+'\n', encoding="utf-8")
     return {'ok':True,'package_dir':str(pkg),'manifest_sha256':manifest_sha,
             'evidence_kind':evidence['evidence_kind'],'_files':{str(pkg/'manifest.json'):manifest_sha}}
 
 
-def _trusted_python():
-    trusted = {'interface_runtime/'+p.name:digest(p) for p in RUNTIME.glob('*.py')}
-    trusted.update({'driver/'+p.name:digest(p) for p in TEMPLATE.glob('*.py')})
-    return trusted
+def _read_back(copy):
+    """Read every file of a package's copy, raising the host's OSError."""
+    package_files(copy)
+    digest(copy/'manifest.json')
 
 
-# A package's data, per format: what the kit runs its installed runtime and driver entry over (ADR 0008).
-DATA = {'interface-package/1': ('driver/model.json', 'probe.json'),
-        'interface-package/2': ('driver/model.json', 'probe.json', 'driver/contract.json', 'driver/protocol.json',
-                                'mcp-tools.json')}
-DOCUMENTS = ('REFERENCE.md', 'requirements.txt')
-# The package's own copy of a runtime, whatever modules it names: checked as bytes, never imported by the kit.
-BUNDLED = re.compile(r'(?:driver|interface_runtime)/[A-Za-z0-9_]+\.py')
-# Why emit_check replayed a package whose bundled Python differs from the installed kit's.
-REPLAYED_ELSEWHERE = 'The replay ran on the installed runtime, because the package carries another copy of the runtime'
+def refusal_text(refused):
+    """The reasons of a package's refusal as one line of text."""
+    return '; '.join(str(defect.get('what')) for defect in refused.get('defects') or []) or str(refused)
 
 
-def _read_back(snapshot):
-    """Read every file of a snapshot copy, raising the host's OSError."""
-    package_files(snapshot)
-    for name in ('manifest.json','manifest.sha256'):
-        digest(snapshot/name)
-
-
-def _copy(pkg, sha, expected_manifest_sha256, temporary):
-    """Copy a package's files into `temporary`/package and verify the copy: every file, its bundled Python included,
-    against its manifest, and its data under the rules of the formats it names. Returns (copy, manifest, None) or
-    (None, None, refusal)."""
-    checked = inspect_package(pkg, _trusted_python(), sha, expected_manifest_sha256)
+def checked_copy(pkg, sha, expected_manifest_sha256, temporary):
+    """Copy a package's files into `temporary`/package and check the copy, so that what runs afterwards is bytes that
+    passed the check whatever happens to the source. Returns (copy, the copy's check, None) or (None, None, refusal)."""
+    checked = verify_package(pkg, sha, expected_manifest_sha256)
     if not checked['ok']:
-        return None, None, {**checked,'_exit':1}
-    manifest = checked['manifest']
-    data = DATA[manifest['schema']]
-    odd = sorted({name for name in manifest['files'] if name not in data + DOCUMENTS and not BUNDLED.fullmatch(name)}
-                 | set(data + DOCUMENTS) - set(manifest['files']))
-    if odd:
-        return None, None, {'ok':False,'defects':[{'where':'package',
-                                                   'what':'unexpected or missing package artifact: '+', '.join(odd)}],
-                            '_exit':1}
-    # Copy only verified files: existing bytecode or native import sidecars never enter the copy. Preserve symlinks
-    # during copying so verification rejects them without following.
+        return None, None, {'ok':False,'defects':checked['defects'],'_exit':1}
+    # Copy only the files the manifest lists, without following a link put there since the check.
     copy = Path(temporary)/'package'; copy.mkdir()
-    for name in sorted({*manifest['files'], 'manifest.json', 'manifest.sha256'}):
+    for name in sorted({*checked['manifest']['files'], 'manifest.json'}):
         target = copy/name; target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(pkg/name, target, follow_symlinks=False)
-    # The copy holds bytes that just passed inspection at the source, so a copy the host cannot read back (a lock an
+    # The copy holds bytes that just passed the check at the source, so a copy the host cannot read back (a lock an
     # antivirus or indexer holds, an I/O error) is the host's failure around the check, never the package's defect.
-    # The runtime's verification reports any read error as a defect, so the copy is read here first, and again after a
-    # failed verification, letting the host's OSError propagate.
+    # The runtime's check reports any read error as a defect, so the copy is read here first, and again after a
+    # failed check, letting the host's OSError propagate.
     _read_back(copy)
-    verified = verify_package(copy, sha, expected_manifest_sha256)
+    verified = verify_package(copy, sha, checked['manifest_sha256'])
     if not verified['ok']:
         _read_back(copy)
-        return None, None, {**verified,'_exit':1}
-    model = read_json(copy/'driver/model.json', 1048576)
-    if type(model) is not dict or model.get('schema') not in SCHEMAS:
-        found = model.get('schema') if type(model) is dict else model
-        what = 'model format is not one this kit knows: ' + repr(found)[:120]
-        return None, None, {'ok':False,'defects':[{'where':'driver/model.json','what':what}],'_exit':1}
-    return copy, verified['manifest'], None
-
-
-def _runnable(copy, manifest, temporary):
-    """The installed runtime and driver entry with the data files of a verified `copy`, in `temporary`/run, under a
-    manifest of its own that keeps the package's data hashes; nothing of the package's Python enters it."""
-    run = Path(temporary)/'run'
-    for source, folder in ((RUNTIME, 'interface_runtime'), (TEMPLATE, 'driver')):
-        (run/folder).mkdir(parents=True)
-        for item in sorted(source.glob('*.py')):
-            shutil.copyfile(item, run/folder/item.name)
-    for name in DATA[manifest['schema']] + DOCUMENTS:
-        shutil.copyfile(copy/name, run/name)
-    (run/'manifest.json').write_text(json.dumps({**manifest, 'files':package_files(run)}, indent=2, allow_nan=False)
-                                     + '\n', encoding='utf-8')
-    (run/'manifest.sha256').write_text(digest(run/'manifest.json')+'\n', encoding='utf-8')
-    return run
-
-
-def _snapshot(pkg, sha, expected_manifest_sha256, temporary):
-    """What the kit runs for a package: its installed runtime and driver entry over a verified copy of the package's
-    data, in `temporary`. Returns (snapshot, the package's manifest, None) or (None, None, refusal)."""
-    copy, manifest, refused = _copy(pkg, sha, expected_manifest_sha256, temporary)
-    if refused is not None:
-        return None, None, refused
-    return _runnable(copy, manifest, temporary), manifest, None
+        return None, None, {'ok':False,'defects':verified['defects'],'_exit':1}
+    return copy, verified, None
 
 
 def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None):
+    """Check a package and replay its probe record in this process, once, on the installed runtime. With `model_dir`
+    the package's driver must be that model's bytes; with `expected_manifest_sha256` its manifest must have that hash.
+    `integrity_ok` says that the package passed the check, `replay_status` whether the replay passed, failed or was
+    not run."""
     pkg = path(package_dir)
-    source = pkg/'driver' if model_dir is None else path(model_dir)
-    # os.path.isfile is false on any OSError, such as a folder the worker left unsearchable, where Path.is_file raises.
-    if not os.path.isfile(source/'model.json'):
-        # A package without its driver model, or a model directory without one, is refused; it is no host fault.
-        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
-                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
-                            'what':'model.json is missing or its folder cannot be searched'}]}
-    try:
-        model, sha = load(source)
-    except (OSError, RecursionError) as exc:
-        # Model bytes that cannot be read or parsed are the package's (or model directory's) defect, not the host's.
-        return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
-                'defects':[{'where':'driver/model.json' if model_dir is None else 'model_dir',
-                            'what':f'model.json is unreadable: {type(exc).__name__}: {exc}'}]}
-    inspected = inspect_package(pkg, _trusted_python(), sha, expected_manifest_sha256)
-    if not inspected['ok']:
-        return {**inspected,'replay_status':'not_run','_exit':1}
-    # A folder the host cannot remove at once (a file an indexer or antivirus holds open on Windows) is left behind;
-    # it never discards a check that ran.
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
-        snapshot, manifest, refused = _snapshot(pkg, sha, expected_manifest_sha256, temporary)
+    sha = None
+    if model_dir is not None:
+        # os.path.isfile is false on any OSError, such as a folder the worker left unsearchable, where Path.is_file
+        # raises. A model directory without a model, or with one that cannot be read, is refused; it is no host fault.
+        refused = None
+        if not os.path.isfile(path(model_dir)/'model.json'):
+            refused = 'model.json is missing or its folder cannot be searched'
+        else:
+            try:
+                sha = load(model_dir)[1]
+            except (OSError, ValueError, RecursionError) as exc:
+                refused = f'model.json is unreadable: {type(exc).__name__}: {exc}'
         if refused is not None:
-            return refused
-        result = _check_snapshot(snapshot, model, sha, manifest, expected_manifest_sha256)
-        checked = {'integrity_ok':True,'runtime_current':inspected['runtime_current'],
-                   'replay_status':'passed' if result['ok'] else 'failed',**result}
-        if not inspected['runtime_current'] and checked['replay_status'] != 'not_run':
-            checked['replay_reason'] = REPLAYED_ELSEWHERE
-        return checked
+            return {'ok':False,'integrity_ok':False,'replay_status':'not_run','_exit':1,
+                    'defects':[{'where':'model_dir','what':refused}]}
+    # The check runs on a copy that passed the check, so what it replays and compares is what it hashed. A folder the
+    # host cannot remove at once (a file an indexer or antivirus holds open on Windows) is left behind; it never
+    # discards a check that ran.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
+        copy, checked, refused = checked_copy(pkg, sha, expected_manifest_sha256, temporary)
+        if refused is not None:
+            return {**refused,'integrity_ok':False,'replay_status':'not_run'}
+        return _check_copy(copy, checked, expected_manifest_sha256)
 
 
-def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
+def _check_copy(pkg, checked, expected_manifest_sha256):
+    """The result of `emit_check` for `pkg`, a copy of a package that passed the check with the result `checked`."""
+    entry, model = the_driver(checked)
     try:
-        evidence = read_json(pkg/'probe.json')
+        evidence = read_json(pkg/entry['evidence'])
     except (ValueError, RecursionError) as exc:
-        return {'ok':False,'defects':[{'where':'probe','what':f'{type(exc).__name__}: {exc}'}],'_exit':1}
-    compared = check_probe(model, evidence, sha)
-    if manifest['source_evidence_kind'] != (evidence.get('evidence_kind') if type(evidence) is dict else None):
-        compared = {'ok':False,'defects':[{'where':'evidence_kind','what':'manifest and probe disagree'}]}
-    if not compared['ok']:
-        return {**compared,'_exit':1}
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
-        result = subprocess.run([sys.executable,'-I','-B','-c',BOOT,
-            str(pkg.resolve()),'replay'], cwd=cwd, env={**os.environ,'PYTHONPATH':''},
-            capture_output=True,text=True,timeout=260)
-    try:
-        actual = json.loads(result.stdout)
-    except ValueError:
-        actual = None
-    # The installed driver entry reports what it could not read in the snapshot (an OSError, ValueError, TypeError or
-    # KeyError) as its package_error.
-    unread = type(actual) is dict and type(actual.get('error')) is dict and actual['error'].get('code') == 'package_error'
-    if type(actual) is not dict or (actual == compared and result.returncode != 0) or unread:
-        # The process runs the installed runtime on bytes whose replay just passed in this process. One that printed no
-        # result (the host killed it, it ran out of memory, it crashed at start), failed after printing that same
-        # result, or could not read the verified snapshot those same bytes are in (a lock or I/O error the host took
-        # after this process read the copy back) failed around the check: the host's fault, which says nothing about
-        # the package.
-        return {'ok':False,'fault':'host','replay_status':'not_run','_exit':4,
-                'error':('replay process could not read the verified snapshot: ' + str(actual['error'].get('message'))
-                         if unread else f'replay process exited {result.returncode} without a replay result'),
-                'stderr':result.stderr[-2000:],'source_evidence_kind':evidence['evidence_kind']}
-    ok = result.returncode == 0 and actual == compared
-    return {'ok':ok,'defects':[] if ok else [{'where':'package replay','what':'standalone replay differs'}],
-            'evidence_kind':'replay','source_evidence_kind':evidence['evidence_kind'],
-            'manifest_pin_verified':expected_manifest_sha256 is not None,'_exit':0 if ok else 1}
+        return {'ok':False,'defects':[{'where':'probe','what':f'{type(exc).__name__}: {exc}'}],'integrity_ok':True,
+                'replay_status':'not_run','_exit':1}
+    compared = check_probe(model, evidence, checked['manifest']['files'][entry['model']])
+    if compared['ok'] and entry['evidence_kind'] != evidence['evidence_kind']:
+        compared = {**compared,'ok':False,'defects':[{'where':'evidence_kind','what':'manifest and probe disagree'}]}
+    if compared['ok']:
+        # A package says what the tool would say: a worker cannot edit the two files the tool renders, even with the
+        # manifest made again to match.
+        edited = [{'where':name,'what':name + ' differs from what the tool renders from the package\'s driver and '
+                                      'evidence'}
+                  for name, rendered in rendered_files(checked['drivers'], {entry['name']:evidence}).items()
+                  if (pkg/name).read_bytes() != rendered]
+        if edited:
+            return {'ok':False,'defects':edited,'integrity_ok':False,'replay_status':'passed','_exit':1}
+    return {'ok':compared['ok'],'defects':compared['defects'],'integrity_ok':True,
+            'replay_status':'passed' if compared['ok'] else 'failed','evidence_kind':'replay',
+            'source_evidence_kind':compared['source_evidence_kind'],
+            'manifest_pin_verified':expected_manifest_sha256 is not None,'_exit':0 if compared['ok'] else 1}
 
 
-def is_interface_package(package_dir):
-    try:
-        manifest = read_json(path(package_dir)/'manifest.json', 1048576)
-    except (OSError, ValueError):
-        return False
-    # A format this kit does not know is still an interface package, so its check can refuse it by name.
-    return (type(manifest) is dict and type(manifest.get('schema')) is str
-            and manifest['schema'].startswith('interface-package/'))
-
-
-def _live_call(operation, command):
-    """One package command-line call; the verdict needs exit 0, ok true and a verified identity. A host failure
-    around the call (its working folder, starting the process, a timeout) is this call's host fault."""
+def run_child(package, operation, parameters, binding, grants):
+    """One operation of the checked package in the folder `package`, run by the installed runtime in a child process
+    (`interface_runtime.child`), which is given this process's import path. Every use of a package starts it here. The
+    call counts as passed with exit 0, ok true and a verified identity. A host failure around the call (its working
+    folder, starting the process, a timeout) is this call's host fault."""
+    from interface_runtime import child
+    command = child.command()
     try:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as cwd:
             done = subprocess.run(command, cwd=cwd, env={**os.environ,'PYTHONPATH':''},
+                                  input=child.request(package, operation, parameters, binding, grants),
                                   capture_output=True, text=True, timeout=300)
     except subprocess.TimeoutExpired:
         return {'operation':operation,'command':command,'returncode':None,'stdout_json':None,'stderr':'',
@@ -519,18 +405,17 @@ def _live_call(operation, command):
 
 def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=None, allow_effects=None,
                    model_dir=None, expected_manifest_sha256=None):
-    """Run each named operation once through the driver command line against the live device.
+    """Run each named operation once on the live device, on the installed runtime over the package's data.
 
-    The installed runtime and driver entry run over the data of a freshly verified copy of the package, under the
-    bench interpreter in isolated mode, so a pass is evidence about these package data and this binding; the result's
-    manifest_sha256 names the package whose copy was verified. The binding is the operator's and is
-    passed through unchanged; it is checked against the model's channel, and every named operation's effect against
-    the grants, before any call. Every refusal before the first call (arguments, binding, grants, a package that fails
-    its snapshot check) is returned with transport_open_attempted false and exit 1, with no live record, instead of
-    being recorded as a package failure. A host failure before the first call (its temporary folder, a snapshot copy
-    it cannot read back) is no refusal of the package: it is returned as fault host with exit 4, also with
-    transport_open_attempted false, since nothing reached the device. The plan stops at the first operator or host
-    fault (exit 4, inconclusive).
+    Each call runs in a child process over a freshly checked copy of the package, so a pass is evidence about these
+    package data and this binding; the result's manifest_sha256 names the package whose copy was checked. The binding
+    is the operator's and is passed through unchanged; it is checked against the model's channel, and every named
+    operation's effect against the grants, before any call. Every refusal before the first call (arguments, binding,
+    grants, a package the check refuses) is returned with transport_open_attempted false and exit 1, with no live
+    record, instead of being recorded as a package failure. A host failure before the first call (its temporary
+    folder, a copy it cannot read back) is no refusal of the package: it is returned as fault host with exit 4, also
+    with transport_open_attempted false, since nothing reached the device. The plan stops at the first operator or
+    host fault (exit 4, inconclusive).
     Every call is recorded append-only in emit/live-N.json; when the host cannot write that record, the results are
     still returned, as a host fault with exit 4, since the device was contacted."""
     try:
@@ -556,12 +441,11 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
         return host_before_contact(exc)
     with folder as temporary:
         try:
-            copy, manifest, refusal = _copy(pkg, sha, expected_manifest_sha256, temporary)
+            copy, checked, refusal = checked_copy(pkg, sha, expected_manifest_sha256, temporary)
             if refusal is not None:
                 return {**refusal, 'transport_open_attempted':False}
-            snapshot = _runnable(copy, manifest, temporary)
-            manifest_sha = digest(copy/'manifest.json')
-            model = read_json(snapshot/'driver/model.json', 1048576)
+            manifest_sha = checked['manifest_sha256']
+            entry, model = the_driver(checked)
             names = [model['identity']['operation']] if operations is None else operations
             if (type(names) is not list or not names
                     or any(type(n) is not str or n not in model['operations'] for n in names)):
@@ -577,18 +461,16 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
                 raise ValueError('operations need an effect grant that allow_effects does not give: '
                                  + ', '.join(f"{n} ({model['operations'][n]['effect']})" for n in ungranted))
         except OSError as exc:
-            # The snapshot holds bytes that passed inspection; a host that cannot copy or read them back failed before
+            # The copy holds bytes that passed the check; a host that cannot copy or read them back failed before
             # any call.
             return host_before_contact(exc)
         except (ValueError, TypeError, LookupError, RecursionError) as exc:
             return before_contact(f'{type(exc).__name__}: {exc}')
-        flags = [flag for g in grants if g != 'read' for flag in ('--allow-effect', g)]
         results = []
         for name in names:
             try:
-                results.append(_live_call(name, [core.VENV_PY,'-I','-B','-c',BOOT,str(snapshot),'execute',name,
-                    '--parameters',json.dumps(arguments.get(name,{}),allow_nan=False),
-                    '--binding',json.dumps(binding,allow_nan=False),*flags]))
+                results.append(run_child(copy, name, arguments.get(name,{}), binding,
+                                         [g for g in grants if g != 'read']))
             except Exception as exc:
                 # The host failed around the call, which may already have reached the device.
                 results.append({'operation':name,'command':None,'returncode':None,'stdout_json':None,'stderr':'',
@@ -613,7 +495,8 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
            'results':summary,'manifest_sha256':manifest_sha}
     try:
         record = json.dumps({'schema':'interface-live-test/1','package_dir':str(pkg),'manifest_sha256':manifest_sha,
-                             'model_sha256':manifest['model_sha256'],'interpreter':core.VENV_PY,'binding':binding,
+                             'model_sha256':checked['manifest']['files'][entry['model']],
+                             'interpreter':sys.executable,'binding':binding,
                              'operations':names,'parameters':arguments,'allow_effects':grants,'started':started,
                              'finished':core.now(),'results':results,'passed':passed,'failed':len(results)-passed,
                              'not_run':not_run,'ok':ok,'verdict':verdict}, indent=2, allow_nan=False)
@@ -634,9 +517,12 @@ def emit_test_live(run_dir, package_dir, binding, operations=None, parameters=No
 
 
 def model_qualify(run_dir, model_dir, replies, **_):
-    """Offline qualification of a schema-3/4 stream model against supplied replies; never opens hardware."""
+    """Offline qualification of a model against supplied replies; never opens hardware. A model of a format the
+    runtime does not know is refused before the replies are read."""
     from interface_runtime.qualify import QualifyError, qualify, summary
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'model_sha256':sha,'_exit':1}
     try:
         report = qualify(model, read_json(path(replies), 4194304))
     except QualifyError as exc:

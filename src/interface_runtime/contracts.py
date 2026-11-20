@@ -1,13 +1,18 @@
-"""Public driver metadata and its declarative wire implementation.
+"""The driver contract, as a view of an interface model.
 
-The executable model is a derived view. Public parameters, effects and units
-have one authority, independent of transport and decoder details.
+The interface model is the one statement of a driver. Its public part (operations, meanings, value schemas, units,
+scoped caveats and preconditions) is computed from it wherever it is shown, so no second file has to be kept equal to
+the model (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
 """
 from copy import deepcopy
-import json
-import math
 
-from .engine import validate_model
+from . import meanings
+
+# What a view shows where the model gives no description, with the caveat that says so.
+UNDOCUMENTED = 'Meaning not documented.'
+_UNKNOWN = 'semantics_unknown'
+# The fields of a parameter that state a meaning; the rest is the wire.
+_PARAMETER_MEANINGS = ('description', 'unit', 'uncertainties')
 
 
 def operation_warnings(operation, scope):
@@ -18,264 +23,65 @@ def operation_warnings(operation, scope):
             for entry in definition['uncertainties']]
 
 
-def validate_schema(schema):
-    """Accept only the value constraints that this runtime understands."""
-    if type(schema) is not dict or 'type' not in schema:
-        raise ValueError('Public value schema must declare a type')
-    allowed = {'type', 'enum'}
-    if schema['type'] in ('integer', 'number'):
-        allowed |= {'minimum', 'maximum'}
-    if schema['type'] == 'string':
-        allowed |= {'minLength', 'maxLength', 'contentEncoding'}
-    if schema.keys() - allowed:
-        raise ValueError('Unsupported public value schema constraint')
-    if schema['type'] not in ('integer', 'number', 'string', 'boolean', 'null'):
-        raise ValueError('Unsupported public value schema type')
-    for key in ('minimum', 'maximum'):
-        if key in schema and (type(schema[key]) not in (int, float) or not math.isfinite(schema[key])):
-            raise ValueError('Public numeric bounds must be finite numbers')
-    if 'minimum' in schema and 'maximum' in schema and schema['minimum'] > schema['maximum']:
-        raise ValueError('Public numeric bounds must be ordered')
-    if 'enum' in schema and (type(schema['enum']) is not list or not schema['enum']):
-        raise ValueError('Public enums must be nonempty lists')
-    for key in ('minLength', 'maxLength'):
-        if key in schema and (type(schema[key]) is not int or not 0 <= schema[key] <= 65536):
-            raise ValueError('Public string bounds must be bounded nonnegative integers')
-    if 'contentEncoding' in schema and (schema['contentEncoding'] != 'hex' or
-            any(type(schema.get(key)) is not int or schema[key] % 2 for key in ('minLength', 'maxLength'))):
-        raise ValueError('Hex strings need even, explicit character bounds')
-
-
-def validate_value(value, schema, path='value'):
-    """Validate a decoded public JSON value without optional dependencies."""
-    kind = schema.get('type')
-    numeric = type(value) in (int, float)
-    try:
-        finite = numeric and math.isfinite(value)
-    except OverflowError:
-        finite = False
-    matches = {'number': finite,
-               'integer': finite and (type(value) is int or value.is_integer()),
-               'string': type(value) is str, 'boolean': type(value) is bool,
-               'null': value is None, 'object': type(value) is dict, 'array': type(value) is list}
-    if kind not in matches or not matches[kind]:
-        raise ValueError(path + ' must satisfy public type ' + str(kind))
-    if 'enum' in schema and value not in schema['enum']:
-        raise ValueError(path + ' is not an allowed value')
-    if finite and (('minimum' in schema and value < schema['minimum']) or
-                   ('maximum' in schema and value > schema['maximum'])):
-        raise ValueError(path + ' violates public numeric bounds')
-    if kind == 'string':
-        if len(value) < schema.get('minLength', 0) or len(value) > schema.get('maxLength', 65536):
-            raise ValueError(path + ' violates public string bounds')
-        if schema.get('contentEncoding') == 'hex' and (len(value) % 2 or
-                any(character not in '0123456789abcdefABCDEF' for character in value)):
-            raise ValueError(path + ' must contain a complete hexadecimal byte string')
-
-
-def _public_parameter(schema):
-    if schema['type'] == 'bytes':
-        return {'type': 'string', 'contentEncoding': 'hex',
-                'minLength': schema['min_length'] * 2, 'maxLength': schema['max_length'] * 2}
-    return deepcopy(schema)
-
-
-def _wire_parameter(schema):
-    if schema.get('contentEncoding') == 'hex':
-        return {'type': 'bytes', 'min_length': schema['minLength'] // 2, 'max_length': schema['maxLength'] // 2}
-    return deepcopy(schema)
-
-
-def _fields(value, required, optional=()):
-    if type(value) is not dict or not set(required) <= value.keys() or value.keys() - set(required) - set(optional):
-        raise ValueError('Invalid driver contract/protocol fields; expected ' + ', '.join(required))
-
-
-def _unknown(subject):
-    return [{'code': 'semantics_unknown',
-             'message': subject + ' meaning and operating assumptions are not documented.',
-             'evidence_refs': []}]
-
-
 def _metadata(value):
-    description = value['description']
-    caveats = value['uncertainties']
-    if type(description) is not str or not description.strip() or len(description) > 8192:
-        raise ValueError('Driver descriptions must be bounded nonempty text')
-    if type(caveats) is not list or len(caveats) > 64:
-        raise ValueError('Uncertainty must be a bounded list of scoped caveats')
-    for caveat in caveats:
-        _fields(caveat, ('code', 'message', 'evidence_refs'))
-        if any(type(caveat[key]) is not str or not caveat[key].strip() or len(caveat[key]) > 8192
-               for key in ('code', 'message')):
-            raise ValueError('Uncertainty requires a code and explanation')
-        references = caveat['evidence_refs']
-        if type(references) is not list or len(references) > 128 or any(
-                type(item) is not str or not item.strip() or len(item) > 2048 for item in references):
-            raise ValueError('Uncertainty evidence references must be bounded text')
+    """Raise ValueError unless `value`, an application tool or one of its parameters or outputs, has a description and
+    uncertainties as a driver's have, and a unit that is text or null."""
+    meanings.check_description(value['description'])
+    meanings.check_uncertainties(value['uncertainties'])
     if 'unit' in value and value['unit'] is not None and type(value['unit']) is not str:
         raise ValueError('Unit must be text or explicitly unknown')
 
 
-def from_model(model):
-    """Import a supported executable model without inferring device meanings."""
-    checked = validate_model(model)
-    if not checked['ok']:
-        raise ValueError(str(checked['defects']))
-    contract = {'schema': 'driver-contract/1', 'device': deepcopy(model['device']),
-                'identity': deepcopy(model['identity']), 'operations': {},
-                'provenance': deepcopy(model['provenance'])}
-    protocol = {'schema': 'driver-protocol/1', 'runtime_schema': model['schema'],
-                'channel': deepcopy(model['channel']), 'operations': {}}
+_MARKING = ' meaning and operating assumptions are not documented.'
+
+
+def _meaning(definition, subject):
+    """The description and the uncertainties a view shows for `definition`: what the model says, or the marking of a
+    missing description after the uncertainties the worker wrote, unless one of them says so already."""
+    caveats = deepcopy(definition.get('uncertainties', []))
+    if 'description' in definition:
+        return definition['description'], caveats
+    if not any(caveat['code'] == _UNKNOWN for caveat in caveats):
+        caveats.append({'code': _UNKNOWN, 'message': subject + _MARKING, 'evidence_refs': []})
+    return UNDOCUMENTED, caveats
+
+
+def stated_uncertainties(definition):
+    """The uncertainties the model states for `definition`, an operation, a parameter or an output of a driver
+    contract: all it holds but the marking a view adds where the model gives no description."""
+    return [caveat for caveat in definition['uncertainties']
+            if not (definition['description'] == UNDOCUMENTED and caveat['code'] == _UNKNOWN
+                    and caveat['evidence_refs'] == [] and caveat['message'].endswith(_MARKING))]
+
+
+def _parameter_schema(spec):
+    if spec['type'] == 'bytes':
+        return {'type': 'string', 'contentEncoding': 'hex',
+                'minLength': spec['min_length'] * 2, 'maxLength': spec['max_length'] * 2}
+    return {key: deepcopy(value) for key, value in spec.items() if key not in _PARAMETER_MEANINGS}
+
+
+def _definition(schema, definition, subject):
+    description, caveats = _meaning(definition, subject)
+    return {'schema': schema, 'description': description, 'unit': definition.get('unit'), 'uncertainties': caveats}
+
+
+def contract_view(model):
+    """The driver contract of `model`, an interface model that validates: its operations with their effects, meanings,
+    value schemas, units, uncertainties and preconditions, in the shape `driver-contract/1`. A meaning the model leaves
+    out is marked as not documented. The model is left as it is."""
+    operations = {}
     for name, operation in model['operations'].items():
-        outputs = {}
-        decoders = deepcopy(operation['outputs'])
-        for key, decoder in decoders.items():
-            kind = decoder['kind']
-            unit = decoder.pop('unit', None)
-            outputs[key] = {'schema': {'type': 'number' if kind in
-                ('integer', 'float32', 'ascii_number', 'kv_number') else 'string'},
-                'description': 'Decoded output ' + key + '.', 'unit': unit,
-                'uncertainties': [] if unit is not None else _unknown('Output ' + key)}
-        contract['operations'][name] = {'effect': operation['effect'],
-            'description': 'Execute public operation ' + name + '.',
-            'uncertainties': _unknown('Operation ' + name),
-            'parameters': {key: {'schema': _public_parameter(spec), 'description': 'Argument ' + key + '.',
-                'unit': None, 'uncertainties': _unknown('Parameter ' + key)}
-                for key, spec in operation['parameters'].items()}, 'outputs': outputs}
-        protocol['operations'][name] = {'steps': deepcopy(operation['steps']), 'outputs': decoders}
-    return contract, protocol
-
-
-def compile_contract(contract, protocol):
-    """Build and validate the engine view from its two authoritative documents."""
-    _fields(contract, ('schema', 'device', 'identity', 'operations', 'provenance'))
-    _fields(protocol, ('schema', 'runtime_schema', 'channel', 'operations'))
-    if contract.get('schema') != 'driver-contract/1':
-        raise ValueError('Driver contract format is not one this kit knows: ' + repr(contract.get('schema'))[:120])
-    if protocol.get('schema') != 'driver-protocol/1':
-        raise ValueError('Driver protocol format is not one this kit knows: ' + repr(protocol.get('schema'))[:120])
-    if contract['operations'].keys() != protocol['operations'].keys():
-        raise ValueError('Contract and protocol operations differ')
-    model = {'schema': protocol['runtime_schema'], 'device': deepcopy(contract['device']),
-             'channel': deepcopy(protocol['channel']), 'identity': deepcopy(contract['identity']),
-             'operations': {}, 'provenance': deepcopy(contract['provenance'])}
-    for name, public in contract['operations'].items():
-        wire = protocol['operations'][name]
-        _fields(public, ('effect', 'parameters', 'outputs', 'description', 'uncertainties'), ('preconditions',))
-        _fields(wire, ('steps', 'outputs'))
-        _metadata(public)
-        for definitions in (public['parameters'], public['outputs']):
-            if type(definitions) is not dict:
-                raise ValueError('Public parameters and outputs must be objects')
-            for definition in definitions.values():
-                _fields(definition, ('schema', 'description', 'unit', 'uncertainties'))
-                _metadata(definition)
-                validate_schema(definition['schema'])
-        if public['outputs'].keys() != wire['outputs'].keys():
-            raise ValueError('Contract and protocol outputs differ: ' + name)
-        outputs = deepcopy(wire['outputs'])
-        for key, decoder in outputs.items():
-            if 'unit' in decoder:
-                raise ValueError('Protocol decoders cannot declare public units')
-            numeric = decoder.get('kind') in ('integer', 'float32', 'ascii_number', 'kv_number')
-            compatible = ('integer', 'number') if numeric else ('string',)
-            if public['outputs'][key]['schema']['type'] not in compatible:
-                raise ValueError('Public output type is incompatible with its decoder: '+name+'.'+key)
-            if public['outputs'][key].get('unit') is not None:
-                decoder['unit'] = public['outputs'][key]['unit']
-        model['operations'][name] = {'effect': public['effect'],
-            'parameters': {key: _wire_parameter(spec['schema']) for key, spec in public['parameters'].items()},
-            'steps': deepcopy(wire['steps']),
-            'outputs': outputs}
-    checked = validate_model(model)
-    if not checked['ok']:
-        raise ValueError(str(checked['defects']))
-    _preconditions(contract, model)
-    return model
-
-
-def _preconditions(contract, model):
-    for name in contract['operations']:
-        check_preconditions(contract, model, name)
-
-
-def check_preconditions(contract, model, name):
-    """Raise ValueError unless operation `name`'s preconditions hold across `contract`, over its compiled `model`."""
-    from .engine import _arguments
-    conditions = contract['operations'][name].get('preconditions', [])
-    if type(conditions) is not list or len(conditions) > 16:
-        raise ValueError('Preconditions must be a bounded list')
-    seen = set()
-    for condition in conditions:
-        _fields(condition, ('id', 'description', 'observation', 'operator', 'expected'))
-        if (type(condition['id']) is not str or not condition['id'] or condition['id'] in seen
-                or type(condition['description']) is not str or not condition['description'].strip()):
-            raise ValueError('Preconditions need unique identities and readable rules')
-        seen.add(condition['id'])
-        if condition['operator'] != 'eq':
-            raise ValueError('Unsupported precondition operator')
-        source = condition['observation']
-        _fields(source, ('operation', 'parameters', 'output'))
-        observed = contract['operations'].get(source['operation'])
-        if (observed is None or observed['effect'] != 'read' or observed.get('preconditions')
-                or source['output'] not in observed['outputs']):
-            raise ValueError('Preconditions require a declared unguarded read observation')
-        _arguments(model['operations'][source['operation']]['parameters'], source['parameters'])
-        validate_value(condition['expected'], observed['outputs'][source['output']]['schema'],
-                       'precondition.expected')
-
-
-def describes(contract, model):
-    """For each operation of `model`, None when `contract`'s entry, compiled with the protocol `from_model` derives from
-    `model`, gives exactly the model's operation and passes the contract's own checks; otherwise why not: the check it
-    fails, its first difference from the model, or that the contract leaves it out. Preconditions span operations, so
-    `check_preconditions` checks them apart. Raises ValueError for a contract without an operations object."""
-    imported, protocol = from_model(model)
-    operations = contract.get('operations') if type(contract) is dict else None
-    if type(operations) is not dict:
-        raise ValueError('The contract has no operations object')
-    found = {}
-    for name, expected in model['operations'].items():
-        if name not in operations:
-            found[name] = 'the contract leaves it out'
-            continue
-        entry = operations[name]
-        trial = deepcopy(imported)
-        trial['operations'][name] = ({key: value for key, value in entry.items() if key != 'preconditions'}
-                                     if type(entry) is dict else entry)
-        try:
-            compiled = compile_contract(trial, protocol)['operations'][name]
-        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as error:
-            found[name] = str(error)
-            continue
-        found[name] = _first_difference(compiled, expected, 'operations.' + name)
-    return found
-
-
-def _shown(value):
-    return json.dumps(value, sort_keys=True)[:200]
-
-
-def _first_difference(actual, expected, path):
-    """Where a compiled operation first differs from the model's, in document order, or None."""
-    if type(actual) is dict and type(expected) is dict:
-        for key in [*expected, *(key for key in actual if key not in expected)]:
-            where = path + '.' + str(key)
-            if key not in actual:
-                return where + ': the contract gives nothing where model.json has ' + _shown(expected[key])
-            if key not in expected:
-                return where + ': the contract gives ' + _shown(actual[key]) + ' where model.json has nothing'
-            found = _first_difference(actual[key], expected[key], where)
-            if found:
-                return found
-        return None
-    if type(actual) is list and type(expected) is list and len(actual) == len(expected):
-        for index, (left, right) in enumerate(zip(actual, expected)):
-            found = _first_difference(left, right, path + '.' + str(index))
-            if found:
-                return found
-        return None
-    if actual != expected:
-        return path + ': the contract gives ' + _shown(actual) + ' where model.json has ' + _shown(expected)
-    return None
+        description, caveats = _meaning(operation, 'Operation ' + name)
+        operations[name] = {
+            'effect': operation['effect'], 'description': description, 'uncertainties': caveats,
+            'parameters': {key: _definition(_parameter_schema(spec), spec, 'Parameter ' + key)
+                           for key, spec in operation['parameters'].items()},
+            'outputs': {key: _definition(deepcopy(decoder.get('value', meanings.default_value(decoder['kind']))),
+                                         decoder, 'Output ' + key)
+                        for key, decoder in operation['outputs'].items()}}
+        if 'preconditions' in operation:
+            operations[name]['preconditions'] = deepcopy(operation['preconditions'])
+    return {'schema': 'driver-contract/1', 'device': deepcopy(model['device']),
+            'identity': deepcopy(model['identity']), 'operations': operations,
+            'provenance': deepcopy(model['provenance'])}

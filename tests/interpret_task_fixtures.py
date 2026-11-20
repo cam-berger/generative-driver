@@ -239,7 +239,7 @@ def seen(task, command=None, **more):
               'prompt': prompt, 'pid': os.getpid(), **more}
     for name in ('TASKS.json', 'TASK.json', 'COMMAND.json', 'IDENTITY.json', 'MODEL_FRAME.json', 'VALIDATION.json',
                  'DIFFERENCES.json', 'PREVIOUS_FRAGMENT.json', 'PREVIOUS_OPERATION.json', 'inventory.json',
-                 'model.json', 'STRINGS.json'):
+                 'model.json', 'replies.json', 'STRINGS.json'):
         if (workspace / name).is_file():
             record[name] = read(name)
     for name in ('DISPATCHERS.c', 'CODE.c', 'HANDLERS.c'):
@@ -284,8 +284,11 @@ elif (workspace / 'HANDLER.md').is_file():
 elif (workspace / 'CROSS_CHECK.md').is_file():
     seen('cross-check')
     behave('cross-check')
-    action = script.get('cross_check', 'keep')
-    if action == 'edit':
+    repair = (workspace / 'DIFFERENCES.json').is_file()
+    action = script.get('repair_cross_check' if repair else 'cross_check', 'keep')
+    if isinstance(action, dict):
+        write('model.json', action)
+    elif action == 'edit':
         model = read('model.json')
         model['device']['name'] = 'DEMO-42 (cross-checked)'
         write('model.json', model)
@@ -467,19 +470,13 @@ STATUS = {'effect': 'read', 'parameters': {}, 'steps': [_exchange('S\n', 'status
 
 
 def fragment(name, operation, reply, source=None):
-    outputs = {key: {'schema': {'type': 'number' if decoder['kind'] == 'ascii_number' else 'string'},
-                     'description': 'The ' + key + ' the device reports.', 'unit': None,
-                     'uncertainties': [{'code': 'unit_not_stated', 'message': 'The reply states no unit.',
-                                        'evidence_refs': ['handler code']}]}
-               for key, decoder in operation['outputs'].items()}
+    """A fragment as a handler task writes it: the operation as it stands in the model, its provenance and replies."""
     return {'schema': 'interpret-fragment/1', 'operation': name, 'model': operation,
             'provenance': [{'item': 'operations.' + name, 'source': source or 'handler code of ' + name}],
-            'replies': {'steps': [reply]},
-            'contract': {'effect': operation['effect'], 'description': 'Operation ' + name + ' of the canned device.',
-                         'uncertainties': [], 'parameters': {}, 'outputs': outputs}}
+            'replies': {'steps': [reply]}}
 
 
-INVENTORY = {'schema': 'interface-model/3', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
+INVENTORY = {'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
              'framing': 'text lines ending in a newline', 'identity': 'identify',
              'commands': [{'name': 'measure', 'handlers': ['08000340'],
                            'evidence': ['dispatch case 0x54 at 08000240']},
@@ -487,6 +484,6 @@ INVENTORY = {'schema': 'interface-model/3', 'device': {'name': 'DEMO-42'}, 'chan
                            'evidence': ['dispatch case 0x49 at 08000220']}]}
 FRAGMENTS = {'identify': fragment('identify', IDENTIFY, ['DEMO-42']),
              'measure': fragment('measure', MEASURE, ['T:21.5'])}
-SINGLE_MODEL = {'schema': 'interface-model/3', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
+SINGLE_MODEL = {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'}, 'channel': {'type': 'tcp'},
                 'identity': {'operation': 'identify'}, 'operations': {'identify': IDENTIFY},
                 'provenance': [{'item': 'operations.identify', 'source': 'single worker'}]}

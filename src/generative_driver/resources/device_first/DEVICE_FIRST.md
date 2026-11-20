@@ -9,8 +9,8 @@ there is no image, `image_map_check.py` or decompiler export.
 
 ## Steps
 
-1. Read `TASKS.json`, `INTERFACE_MODEL.md` and `CONTRACT.md`. On a repair, read `REPAIR_CONTEXT.json` first and start
-   from `previous-model/`.
+1. Read `TASKS.json` and `INTERFACE_MODEL.md`. On a repair, read `REPAIR_CONTEXT.json` first and start from
+   `previous-model/`.
 2. Write a first `model.json`: the channel, identity and the read operations the evidence suggests. Run
    `python3 validate.py .` and fix what it reports.
 3. Run read operations on the device with `interface_execute` (`model_dir` this workspace, `operation`, `parameters`),
@@ -19,16 +19,17 @@ there is no image, `image_map_check.py` or decompiler export.
    holds the bytes sent (`tx_hex`) and the device's reply (`rx_hex`). Revise the model from the replies and repeat.
 4. Only operations declared `read` run. The configurator refuses an operation declared `write` or `actuate`, or with
    no effect, before it reaches the device, whatever the run's grants. Declare a write or actuate operation only
-   where the documents or the device's read replies support it, and give it a contract uncertainty with code
-   `not_exercised` saying interpretation did not exercise it, its `evidence_refs` citing that support. Probe and
-   ground test it under the run's grants.
+   where the documents or the device's read replies support it, and give it an uncertainty with the code
+   `not_exercised` on that operation in `model.json`, saying interpretation did not exercise it, its `evidence_refs`
+   citing that support. Probe and ground test it under the run's grants.
 5. Write `replies.json` from the replies the device gave you, in the shape `BRIEF.md` describes. For an operation you
    could not run, predict its replies from the documents and say so in `NOTES.md`. Run
    `python3 qualify.py . replies.json` until every operation with replies qualifies.
-6. Write `contract.json` as `CONTRACT.md` describes and run `python3 contract.py check`.
+6. Say in `model.json` what each operation, parameter and output means, as `BRIEF.md` asks and `INTERFACE_MODEL.md`
+   describes. `python3 validate.py .` lists what is still undocumented as `advice`.
 
 ## Output
 
-Write `model.json`, `replies.json`, `NOTES.md` and `contract.json` at the workspace root. `NOTES.md` lists each call
-you ran and what it showed, the evidence behind each operation and what stays unresolved. The configurator keeps its
-own record of your calls; probe and ground receive only the model.
+Write `model.json`, `replies.json` and `NOTES.md` at the workspace root. `NOTES.md` lists each call you ran and what
+it showed, the evidence behind each operation and what stays unresolved. The configurator keeps its own record of your
+calls; probe and ground receive only the model.

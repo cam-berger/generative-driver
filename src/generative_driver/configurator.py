@@ -38,13 +38,15 @@ STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec',
                 'acquire_classify','acquire_document'],
-    'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
-    # Probe and ground workers get no model_validate: the register validator writes beside the model it checks, which
-    # would alter an assigned input. The configurator validates each assigned model on its own copy and notes it.
+    'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','ghidra_run',
+                  'image_map_check'],
+    # Probe and ground workers get no model_validate: the configurator validates each assigned model itself, on a copy
+    # of the bytes it has just hashed, and notes the result.
     'probe': ['model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
-    'ground': ['probe_run','interface_execute','probe_diff','probe_observe'],
+    'ground': ['probe_run','interface_execute','probe_diff'],
     'emit': ['emit_package','emit_check'],
-    'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
+    # Fresh reuse gets no tool of the kit: its tools are the ones generated from the package it receives.
+    'reuse': [],
 }
 # Tools whose `address` and `serial_number` select a USB device (vid:pid and serial). The configurator owns that
 # selection as it owns the serial port: a worker names a transport, and only the operator's bound identity is read.
@@ -55,16 +57,9 @@ DOCUMENT_IMPORT = 'acquire_document'
 GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
                     'operations. Run the model on the device with probe_run and interface_execute through the '
                     'configurator-owned connection, compare the outputs with the probe records and with operator '
-                    'observations where given (probe_observe checks a decoded capture), and report what the device '
-                    'did that the model did not predict. Goal: ')
+                    'observations where given, and report what the device did that the model did not predict. Goal: ')
 
 
-# Fresh reuse's package tool on a supplied device; an emulated device's result carries its instrument reading.
-PACKAGE_EXECUTE = {'name':'package_execute','description':'Execute a packaged driver operation over '
-    'the configurator-owned binding. When the device has an instrument, as an emulated device does, the result also '
-    'carries its reading after the call: device evidence, as a real device\'s reading would be, never a grade.',
-    'inputSchema':{'type':'object','required':['package_dir','operation'],'additionalProperties':False,
-        'properties':{'package_dir':{'type':'string'},'operation':{'type':'string'},'parameters':{'type':'object'}}}}
 # A run on a supplied device is observed without truth: it completes awaiting its client's verdict after the run.
 PENDING = 'Frozen driver awaits independent evaluation'
 # The keys with which an earlier version started a run on a benchmark case. `start` takes none of them.
@@ -288,9 +283,6 @@ def operation_effects(name, arguments, model=None):
             model_path=Path(arguments['package_dir'])/'driver/model.json'
         model=_model_json(model_path)
     operations=model.get('operations',{})
-    if model.get('schema')=='interface-model/1':
-        steps=[step for group in operations.values() for step in group]+model.get('state',[])
-        return {'write'} if any(step.get('op') in ('reg_write','raw_write') for step in steps) else {'read'}
     names=arguments.get('operations') if name=='emit_test_live' else [arguments.get('operation')]
     if names is None:
         names=list(operations)
@@ -308,30 +300,42 @@ def _copy_model(source, target):
             raise ValueError('model_dir holds a symlink, which the configurator does not copy; nothing was dispatched')
 
 
+def _refuse_unknown_format(model):
+    """Refuse a device call whose model has a schema the installed runtime does not know, naming the schema found.
+
+    A model is data the runtime executes (docs/adr/0010-a-package-is-data-in-one-format.md). The gateway asks this
+    before it classifies the call by the model's effects, so a model of another format is refused whatever the run
+    grants: the tool never starts, and nothing is marked uncertain.
+    """
+    from interface_runtime.engine import SCHEMA, format_refusal
+    if format_refusal(model) is not None:
+        found = model.get('schema') if isinstance(model, dict) else None
+        raise ValueError('The model format is not one the runtime knows (it reads ' + SCHEMA + '), so it would refuse '
+                         'it before opening the device; nothing was dispatched: ' + repr(found)[:120])
+
+
 def _refuse_invalid_model(model_dir):
     """Refuse unreadable, structurally invalid or contradictory candidates before managed dispatch.
 
     Use the runtime's strict bounded reader, then candidate response checks. The gateway
     does this before marking a write uncertain, so a refusal leaves no effect to reconcile.
-    Raw bounded execution remains separate from candidate admission. Register models have
-    no runtime validation: their probe runs them on the bus.
+    Raw bounded execution remains separate from candidate admission.
     """
-    from interface_runtime.engine import SCHEMAS, validate_model
+    from interface_runtime.engine import validate_model
     try:
         model = _model_json(Path(model_dir) / 'model.json')
     except (OSError, ValueError, RecursionError) as error:
         raise ValueError('The runtime cannot load model.json, so it would refuse it before opening the device; nothing '
                          'was dispatched: ' + type(error).__name__ + ': ' + str(error)) from None
-    if isinstance(model, dict) and model.get('schema') in SCHEMAS:
-        checked = validate_model(model)
-        if not checked['ok']:
-            raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
-                             'nothing was dispatched: ' + str(checked['defects']))
-        from interface_runtime.qualify import validate_candidate
-        candidate = validate_candidate(model)
-        if not candidate['ok']:
-            raise ValueError('The response contract fails validation before managed device dispatch; '
-                             'nothing was dispatched: ' + str(candidate['defects']))
+    checked = validate_model(model)
+    if not checked['ok']:
+        raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
+                         'nothing was dispatched: ' + str(checked['defects']))
+    from interface_runtime.qualify import validate_candidate
+    candidate = validate_candidate(model)
+    if not candidate['ok']:
+        raise ValueError('The response contract fails validation before managed device dispatch; '
+                         'nothing was dispatched: ' + str(candidate['defects']))
 
 
 class SafetyError(ValueError):
@@ -373,7 +377,7 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
 
 
-EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'bus', 'replay', 'package_dir')
+EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'replay', 'package_dir')
 
 
 def _argument_digests(arguments):
@@ -417,12 +421,11 @@ def _replaced(value, replacements):
 
 def _answered(event):
     """Whether a probe_run's record holds what the device did on the connection the configurator supplied: a live run
-    that succeeded, a register probe that read an unexpected identity, or a failure the runtime attributes to the
-    model after the transport opened."""
+    that succeeded, or a failure the runtime attributes to the model after the transport opened."""
     result = _result_of(event)
     if event.get('name') != 'probe_run' or event.get('connected') is not True or result.get('evidence_kind', 'live') != 'live':
         return False
-    if event.get('ok') is True or ('fault' not in result and result.get('_exit') == 2):
+    if event.get('ok') is True:
         return True
     failed = [r for r in _listed(result.get('results')) if r.get('ok') is False]
     return result.get('fault') == 'model' and bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
@@ -432,7 +435,7 @@ def _probe_records(events):
     """The probe records one assignment's runs leave to hand on, from the configurator's own record of its tools.
 
     For each record path only the last probe_run that wrote it counts, against the hash the configurator recorded
-    when that run returned: a register probe always writes probe.json, so a later run replaces the earlier record.
+    when that run returned: a run that writes a path an earlier run wrote replaces the earlier record.
     That record is kept when the run answered on the owned connection, whatever model it ran; the handoff's notes
     bind each record to the digest of the model that wrote it (`_record_writers`). Returns ({path: (sha256, event)},
     dispatch ids of the runs whose record a later run replaced)."""
@@ -469,17 +472,15 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     assigned model and the tool results it observed on the device connection it supplied.
 
     - a `model_contract` entry: the configurator's own validation of an assigned model (`contracts` maps the input's
-      path to its model_validate result) found defects. For an interface model the runtime refuses such a model before
-      any transport opens; a register model's validation also covers what its probe does not check (a safety entry,
-      provenance, the conversion). Either way the entry is the configurator's finding about the model, never that the
-      device did anything.
+      path to its model_validate result) found defects. The runtime refuses such a model before any transport opens,
+      so the entry is the configurator's finding about the model, never that the device did anything.
     - a probe_run or interface_execute failure of the assigned model that the runtime attributes to the model after
       the transport opened;
     - probe_diff defects over a probe record that such a run of the assigned model wrote, or that an earlier stage
       handed on when the assigned model wrote it (`writers` maps a record's digest to the digests of the models that
       wrote it, as the earlier stage's notes bound them).
-    Replays, records and captures the worker supplied, other models and their records, and operator and host faults
-    are not the model contradicted. Records are named by content, and only records that are handed on: an input of
+    Replays and records the worker supplied, other models and their records, and operator and host faults are not
+    the model contradicted. Records are named by content, and only records that are handed on: an input of
     this assignment, or a record this stage hands on (a record a later run replaced is not named). Never a worker
     claim, never truth."""
     from interface_runtime.faults import classify_failure
@@ -525,13 +526,10 @@ def _device_diff(events, assignment, contracts=None, writers=None):
             failed = [r for r in _listed(result.get('results') if name == 'probe_run' else [result]) if r.get('ok') is False]
             model = (result.get('fault') == 'model' if name == 'probe_run' else
                      result.get('schema') == 'interface-result/1' and classify_failure(result) == 'model')
-            # Register probes predate fault labels: exit 2 is an unexpected identity, exit 3 no acknowledgement.
-            legacy = name == 'probe_run' and 'fault' not in result and result.get('_exit') in (2, 3)
-            if (model and opened(failed)) or legacy:
+            if model and opened(failed):
                 error = result.get('error') if isinstance(result.get('error'), dict) else {'message': result.get('error')}
-                what = result.get('error_message') or error.get('message') or (
-                    'device identity ' + repr(result.get('identity')) + ' is not one the model expects' if result.get('identity_ok') is False else None)
-                entry = {'code': result.get('error_code') or error.get('code'), 'what': what,
+                entry = {'code': result.get('error_code') or error.get('code'),
+                         'what': result.get('error_message') or error.get('message'),
                          'probe': cite(record_of(event)) if name == 'probe_run' else None, 'failed': failed}
         if entry is not None:
             entry = {key: value for key, value in entry.items() if value not in (None, [])}
@@ -539,14 +537,15 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     return diff
 
 
-def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), interpretation=None):
+def _notes(result, checked, outcome, *, refusals=(), missing=(), undocumented=(), interpretation=None):
     """stage-notes/1: worker claims, truth-free configurator checks, open questions and the outcome.
 
     `missing` names stage inputs that were absent; `refusals` are the gateway's refusals of this worker's tool calls.
     The configurator's `records` bind each probe record a stage hands on to the digest of the model that wrote it, and
-    its `driver_contract` notes say which operations a generic emit packages with the contract the kit imports. A
-    generic interpret stage's `interpretation` says whether the kit analysis was made, or why not, and whether the stage
-    interpreted as tasks, with the hashes of the records they kept.
+    its `undocumented` list names each operation, parameter and output without a description in the model a generic
+    emit worker is given; the key is left out when the list is empty. A generic interpret stage's `interpretation`
+    says whether the kit analysis was made, or why not, and whether the stage interpreted as tasks, with the hashes of
+    the records they kept.
     """
     report = result.get('report') if isinstance(result.get('report'), dict) else {}
     listed = lambda key: report[key] if isinstance(report.get(key), list) else []
@@ -564,9 +563,26 @@ def _notes(result, checked, outcome, *, refusals=(), missing=(), contract=(), in
             'configurator': {'checks': observed.get('checks', []), 'dropped_artifacts': observed.get('dropped_artifacts', []),
                              'records': observed.get('records', []),
                              'tool_refusals': list(refusals), 'device_diff': checked.get('device_diff'),
-                             **({'driver_contract': list(contract)} if contract else {}),
+                             **({'undocumented': list(undocumented)} if undocumented else {}),
                              **({'interpretation': interpretation} if interpretation else {})},
             'open_questions': questions, 'outcome': {'kind': outcome.kind, 'reason': outcome.reason}}
+
+
+def _undocumented(inputs):
+    """The path of each operation, parameter and output without a description in the interpreted model among an emit
+    stage's copied `inputs`, such as `operations.measure.outputs.temperature`. A stage with no model, or with a model
+    the runtime does not validate, lists nothing: emit refuses that model."""
+    from interface_runtime import meanings
+    from interface_runtime.engine import validate_model
+    from interface_runtime.evidence import read_json
+    folder = next((Path(path) for path in inputs if (Path(path) / 'model.json').is_file()), None)
+    if folder is None:
+        return []
+    try:
+        model = read_json(folder / 'model.json', 1048576)
+        return meanings.undocumented(model) if validate_model(model)['ok'] else []
+    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+        return []
 
 
 def _notes_bytes(notes):
@@ -607,7 +623,6 @@ FINAL = ':final'
 # replay passes from whatever exchanges the package bundles; it replays device exchanges only when the package's probe
 # evidence was recorded live from the device, not from a replay the worker supplied.
 REPLAYED, SUPPLIED = 'replay of the recorded device exchanges', 'replay of supplied exchanges, not recorded from the device'
-SEEDED = 'seeded package-versus-model check'
 UNCERTAIN_AFTER_VERDICT = 'Outstanding effect is uncertain after the final verdict; operator reconciliation is required'
 UNCERTAIN_AWAITING = ('Outstanding effect is uncertain after fresh reuse; reconcile it, then resume, and the frozen driver '
                       'awaits its grade')
@@ -629,11 +644,9 @@ def _emit_check_failure(result):
         return result['error']
     if result.get('integrity_ok') is False:
         return 'package integrity failed'
-    if result.get('runtime_current') is False:
-        return "the package carries a runtime other than this kit's"
     if result.get('replay_status') not in (None, 'passed'):
         return 'replay ' + str(result['replay_status'])
-    return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
+    return 'emit_check reported failure'
 
 
 def _emit_builds(events):
@@ -716,9 +729,8 @@ def _live_outcome(event):
       refused it (no execution passed and none that failed attempted to open the transport), or the tool declared
       that it refused before its first device call (transport_open_attempted false and no execution record: an
       argument, binding, grant, snapshot or integrity refusal);
-    - 'failed': the model it ran failed on the device. The runtime attributes a failure to the model after the
-      transport opened, or a register package's own live suite reported failing checks. The verdict counts it as the
-      driver's only when the operation ran the frozen bytes;
+    - 'failed': the model it ran failed on the device: the runtime attributes a failure to the model after the
+      transport opened. The verdict counts it as the driver's only when the operation ran the frozen bytes;
     - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4), a
       host fault the tool declared before its first device call, or a toolchain error the tool did not declare as a
       refusal, which may have come after the device was contacted (labelled a host fault only when it names one,
@@ -747,48 +759,47 @@ def _live_outcome(event):
         code = first.get('error_code') or error.get('code') or (named if named != 'toolchain error' else None)
         return 'inconclusive', str((fault(first) if failed else result.get('fault')) or 'unclassified') + ' fault' + (
             ' (' + str(code) + ')' if code else '')
-    if isinstance(result.get('output'), list):
-        # A register package's live suite ran on the device; failing checks are the driver's.
-        return ('failed', None) if isinstance(result.get('failed'), int) and result['failed'] > 0 else (
-            'inconclusive', 'live suite exited with an error')
     # The tool raised without declaring a refusal: say whether that names a host failure, never guess one.
     return 'inconclusive', ('host fault' if _host_fault(result) else 'undeclared toolchain error') + (
         ' (' + _toolchain_fault(result) + ')')
 
 
 def _frozen_package(package, strict=False):
-    """What judging a run of a frozen package needs, read from its bytes: its content digest, its manifest's digest
-    (which emit_test_live reports as `manifest_sha256` when it runs the installed runtime over the package's data),
-    its driver directory's digest (which interface_execute runs
-    as a model), its identity operation, each operation's declared effect (absent is actuate, as the gateway reads it),
-    whether its channel declares that opening it resets the device (its runtime then needs the reset grant for every
-    operation) and its functions: the operations beyond identity with a step that reaches the device (an exchange or
-    a USB control transfer) asking something identity's own steps do not. An operation of delays alone sends nothing,
+    """What judging a run of a frozen package needs, read from its bytes through the runtime's check of the package
+    (`interface_runtime.package`): its content digest, its manifest's digest (which the proof of a generated call
+    names), its tools, each with its operation, as the runtime renders them from its driver, its identity operation,
+    each operation's declared effect (absent is actuate, as the gateway reads it), whether its channel declares that
+    opening it resets the device (the runtime then needs the reset grant for every operation) and its functions: the
+    operations beyond identity with a step that reaches the device (an exchange or a USB control transfer) asking
+    something identity's own steps do not. An operation of delays alone sends nothing,
     and one that repeats identity's requests asks nothing identity does not, however it reads or checks the reply, so
     running either is no evidence of function. A step is compared by what reaches the device: its op and tx, and for
     a USB control transfer its setup and its rx, whose length the transfer requests. What a step accepts back (its
-    receive mode or bound on a stream, expect and match), its capture name and timeout ask the device nothing. The
-    model is read as the runtime reads it. A register (schema 1) model has no named operations: its effects and
-    functions are None.
+    receive mode or bound on a stream, expect and match), its capture name and timeout ask the device nothing.
 
-    A part that is absent or does not parse is None. So is one the host cannot read, unless `strict`: the final verdict
-    reads a package whose digest it has just verified, so a host failure there says nothing about the driver and
-    raises, stopping the run for the host instead of grading it."""
+    A package the check refuses, such as one whose driver is absent or does not parse, has none of these but the
+    digests: its tools, identity, effects and functions are None, and its manifest's digest is None when the manifest
+    was not read. The check reports a file the host cannot read as a refusal too. So when `strict`, every file is
+    read first and the host's error raises: the final verdict reads a package whose digest it has just verified, so
+    a host failure there says nothing about the driver and stops the run for the host instead of grading it."""
+    from interface_runtime.catalog import render_mcp
+    from interface_runtime.package import digest as file_digest, package_files, the_driver, verify_package
     root = Path(package['path'])
-    def read(load):
+    if strict:
         try:
-            return load()
-        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError, RecursionError):
-            return None
-        except OSError:
-            if strict:
-                raise
-            return None
-    model = read(lambda: _model_json(root / 'driver' / 'model.json'))
+            package_files(root)
+            file_digest(root / 'manifest.json')
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError):
+            # What a package lacks, or holds that a package may not, is its own defect, which the check names.
+            pass
+    checked = verify_package(root)
+    model = the_driver(checked)[1] if checked['ok'] else None
+    tools = ({name: tool['operation'] for name, tool in render_mcp(checked['drivers'])['operations'].items()}
+             if checked['ok'] else None)
     identity = model.get('identity') if isinstance(model, dict) else None
     identity = identity.get('operation') if isinstance(identity, dict) else None
     operations = model.get('operations') if isinstance(model, dict) else None
-    named = isinstance(operations, dict) and model.get('schema') != 'interface-model/1'
+    named = isinstance(operations, dict)
     effects = ({name: op.get('effect', 'actuate') if isinstance(op, dict) else None for name, op in operations.items()}
                if named else None)
     def requests(op):
@@ -801,14 +812,14 @@ def _frozen_package(package, strict=False):
     functions = (sorted(name for name, op in operations.items() if name != identity and requests(op) - own)
                  if named and identity is not None else None)
     channel = model.get('channel') if isinstance(model, dict) else None
-    return {'sha256': package['sha256'], 'manifest_sha256': read(lambda: digest(root / 'manifest.json')),
-            'driver_sha256': read(lambda: digest(root / 'driver')), 'identity': identity, 'effects': effects,
+    return {'sha256': package['sha256'], 'manifest_sha256': checked['manifest_sha256'], 'tools': tools,
+            'identity': identity, 'effects': effects,
             'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
-            'functions': functions, 'generated_mcp': read(lambda: json.loads((root/'manifest.json').read_text()).get('schema')) == 'interface-package/2'}
+            'functions': functions}
 
 
-NEVER_RAN = 'fresh reuse never ran the frozen package with emit_test_live'
-IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation with emit_test_live; '
+NEVER_RAN = 'fresh reuse never ran a tool of the frozen package'
+IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its identity operation; '
                  "identity alone is not evidence of function, nor is an operation that only waits or repeats identity's requests")
 UNGRANTED = ("the operator's grants permit no function of the frozen package beyond its identity operation (each needs an "
              'effect, or the reset its channel declares on open, that was not granted), so fresh reuse could not test '
@@ -830,7 +841,7 @@ UNLISTENED = ('no worker listened to the bound serial device with acquire_serial
 
 def _reset_ungranted(package, grants):
     """Whether the frozen package (`_frozen_package`) has a function, but its channel resets the device on open and the
-    operator's `grants` (None when not known) hold no reset: its runtime then refuses every operation of those bytes
+    operator's `grants` (None when not known) hold no reset: the runtime then refuses every operation of those bytes
     before it opens the device, a live probe of them included."""
     return (package is not None and grants is not None and isinstance(package.get('functions'), list)
             and bool(package['functions']) and package.get('resets_on_open') is True and 'reset' not in grants)
@@ -839,7 +850,7 @@ def _reset_ungranted(package, grants):
 def _ungranted(package, grants):
     """Whether the operator's grants (`grants`, or None when not known) permit none of the frozen package's functions
     (`_frozen_package`), although it has one: the gateway refuses every function whose effect is not granted, and the
-    package's own runtime refuses every operation, before it opens the device, when its channel resets the device on
+    runtime refuses every operation of the package, before it opens the device, when its channel resets the device on
     open and the reset is not granted (`_reset_ungranted`)."""
     if (package is None or grants is None or not isinstance(package.get('functions'), list)
             or not isinstance(package.get('effects'), dict)):
@@ -873,15 +884,17 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
     connection to the run's device (`_unreachable`), or is None. The final verdict and each reuse attempt's notes use
     this one rule.
 
+    A call ran the frozen package when it is a generated tool call the configurator dispatched for that package: the
+    `mcp` proof the gateway wrote into its result names the package, its manifest, the call's own assignment and
+    dispatch, and its tool. No other call counts as a run of the frozen package.
+
     - It passes when every live operation succeeded (a call refused before the device was contacted is not one) and
-      at least one emit_test_live ran the frozen package and a function of it beyond its identity operation (an
-      operation with a step that reaches the device) on the device: identity alone is not evidence of function, nor is
-      an operation that only waits. The frozen package ran when the configurator hashed those bytes before dispatch and
-      the snapshot the tool executed carries the frozen manifest.
-    - It fails when the driver failed on the device (a failure is the driver's only when the operation ran the frozen
-      bytes: the package for emit_test_live, or its driver directory for interface_execute), or when no such
-      operation ran, including when no worker listened to a serial device the gateway then kept from fresh reuse
-      (UNLISTENED): listening needs no grant.
+      at least one generated call ran a function of the frozen package beyond its identity operation (an operation
+      with a step that reaches the device) on the device: identity alone is not evidence of function, nor is an
+      operation that only waits or repeats identity's requests.
+    - It fails when the driver failed on the device (a failure is the driver's only when the call ran the frozen
+      package), or when no such call ran, including when no worker listened to a serial device the gateway then kept
+      from fresh reuse (UNLISTENED): listening needs no grant.
     - It is unsettled (None) when a live operation was inconclusive (an operator, host or transport fault, or a
       failure of other bytes) or was dispatched without a recorded result, or when no function ran because the
       operator's grants permit none (an effect or the reset its channel needs) or the operator's or the host's limits
@@ -889,46 +902,30 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
       nothing of the driver.
 
     Returns (the fresh_reuse_live_operations check, its diff entries)."""
-    shas = lambda e: e.get('argument_sha256') or {}
-    snapshot = lambda e: _result_of(e).get('manifest_sha256')
-    generated = lambda e: bool(package and package.get('generated_mcp') and _result_of(e).get('mcp', {}).get('schema') == 'driver-mcp-call/1'
-        and _result_of(e)['mcp'].get('manifest_sha256') == package['manifest_sha256']
-        and _result_of(e)['mcp'].get('package_sha256') == package['sha256']
-        and _result_of(e)['mcp'].get('dispatch_id') == e.get('dispatch_id')
-        and _result_of(e)['mcp'].get('assignment_id') == e.get('assignment_id')
-        and _result_of(e)['mcp'].get('tool_name') == e.get('name') and e.get('connected') is True)
-    dispatched = lambda e: generated(e) or (package is not None and not package.get('generated_mcp') and e.get('name') == 'emit_test_live'
-                            and shas(e).get('package_dir') == package['sha256'])
-    emitted = lambda e: generated(e) or (dispatched(e) and snapshot(e) is not None and snapshot(e) == package['manifest_sha256'])
-    ran_driver = lambda e: emitted(e) or (package is not None and package['driver_sha256'] is not None
-                                          and e.get('name') == 'interface_execute' and shas(e).get('model_dir') == package['driver_sha256'])
+    tools = (package or {}).get('tools') or {}
+    functions = (package or {}).get('functions') or ()
+    def emitted(event):
+        """Whether the call ran a tool of the frozen package, by the proof the gateway wrote into its result."""
+        proof = _result_of(event).get('mcp')
+        return (event.get('name') in tools and isinstance(proof, dict) and proof.get('schema') == 'driver-mcp-call/1'
+                and proof.get('package_sha256') == package['sha256']
+                and proof.get('manifest_sha256') == package['manifest_sha256']
+                and proof.get('assignment_id') == event.get('assignment_id')
+                and proof.get('dispatch_id') == event.get('dispatch_id')
+                and proof.get('tool_name') == event.get('name'))
     def outcome_of(event):
         outcome, detail = _live_outcome(event)
-        if outcome == 'failed' and not ran_driver(event):
+        if outcome == 'failed' and not emitted(event):
             return 'inconclusive', 'model fault outside the emitted driver'
         return outcome, detail
-    def beyond_identity(event):
-        """Whether the call ran a function of the frozen package (beyond its identity operation) on the device: True,
-        False, or None when its result does not say (it recorded no execution, or stopped at a fault before one)."""
-        result = _result_of(event)
-        if generated(event):
-            return result.get('operation') in (package['functions'] or ())
-        if isinstance(result.get('output'), list):
-            return True  # a register package's live suite reads its identity, then measures
-        executions = _listed(result.get('results'))
-        other = lambda name: name in (package['functions'] or ())
-        if any(other(r.get('operation')) and r.get('transport_open_attempted') is not False for r in executions):
-            return True
-        pending = [name for name in result.get('not_run') if other(name)] if isinstance(result.get('not_run'), list) else []
-        return None if pending or not executions else False
     def functional(event, outcome):
-        if not dispatched(event) or outcome == 'refused':
+        """Whether the call ran, or may have run, a function of the frozen package on the device."""
+        if outcome == 'refused' or tools.get(event.get('name')) not in functions:
             return False
-        if outcome in ('inconclusive', 'unresolved'):
-            # It stopped at a fault: it may have run a function of the frozen package, unless it plainly ran other
-            # bytes or no function.
-            return beyond_identity(event) is not False and snapshot(event) in (None, package['manifest_sha256'])
-        return emitted(event) and beyond_identity(event) is True
+        # A dispatch without a recorded result has no proof. It may have run the function when the configurator
+        # recorded, as it dispatched the tool, the digest of the frozen package.
+        return emitted(event) or (outcome == 'unresolved'
+                                  and (event.get('argument_sha256') or {}).get('package_dir') == package['sha256'])
     recorded = {e.get('dispatch_id') for e in events}
     # A device dispatch without a recorded result (the tool raised after it was dispatched) is unresolved.
     rows = [(e, *outcome_of(e)) for e in events if e.get('connected') is True]
@@ -954,8 +951,8 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
         ' was inconclusive: ' + str(detail) + ', not a driver failure' if outcome == 'inconclusive' else
         ' was dispatched but its result was never recorded') + dispatch(e)} for e, outcome, detail in unsettled]
     if not exercised:
-        # The rule is a live test of a function of the frozen package itself; running its driver directory as a
-        # model is judged above but is not that test.
+        # The rule is a generated call of a function of the frozen package itself; any other live operation is
+        # judged above but is not that call.
         diff.append({'id': check['id'], 'reason': unreachable if blocked else UNGRANTED if ungranted else IDENTITY_ONLY if ran else
                      UNLISTENED if unreachable == UNLISTENED else NEVER_RAN + (
             ' (' + str(refused) + ' call' + ('s' if refused > 1 else '') + ' refused before the device was contacted)' if refused else '')})
@@ -972,18 +969,17 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
 
     - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
       configurator ran at emit, and fresh reuse passed `_fresh_reuse`: every live operation succeeded, and at least
-      one ran the frozen package with emit_test_live (the bytes the configurator hashed before dispatch, executed as
-      a snapshot of the frozen manifest) and a function of it beyond its identity operation, on the connection the
-      configurator supplied.
-    - **Not equivalent:** no single package passed emit_check replay of device exchanges (a seeded package-versus-model
-      check, or a replay of exchanges the worker supplied, is not one), the driver failed on the device, or fresh reuse
-      never ran a function of the package beyond its identity with emit_test_live.
+      one generated tool call ran a function of the frozen package beyond its identity operation, on the connection
+      the configurator supplied.
+    - **Not equivalent:** no single package passed emit_check replay of device exchanges (a replay of exchanges the
+      worker supplied is not one), the driver failed on the device, or fresh reuse never ran a function of the package
+      beyond its identity with a generated tool.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
       a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
       operator's grants permit no function of the package beyond its identity (an effect or the reset its channel
       needs), so none could run. So it is without a replay of device exchanges when no live probe could have recorded
       one: the operator's or the host's limits let the configurator open no connection to the device (any `unreachable`
-      but UNLISTENED, the pipeline's own omission), or the frozen package's runtime refuses every operation of its bytes
+      but UNLISTENED, the pipeline's own omission), or the runtime refuses every operation of the frozen package's bytes
       for want of the reset grant its channel declares. That excuses only the one package that passed emit_check
       without a replay of device exchanges, never a driver that was not emitted, a candidate emit_check rejected
       offline or several packages handed off.
@@ -1003,9 +999,8 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     passed = frozen is not None and check_of(emit).get('passed') is True
     verified = check_of(emit).get('verified_by')
     kind = verified[0] if isinstance(verified, list) and len(verified) == 1 and isinstance(verified[0], str) else None
-    # Ruling 7 counts only a replay of the recorded device exchanges. A seeded package-versus-model check compares the
-    # package with its own model, not with the device, a replay of supplied exchanges reached no device, and a check
-    # that recorded neither establishes no replay.
+    # Ruling 7 counts only a replay of the recorded device exchanges: a replay of supplied exchanges reached no device,
+    # and a check that recorded neither establishes no replay.
     replayed = passed and kind == REPLAYED
     replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
               'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
@@ -1036,7 +1031,7 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
                       'none of the ' + str(candidates) + ' emitted packages passed emit_check')
         diff.append({'id': replay['id'], 'reason': reason})
     # No live probe could record device exchanges to replay when the operator's or the host's limits kept every
-    # connection from the device, or the frozen package's runtime refuses its bytes without the reset grant its channel
+    # connection from the device, or the runtime refuses the frozen package's bytes without the reset grant its channel
     # declares. Then the one package that passed emit_check lacks its replay of device exchanges for that limit, not
     # for the driver, and the verdict is unscored unless the driver failed; it is never equivalent. No driver emitted,
     # a candidate emit_check rejected offline, or several packages handed off failed whatever the device access.
@@ -1778,7 +1773,7 @@ class Controller:
                         prepared['interpretation'] = {**prepared['interpretation'], 'device_calls': device_first.calls(
                             self._started(run_id, assignment), self._finished(run_id, assignment))}
                     notes = _notes(result, checked, outcome, refusals=refusals, missing=prepared.get('input_notes', ()),
-                                   contract=prepared.get('driver_contract', ()),
+                                   undocumented=prepared.get('undocumented', ()),
                                    interpretation=prepared.get('interpretation'))
                     if outcome.kind == 'revise':
                         # The partial handoff, the new revision and the route to interpret commit together.
@@ -2017,8 +2012,7 @@ class Controller:
                 record = json.loads(Path(path).read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 return False
-            # An interface probe record says ok; a register probe's record says whether the identity answered.
-            return isinstance(record, dict) and (record.get('ok') is True or record.get('identity_ok') is True)
+            return isinstance(record, dict) and record.get('ok') is True
         written = []  # (record path, digests of the models that wrote it), newest first
         for handoff in reversed(accepted):
             if handoff['stage'] in ('probe', 'ground'):
@@ -2098,7 +2092,7 @@ class Controller:
                         }, indent=1), encoding='utf-8')
                         inputs['BINDING_CONTEXT.json'] = str(binding_context)
             # The supplementary documents the acquire handoff carries (07-B3), from the calls that wrote them.
-            from . import driver_contract, supplementary_documents
+            from . import supplementary_documents
             calls = [call for call in self._finished(run_dir.name, {'id': acquisition['assignment_id']})
                      if call.get('ok')] if acquisition and acquisition.get('assignment_id') else []
             documents = supplementary_documents.sealed_inputs(run_dir / 'preparation' / workspace.name / 'context',
@@ -2113,12 +2107,11 @@ class Controller:
                 'tasks': {'requested': {'meaning': spec['goal']}}, 'effect_grants': spec.get('effects', ['read']),
                 'instructions': 'The objective describes requested behavior, not protocol evidence. Recover bytes, '
                     'decoders and units from supplied evidence. Report unsupported behavior. Do not execute or '
-                    'relabel effects outside the grants. ' + driver_contract.TASK,
+                    'relabel effects outside the grants.',
                 **({'kit_analysis': kit_analysis.task_entry(analysis)} if analysis and analysis['made'] else {}),
                 **({'documents': supplementary_documents.task_entry()} if documents else {})}, indent=1),
                 encoding='utf-8')
             inputs['TASKS.json'] = str(tasks)
-            inputs.update(driver_contract.interpret_inputs())
             if device:
                 inputs.update(device_first.sealed_inputs())
             previous = next((a['path'] for h in reversed(accepted) if h['stage'] == 'interpret' for a in h['artifacts']
@@ -2149,7 +2142,7 @@ class Controller:
                                     'supplied in this workspace: read them and leave them unchanged; changing any sealed '
                                     'input stops the run. Write the revised model.json, and replies.json when BRIEF.md '
                                     'asks for it, at the workspace root, and record which evidence each correction '
-                                    'addresses in NOTES.md. ' + driver_contract.REPAIR}, indent=1), encoding='utf-8')
+                                    'addresses in NOTES.md.'}, indent=1), encoding='utf-8')
                 inputs['REPAIR_CONTEXT.json'] = str(context)
             prepared = call_tool('interpret_run',{'run_dir':str(tool_run),'front_end':'interpret-interface','inputs':inputs,
                 **({'defects':defects} if defects else {}),'mode':'prepare','workspace_root':tempfile.mkdtemp(prefix='gd-candidate-')})
@@ -2205,10 +2198,8 @@ class Controller:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(path, target) if path.is_dir() else shutil.copy2(path, target)
             inputs.append(str(target))
-        contract_notes = []
-        if stage == 'emit':
-            from . import driver_contract
-            contract_notes = driver_contract.emit_inputs(inputs)
+        # What the model given to a generic emit worker leaves undocumented, for the stage's notes.
+        undocumented = _undocumented(inputs) if stage == 'emit' else []
         context = {'stage': stage, 'acceptance': ('Report evidence and checks for this stage honestly. Observed tool '
                    'evidence is handed on; every report is kept as notes and the run continues.')}
         if spec.get('binding'):
@@ -2237,7 +2228,7 @@ class Controller:
                 'allowed_tools': [*STAGE_TOOLS[stage], debug_probe.TOOL] if probe_declared else STAGE_TOOLS[stage],
                 'context': context,
                 **({'input_notes': missing} if missing else {}),
-                **({'driver_contract': contract_notes} if contract_notes else {})}
+                **({'undocumented': undocumented} if undocumented else {})}
         return self._generated_reuse(prepared) if stage == 'reuse' else prepared
 
     def _task(self, run_id, assignment, task, workspace, prompt, deadline, config, cancel):
@@ -2288,24 +2279,26 @@ class Controller:
 
     @staticmethod
     def _generated_reuse(prepared):
+        """The preparation of fresh reuse with the tools generated from the package among its inputs: the worker is
+        assigned those tools alone, and its objective names them and the package's documentation."""
+        from interface_runtime.catalog import render_mcp, tools_digest
         from interface_runtime.package import verify_package
         for raw in prepared.get('inputs', []):
             package = Path(raw)
             manifest_path = package / 'manifest.json'
             if not manifest_path.is_file():
                 continue
-            manifest = json.loads(manifest_path.read_text())
-            if manifest.get('schema') != 'interface-package/2':
-                continue
             checked = verify_package(package)
             if not checked['ok']:
                 raise IntegrityError('Generated reuse package is invalid: ' + str(checked['defects']))
-            catalog = json.loads((package/'mcp-tools.json').read_text())
-            configured = {'package_dir': str(package), 'manifest_sha256': digest(manifest_path),
-                'contract_sha256': manifest['contract_sha256'], 'catalog_sha256': digest(package/'mcp-tools.json')}
-            return {**prepared, 'device_mcp': configured, 'allowed_tools': [t['name'] for t in catalog['tools']],
-                'objective': prepared['objective'].replace('Use package_execute for each operation.',
-                    'Use the generated MCP tools for each operation.') + ' Use only the assigned generated MCP tools to operate this device.'}
+            catalog = render_mcp(checked['drivers'])
+            configured = {'package_dir': str(package), 'manifest_sha256': checked['manifest_sha256'],
+                          'catalog_sha256': tools_digest(catalog['tools'])}
+            tools = [t['name'] for t in catalog['tools']]
+            return {**prepared, 'device_mcp': configured, 'allowed_tools': tools,
+                    'objective': prepared['objective'] + ' Operate the device only with the generated tools '
+                                 + ', '.join(tools) + '. README.md in the package says what each operation means, '
+                                 'what it takes and gives, and what was tested.'}
         return prepared
 
     @staticmethod
@@ -2633,14 +2626,12 @@ class Controller:
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
                                        + str(result.get('error')))
-                replayed=result.get('replay_status')=='passed' or result.get('seeds_run',0)>0
-                if result.get('ok') and result.get('_exit',0)==0 and result.get('runtime_current') and replayed:
+                replayed=result.get('replay_status')=='passed'
+                if result.get('ok') and result.get('_exit',0)==0 and result.get('integrity_ok') and replayed:
                     selected.append(str(package))
-                    # An interface package replays the exchanges it bundles, which are device exchanges only when
-                    # its probe evidence was recorded live; a register package is checked against its model on seeded
-                    # register files and replays no device exchange.
-                    verified.append(SEEDED if result.get('replay_status') != 'passed' else
-                                    REPLAYED if result.get('source_evidence_kind') == 'live' else SUPPLIED)
+                    # A package replays the exchanges it bundles, which are device exchanges only when its probe
+                    # evidence was recorded live.
+                    verified.append(REPLAYED if result.get('source_evidence_kind') == 'live' else SUPPLIED)
                 else:
                     why = _emit_check_failure(result)
                     rejected.append({'package': package.name, 'reason': why})
@@ -2700,9 +2691,9 @@ class Controller:
                 return False
         observed = [event for event in mine if event.get('ok')]
         checks, selected, dropped = [], [], []
-        # The configurator validates each assigned model itself, on a copy in its own run directory because a
-        # validator may write beside the model: a model that fails validation goes back to interpret whether or not
-        # the worker ran it. (For an interface model the runtime refuses such a model before opening the device.)
+        # The configurator validates each assigned model itself, on a copy in its own run directory, so that it
+        # validates the bytes it has just hashed: a model that fails validation goes back to interpret whether or not
+        # the worker ran it. (The runtime refuses such a model before opening the device.)
         contracts = {}
         for raw, expected in (assignment.get('inputs') or {}).items():
             if not (Path(raw) / 'model.json').is_file():
@@ -2767,12 +2758,6 @@ class Controller:
                            **({'other_model_runs':others} if others else {}), **replaced,
                            **({} if evidence or executions else {'reason':'No observed successful device test of the assigned '
                                                                          'model through the owned connection'})})
-            captures = [e for e in mine if e['name'] == 'probe_observe' and type(e.get('result',{}).get('refuted')) is int]
-            if captures:
-                refuted = [line for e in captures for line in e['result'].get('lines') or [] if isinstance(line, str) and line.startswith('refuted')]
-                checks.append({'name':'supplied_capture_observations','passed':not refuted,'dispatch_ids':[e['dispatch_id'] for e in captures],
-                               'basis':'A decoded capture supplied by the worker, not a device observation by the configurator; '
-                                       'kept as a note, never a repair trigger', **({'refuted':refuted} if refuted else {})})
         return {'artifacts': selected, 'checks': checks, 'dropped': dropped, 'records': records, 'device_diff': diff}
 
     def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None, *, revise=None, recovery=None):
@@ -3037,8 +3022,6 @@ class Controller:
         condition_ids = [condition['id'] for condition in conditions]
         allowed=assignment['allowed_tools']
         contracts = [copy.deepcopy(t) for t in list_tools() if t['name'] in allowed]
-        if 'package_execute' in assignment['allowed_tools']:
-            contracts.append(copy.deepcopy(PACKAGE_EXECUTE))
         for contract in contracts:
             schema = contract['inputSchema']
             if condition_ids and contract['name'] in ('interface_execute', 'probe_run'):
@@ -3129,6 +3112,10 @@ class Controller:
         # A USB identity can also identify a serial adapter, but an explicit descriptor request never opens its port.
         serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding and not selfdescribing)
         model_tool = name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay')
+        if classified or (model_tool and arguments.get('model_dir') is not None):
+            # Before anything is read from the model: its channel, its effects or the grants they need.
+            _refuse_unknown_format(classified[0] if classified
+                                   else _model_json(Path(arguments['model_dir']) / 'model.json'))
         if name in ('acquire_serial_listen','acquire_flash') and not serial_binding:
             raise ValueError('No operator-owned serial binding for this stage')
         if serial_binding and (serial_tool or model_tool):
@@ -3164,8 +3151,7 @@ class Controller:
             # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
             # endpoint: a worker's own bus_url is refused above.
             arguments['bus_url'] = binding['url']
-        connected = (name in ('probe_run', 'interface_execute', 'emit_test_live', 'package_execute')
-                     and not arguments.get('replay'))
+        connected = name in ('probe_run', 'interface_execute', 'emit_test_live') and not arguments.get('replay')
         if connected:
             if not assignment.get('binding'):
                 raise ValueError('No operator-owned device binding for this stage')
@@ -3188,15 +3174,11 @@ class Controller:
         device = invoke = None
         if connected and spec.get('device'):
             # A device the client supplies. Everything refusable is checked before the dispatch is marked: the
-            # binding is the one the run recorded, and a package call runs only the unchanged stage-assigned copy.
+            # binding is the one the run recorded.
             from .device_client import open_device
             if arguments['binding'] != (progress.get('device') or {}).get('binding'):
                 raise ValueError('Assigned binding differs from the supplied device')
-            if name == 'package_execute':
-                from .supplied.stages import package_call
-                invoke = package_call(self.home / 'runs' / run['id'], assignment['stage'], arguments)
-            else:
-                invoke = lambda: call_tool(name, arguments)
+            invoke = lambda: call_tool(name, arguments)
             device = open_device(spec['device'])
         # Facts the device diff rests on, recorded by the configurator, never taken from the worker: whether it
         # supplied the device connection (a replay gets none), and the content of every evidence path the tool reads.
@@ -3206,7 +3188,7 @@ class Controller:
                     if device is not None else {}),
                  **({'condition_id': condition_id} if condition_requested else {})}
         # A generic run's kit tool runs in a child process within the call's limits, when the service turned that on.
-        kit_tool = device is None and name != 'package_execute'
+        kit_tool = device is None
         limits = self._limits(run['id'], spec, run['created'], marker['expires']) if kit_tool else None
         # The uncertain flag is persisted before dispatch. A crash or cancellation
         # cannot turn an outstanding physical effect into an automatic retry.
@@ -3262,7 +3244,7 @@ class Controller:
             # declared before its first device call. Empty transcripts alone cannot establish this: opening may
             # itself reset it.
             executions = result.get('results') if name == 'probe_run' else [result]
-            refused_before_open = ((name in ('interface_execute', 'probe_run', 'package_execute')
+            refused_before_open = ((name in ('interface_execute', 'probe_run')
                 and type(executions) is list and bool(executions)
                 and all(type(item) is dict and item.get('schema') == 'interface-result/1'
                         and item.get('transport_open_attempted') is False for item in executions))
@@ -3278,8 +3260,6 @@ class Controller:
             evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
                 'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
                 'refused_before_open':refused_before_open,**facts,'actor':'worker'}, db)
-        if name == 'package_execute':
-            result = {**result, 'evidence_id': str(evidence_id)}
         return result
 
     def close(self, timeout=10):

@@ -1,28 +1,34 @@
-"""Execute public operations, preserving contract rules across one connection."""
+"""Execute the operations of a package's driver, keeping the public rules of that driver across one connection.
+
+The interface model is the one statement of a driver, so a session reads the package's driver file and computes the
+driver contract from it: preconditions, warnings and what each operation takes and gives
+(docs/adr/0010-a-package-is-data-in-one-format.md, decision 3). The engine checks what an output may be when it decodes
+it.
+"""
 from pathlib import Path
 import json
 
-from .contracts import compile_contract, validate_value, operation_warnings
+from .contracts import contract_view, operation_warnings
 from .engine import Session, _arguments
-from .evidence import read_json, ReplayFactory, RecordingFactory, _evidence_bound
-from .package import verify_package, digest
+from .evidence import ReplayFactory, RecordingFactory, _evidence_bound
+from .package import verify_package, the_driver
 from . import transports
 
 MAX_DRIVER_RESULT_BYTES = 2 * 1024 * 1024  # Leaves room in managed IPC and MCP envelopes.
 
 
 class PackageSession:
-    """The contract executor used by single calls and uninterrupted package sequences."""
+    """The executor of the operations of a package's one driver, over one connection."""
 
     def __init__(self, root, *, binding=None, allow_effects=(), replay=None):
         self.root = Path(root)
         checked = verify_package(self.root)
         if not checked['ok']:
             raise ValueError(str(checked['defects']))
-        self._manifest_pin = digest(self.root/'manifest.json')
+        self._manifest_pin = checked['manifest_sha256']
         self._manifest = checked['manifest']
-        self._contract = read_json(self.root/'driver/contract.json')
-        self._model = compile_contract(self._contract, read_json(self.root/'driver/protocol.json'))
+        self._entry, self._model = the_driver(checked)
+        self._contract = contract_view(self._model)
         self._player = ReplayFactory(replay) if replay is not None else None
         self._recorder = RecordingFactory(self._player if self._player is not None else transports.open_transport)
         self._effects = allow_effects
@@ -77,7 +83,7 @@ class PackageSession:
                     'transactions': list(recorder.transactions),
                     'evidence_kind': 'replay' if player is not None else 'live',
                     'timing_policy': 'skip_delays' if player is not None else 'real',
-                    'model_sha256': manifest['model_sha256'], 'contract_sha256': manifest['contract_sha256']}
+                    'model_sha256': manifest['files'][self._entry['model']]}
             return self._last_result
 
         def refuse(code, message, details=None, fault='operator'):
@@ -89,8 +95,6 @@ class PackageSession:
 
         try:
             _arguments(model['operations'][operation]['parameters'], arguments)
-            for key, definition in public['parameters'].items():
-                validate_value(arguments[key], definition['schema'], 'parameters.'+key)
         except ValueError as error:
             return refuse('validation_error', str(error))
         if public['effect'] != 'read' and public['effect'] not in allow_effects:
@@ -104,19 +108,13 @@ class PackageSession:
         bounds = 2 * bounds + 2 * len(json.dumps(warnings)) + 2 * len(json.dumps(public.get('preconditions', []))) + 16384
         if bounds > MAX_DRIVER_RESULT_BYTES:
             bounded = refuse('evidence_bound_exceeded',
-                'Public operation exceeds the aggregate result/evidence bound before I/O; inspect the contract for omitted caveats.', fault='model')
-            bounded.update(warnings=[], warnings_omitted=len(warnings), warnings_ref='driver/contract.json')
+                             'Public operation exceeds the aggregate result/evidence bound before I/O; '
+                             'inspect the model for omitted caveats.', fault='model')
+            bounded.update(warnings=[], warnings_omitted=len(warnings), warnings_ref=self._entry['model'])
             return bounded
 
         def invoke(name, arguments):
             outcome = self._engine.execute(name, arguments)
-            if outcome['ok']:
-                try:
-                    for key, definition in contract['operations'][name]['outputs'].items():
-                        validate_value(outcome['outputs'][key], definition['schema'], 'outputs.'+key)
-                except (ValueError, KeyError) as error:
-                    outcome.update(ok=False, invalid_outputs=outcome['outputs'], outputs={}, units={},
-                                   error={'code': 'output_schema_violation', 'message': str(error), 'fault': 'model'})
             return {**outcome, 'warnings': operation_warnings(
                 contract['operations'][name], 'operations.'+name)}
 

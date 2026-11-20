@@ -2,6 +2,8 @@
 
 Status: Accepted, 2026-10-29.
 
+Replaced in part, 2026-11-19: [ADR 0010](0010-a-package-is-data-in-one-format.md) replaced the packaging of this decision. A package no longer freezes a contract and a protocol as files of their own. It stores each driver once, as an interface model, and the driver contract and the declarative protocol are views of that model. The rule that generated tools run through sessions and assignments the configurator owns stays.
+
 ## Context
 
 Agents, applications and scripts need the same device meanings and execution rules. Handwritten MCP wrappers would create another source for parameter semantics, wire behavior and preconditions.

@@ -19,7 +19,7 @@ def example_model():
         if expected:
             result["expect"] = {"equals_hex": expected}
         return result
-    return {"schema": "interface-model/3", "device": {"name": "fictional demonstration"},
+    return {"schema": "interface-model/7", "device": {"name": "fictional demonstration"},
             "channel": {"type": "uart", "baudrate": 115200}, "identity": {"operation": "identify"},
             "operations": {
                 "identify": {"effect": "read", "parameters": {}, "steps": [step("ID?\n", "id", "44454d4f2d34320a")], "outputs": {}},
@@ -36,8 +36,7 @@ def example_replay():
 
 
 class PackageTests(unittest.TestCase):
-    def test_emitted_package_runs_a_sequence_over_one_connection(self):
-        import contextlib, importlib, io
+    def test_a_resetting_models_probe_carries_the_single_session_marker_and_still_checks_and_emits(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
@@ -50,143 +49,14 @@ class PackageTests(unittest.TestCase):
                 result = call_tool(tool_name, {"run_dir": str(root / "run"), **arguments})
                 self.assertEqual(result.get("_exit", 0), 0, result)
                 return result
-            # A resetting model's probe carries the single-session marker and still checks and emits.
             probe = call("probe_run", model_dir=str(model), operation="measure", n=1, replay=str(replay),
                          allow_effects=["reset"])
             self.assertEqual(json.loads(Path(probe["probe"]).read_text())["session"], "single")
             emitted = call("emit_package", model_dir=str(model), probe_json=probe["probe"])
-            sys.path.insert(0, emitted["package_dir"])
-            try:
-                driver = importlib.import_module("driver")
-                transports = sys.modules["interface_runtime.transports"]
-                opens = []
-                class Fake:
-                    def exchange(self, tx, rx, timeout_ms):
-                        return self.replies.pop(0)
-                    def close(self):
-                        pass
-                def fresh():
-                    fake = Fake()
-                    fake.replies = [bytes.fromhex(t["rx_hex"]) for t in example_replay()["transactions"]] * 2
-                    return fake
-                fake = fresh()
-                def factory(channel, binding):
-                    opens.append(1); return fake
-                steps = [{"operation": "measure"}, {"operation": "measure"}]
-                with patch.object(transports, "open_transport", factory):
-                    refused = driver.sequence(steps, binding={})
-                    self.assertFalse(refused["ok"], refused)
-                    self.assertEqual(opens, [])
-                    result = driver.sequence(steps, binding={}, allow_effects=("reset",))
-                    self.assertTrue(result["ok"], result)
-                    self.assertEqual(len(result["results"]), 2)
-                    self.assertEqual(len(opens), 1)
-                    # CLI: argument parsing and the reset grant, in process.
-                    fake = fresh(); opens.clear()
-                    cli = importlib.import_module("driver.__main__")
-                    out = io.StringIO()
-                    argv = ["driver", "sequence", "--steps", json.dumps(steps), "--binding", "{}",
-                            "--allow-effect", "reset"]
-                    with patch.object(sys, "argv", argv), contextlib.redirect_stdout(out):
-                        code = cli.main()
-                    self.assertEqual(code, 0, out.getvalue())
-                    self.assertEqual(len(json.loads(out.getvalue())["results"]), 2)
-                    self.assertEqual(len(opens), 1)
-            finally:
-                sys.path.remove(emitted["package_dir"])
-                for name in [n for n in sys.modules if n == "driver" or n.startswith("driver.")]:
-                    sys.modules.pop(name, None)
+            checked = call("emit_check", package_dir=emitted["package_dir"])
+            self.assertEqual(checked["replay_status"], "passed")
 
-    def test_register_validation_preserves_supplied_model_bytes_and_inventory(self):
-        from generative_driver.toolkit import call_tool
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            model_dir = root / "model"
-            model_dir.mkdir()
-            model = {"schema": "interface-model/1", "channel": {"type": "i2c", "address_7bit": "0x20"},
-                "identity": {"from": "id", "expect": ["0x42"]},
-                "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                    "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                "conversion": {"module": "convert.py", "outputs": {"value": "count"}}, "safety": {},
-                "provenance": [{"item": "operations.identify"}, {"item": "operations.measure"}]}
-            supplied = {"model.json": json.dumps(model).encode(),
-                        "convert.py": b'def convert(inputs):\n    return {"value": inputs["0x10"][0]}\n'}
-            for name, content in supplied.items():
-                (model_dir / name).write_bytes(content)
-            checked = call_tool("model_validate", {"run_dir": str(root / "run"),
-                "model_dir": str(model_dir), "random_files": 0})
-            self.assertTrue(checked["ok"], checked)
-            self.assertEqual({p.relative_to(model_dir).as_posix(): p.read_bytes()
-                              for p in model_dir.rglob("*") if p.is_file()}, supplied)
-
-    def test_register_workspace_and_package_validate_outside_installation(self):
-        from generative_driver.toolkit import call_tool
-        with tempfile.TemporaryDirectory(prefix="register case ") as temp:
-            root = Path(temp).resolve()
-            def call(tool_name, **arguments):
-                result = call_tool(tool_name, {"run_dir": str(root / "trial"), **arguments})
-                self.assertEqual(result.get("_exit", 0), 0, result)
-                return result
-            prepared = call("interpret_run", front_end="interpret-blackbox", inputs={},
-                            workspace_root=str(root / "neutral"))
-            workspace = Path(prepared["workspace"])
-            model = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
-                "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
-                "identity": {"from": "id", "expect": ["0x42"]},
-                "operations": {"init": [{"op": "reg_write", "reg": "0x01", "bytes": ["0x02"]}],
-                    "identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                    "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
-                "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
-                "provenance": [{"item": "operations." + key, "source": "invented register contract"}
-                               for key in ("init", "identify", "measure")]}
-            (workspace / "model.json").write_text(json.dumps(model))
-            (workspace / "convert.py").write_text('def convert(inputs):\n    return {"value": inputs["0x10"][0] / 2}\n')
-            validated = subprocess.run([sys.executable, "-I", "-S", "validate.py", "."], cwd=workspace,
-                                       capture_output=True, text=True, timeout=30)
-            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
-            self.assertTrue(call("model_validate", model_dir=str(workspace))["ok"])
-            for binding in (None, {"url": "ftdi://selected/1"}):
-                denied_probe = call_tool("probe_run", {"run_dir": str(root / "denied"),
-                    "model_dir": str(workspace), "binding": binding})
-                self.assertEqual(denied_probe["_exit"], 4, denied_probe)
-                self.assertEqual(denied_probe.get("fault"), "operator", denied_probe)
-            probe = root / "register-probe.json"
-            probe.write_text(json.dumps({"address": "0x20", "identity": "0x42", "identity_ok": True,
-                "samples": [{"t_wall": 0, "values": {"value": 17.5}, "raw": "23"}], "evidence_kind": "replay"}))
-            emitted = call("emit_package", model_dir=str(workspace), probe=str(probe), name="Ω register")
-            relocated = root / "moved register package"; shutil.move(emitted["package_dir"], relocated)
-            checked = call("emit_check", package_dir=str(relocated), model_dir=str(workspace), seeds=3)
-            self.assertTrue(checked["ok"], checked)
-            self.assertEqual(checked["values_mismatched"], 0)
-            self.assertEqual(checked["footprint_mismatched"], 0)
-            refused = subprocess.run([sys.executable, "-m", "driver", "measure"], cwd=relocated,
-                                     capture_output=True, text=True, timeout=10)
-            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-            self.assertIn("--url", refused.stderr)
-            denied = subprocess.run([sys.executable, "-m", "driver", "--url", "ftdi://selected/1", "--json", "measure"],
-                                    cwd=relocated, capture_output=True, text=True, timeout=10)
-            self.assertNotEqual(denied.returncode, 0)
-            self.assertIn("grant", denied.stdout, denied.stdout + denied.stderr)
-            self.assertNotIn("pyftdi", denied.stdout)
-            for binding in (None, {"url": "ftdi://selected/1"}):
-                refused_live = call_tool("emit_test_live", {"run_dir": str(root / "live-refused"),
-                    "package_dir": str(relocated), "binding": binding})
-                self.assertEqual(refused_live["_exit"], 4, refused_live)
-                self.assertEqual(refused_live.get("fault"), "operator", refused_live)
-                # Refused before the suite ran: nothing reached the device.
-                self.assertIs(refused_live.get("transport_open_attempted"), False, refused_live)
-
-            marker = root / "must-not-run"
-            with (relocated / "driver/device.py").open("a", encoding="utf-8") as stream:
-                stream.write(f"\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-            rejected = call_tool("emit_check", {"run_dir": str(root / "check-tampered"),
-                "package_dir": str(relocated), "model_dir": str(workspace), "seeds": 1})
-            self.assertFalse(marker.exists(), "A changed package must be rejected before import")
-            self.assertFalse(rejected["ok"], rejected)
-            self.assertFalse(rejected.get("integrity_ok", True), rejected)
-
-    def test_emitted_package_relocates_and_replays_without_source_checkout(self):
+    def test_emitted_package_relocates_and_its_check_replays_it(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory(prefix="package with spaces ") as temp:
             root = Path(temp).resolve()
@@ -208,11 +78,7 @@ class PackageTests(unittest.TestCase):
             checked = call("emit_check", package_dir=str(relocated),
                            expected_manifest_sha256=emitted["manifest_sha256"])
             self.assertEqual(checked["replay_status"], "passed")
-            result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c",
-                'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("driver",run_name="__main__")',
-                str(relocated), "replay"], cwd=root, capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["results"][0]["outputs"], {"temperature": 21.5})
+            self.assertEqual(checked["source_evidence_kind"], "replay")
 
     def test_live_test_summary_says_whether_the_package_tried_to_open_the_device(self):
         from generative_driver.toolkit import call_tool
@@ -243,6 +109,8 @@ def tcp_model():
 
 
 DEVICE = {b"ID?": b"DEMO-42\n", b"T": b"T:21.5\n"}
+# The driver and the evidence of a package of the example model, which its device names.
+DRIVER, EVIDENCE = "drivers/fictional_demonstration.json", "evidence/fictional_demonstration.probe.json"
 
 
 class ToolFaultTests(unittest.TestCase):
@@ -291,7 +159,7 @@ class ToolFaultTests(unittest.TestCase):
             root = Path(temp).resolve()
             _, emitted = self.emitted(root, binding)
             tampered = root / "tampered"; shutil.copytree(emitted["package_dir"], tampered)
-            (tampered / "REFERENCE.md").write_text("changed after emission")
+            (tampered / "README.md").write_text("changed after emission")
             del seen[:]
             run = root / "refused"
             for name, arguments in (
@@ -309,26 +177,6 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual(seen, [])
             self.assertFalse((run / "emit").exists())
 
-    def test_a_register_live_test_refuses_the_operators_binding_or_grants_as_its_contract_says(self):
-        """A register package's live suite refuses a binding that is no FTDI url, or a write without its grant, before
-        the bus opens: fault operator with exit 4, not exit 1 as an interface package's refusals are."""
-        from generative_driver.toolkit import call_tool, list_tools
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            package = root / "register-package"; (package / "driver").mkdir(parents=True)
-            (package / "manifest.json").write_text(json.dumps({"name": "register"}))
-            (package / "driver" / "model.json").write_text(json.dumps({"schema": "interface-model/1",
-                                                                        "operations": {"init": [{"op": "reg_write"}]}}))
-            for name, binding in (("a binding that is no FTDI url", {"host": "127.0.0.1", "port": 9}),
-                                  ("a write without its grant", {"url": "ftdi://ftdi:232h/1"})):
-                with self.subTest(refusal=name):
-                    live = call_tool("emit_test_live", {"run_dir": str(root / "run"), "package_dir": str(package), "binding": binding})
-                    self.assertEqual((live["_exit"], live["ok"], live["fault"], live["transport_open_attempted"]),
-                                     (4, False, "operator", False), live)
-        description = " ".join(next(t for t in list_tools() if t["name"] == "emit_test_live")["description"].split())
-        self.assertIn("every such refusal returns transport_open_attempted false, with exit 1, except a register package's "
-                      "binding or grant refusal, which is fault operator with exit 4.", description)
-
     def test_emit_check_reports_a_host_fault_as_one_and_a_broken_package_as_a_refusal(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
@@ -341,9 +189,9 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
                              (4, False, "host", "not_run"), checked)
             self.assertTrue(checked["error"].startswith("FileNotFoundError: "), checked)
-            # A package without its driver model is the package's defect.
+            # A package without its driver is the package's defect.
             broken = root / "broken"; shutil.copytree(package, broken)
-            (broken / "driver" / "model.json").unlink()
+            (broken / DRIVER).unlink()
             refused = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(broken)})
             self.assertEqual((refused["_exit"], refused["ok"]), (1, False), refused)
             self.assertNotIn("fault", refused)
@@ -412,8 +260,7 @@ class ToolFaultTests(unittest.TestCase):
 
     def test_probe_run_declares_every_refusal_it_makes_before_it_opens_the_device(self):
         """probe_run reads the model's bytes and checks the model, the operation, the sample count, the evidence bound
-        and a replay fixture before any transport opens; each refusal says so, and the device sees nothing. So does a
-        register probe's refusal of the operator's binding or grants."""
+        and a replay fixture before any transport opens; each refusal says so, and the device sees nothing."""
         from interface_runtime import evidence
         from generative_driver.toolkit import call_tool
         seen, opened, real_open = [], [], evidence.open_transport
@@ -430,29 +277,26 @@ class ToolFaultTests(unittest.TestCase):
         invalid = tcp_model()
         invalid["operations"]["measure"]["steps"] = []
         text = json.dumps(tcp_model())
-        register = json.dumps({"schema": "interface-model/1", "operations": {"init": [{"op": "reg_write"}]}})
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding, \
                 patch("interface_runtime.evidence.open_transport", recording_open):
             root = Path(temp).resolve()
-            for name, content, arguments, exit_code, says in (
-                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), {}, 1,
+            for name, content, arguments, says in (
+                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), {},
                      "ValueError: duplicate JSON key: name"),
-                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), {}, 1,
+                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), {},
                      "ValueError: non-finite JSON constant: NaN"),
                     ("nesting deeper than the parser allows", text[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}",
-                     {}, 1, "RecursionError: "),
-                    ("no model.json", None, {}, 1, "ValueError: model_dir holds no model.json"),
-                    ("a model that is no JSON object", "[]", {}, 1, "ValueError: model.json is not a JSON object"),
-                    ("an invalid model", json.dumps(invalid), {}, 1, "ValueError: invalid model: "),
-                    ("no operation", text, {"operation": None}, 1, "ValueError: schema 3 probe requires an explicit operation"),
-                    ("an operation the model does not have", text, {"operation": "erase"}, 1, "ValueError: unknown operation"),
-                    ("too many samples", text, {"n": 101}, 1, "ValueError: sample count must be integer 1..100"),
-                    ("no samples", text, {"n": 0}, 1, "ValueError: sample count must be integer 1..100"),
-                    ("an evidence bound the model exceeds", json.dumps(bounded), {"operation": "dump", "n": 100}, 1,
+                     {}, "RecursionError: "),
+                    ("no model.json", None, {}, "ValueError: model_dir holds no model.json"),
+                    ("a model that is no JSON object", "[]", {}, "ValueError: model.json is not a JSON object"),
+                    ("an invalid model", json.dumps(invalid), {}, "ValueError: invalid model: "),
+                    ("no operation", text, {"operation": None}, "ValueError: a probe requires an explicit operation"),
+                    ("an operation the model does not have", text, {"operation": "erase"}, "ValueError: unknown operation"),
+                    ("too many samples", text, {"n": 101}, "ValueError: sample count must be integer 1..100"),
+                    ("no samples", text, {"n": 0}, "ValueError: sample count must be integer 1..100"),
+                    ("an evidence bound the model exceeds", json.dumps(bounded), {"operation": "dump", "n": 100},
                      "ValueError: requested probe exceeds evidence bound"),
-                    ("a replay fixture that is not there", text, {"replay": str(root / "missing-replay.json")}, 1, "FileNotFoundError: "),
-                    ("a register binding that is no FTDI url", register, {}, 4, None),
-                    ("a register write without its grant", register, {"binding": {"url": "ftdi://ftdi:232h/1"}}, 4, None)):
+                    ("a replay fixture that is not there", text, {"replay": str(root / "missing-replay.json")}, "FileNotFoundError: ")):
                 with self.subTest(refusal=name):
                     model = root / name.replace(" ", "-"); model.mkdir()
                     if content is not None:
@@ -460,11 +304,8 @@ class ToolFaultTests(unittest.TestCase):
                     refused = call_tool("probe_run", {"run_dir": str(root / "run"), "model_dir": str(model),
                                                       **{"operation": "measure", "n": 1, "binding": binding, **arguments}})
                     self.assertEqual((refused["_exit"], refused["ok"], refused["transport_open_attempted"]),
-                                     (exit_code, False, False), refused)
-                    if says is None:
-                        self.assertEqual(refused["fault"], "operator", refused)
-                    else:
-                        self.assertTrue(refused["error"].startswith(says), refused)
+                                     (1, False, False), refused)
+                    self.assertTrue(refused["error"].startswith(says), refused)
                     self.assertNotIn("results", refused)
                     self.assertNotIn("probe", refused)
             self.assertEqual((seen, opened), ([], []))
@@ -483,13 +324,11 @@ class ToolFaultTests(unittest.TestCase):
 
     @staticmethod
     def reseal(package):
-        """Rewrite a package's manifest and checksum over its current files, as a worker editing its package could."""
-        from interface_runtime.package import digest, package_files
+        """Rewrite a package's manifest over its current files, as a worker editing its package could."""
+        from interface_runtime.package import package_files
         manifest = json.loads((package / "manifest.json").read_text())
-        manifest.update(files=package_files(package), probe_sha256=digest(package / "probe.json"),
-                        model_sha256=digest(package / "driver" / "model.json"))
+        manifest.update(files=package_files(package))
         (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        (package / "manifest.sha256").write_text(digest(package / "manifest.json") + "\n")
 
     def test_emit_check_refuses_a_hand_edited_package_and_never_calls_it_a_host_fault(self):
         """Content a worker wrote is the package's, however malformed: emit_check refuses it (exit 1) and never
@@ -499,19 +338,19 @@ class ToolFaultTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
             root = Path(temp).resolve()
             _, emitted = self.emitted(root, binding)
-            record = (Path(emitted["package_dir"]) / "probe.json").read_text()
-            # Each refusal is declared with its defects, except where the toolchain's error names what failed.
+            record = (Path(emitted["package_dir"]) / EVIDENCE).read_text()
+            # Each refusal is declared with its defects.
             for name, path, content, refusal in (
-                    ("a probe record that is a JSON array", "probe.json", "[1, 2]", "defects"),
-                    ("a probe record nested deeper than the parser allows", "probe.json",
+                    ("a probe record that is a JSON array", EVIDENCE, "[1, 2]", "defects"),
+                    ("a probe record nested deeper than the parser allows", EVIDENCE,
                      record.rstrip()[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
-                    ("a driver model nested deeper than the parser allows", "driver/model.json",
+                    ("a driver model nested deeper than the parser allows", DRIVER,
                      '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
                     ("a manifest nested deeper than the parser allows", "manifest.json",
-                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "error"),
-                    ("a driver model the host may not read", "driver/model.json", None, "defects"),
+                     '{"x": ' + "[" * 100000 + "]" * 100000 + "}", "defects"),
+                    ("a driver model the host may not read", DRIVER, None, "defects"),
                     # Searching a folder needs its execute permission, which Python 3.12 and earlier report as an error.
-                    ("a driver folder the host may not search", "driver", None, "defects")):
+                    ("a drivers folder the host may not search", "drivers", None, "defects")):
                 with self.subTest(package=name):
                     package = root / name.replace(" ", "-"); shutil.copytree(emitted["package_dir"], package)
                     folder = (package / path).is_dir()
@@ -550,7 +389,8 @@ class ToolFaultTests(unittest.TestCase):
             package = Path(emitted["package_dir"])
             real_digest = runtime_package.digest
             def locked(path):
-                if Path(path).name == "engine.py" and "package" in Path(path).parts and not Path(path).is_relative_to(package):
+                if (Path(path).name == "README.md" and "package" in Path(path).parts
+                        and not Path(path).is_relative_to(package)):
                     raise PermissionError(13, "The process cannot access the file because it is being used by another process", str(path))
                 return real_digest(path)
             del seen[:]
@@ -578,132 +418,6 @@ class ToolFaultTests(unittest.TestCase):
                                                "binding": binding, "operations": ["measure"]})
             self.assertEqual((ran["_exit"], ran["ok"]), (0, True), ran)
 
-    def test_a_replay_process_the_host_ended_is_a_host_fault_never_a_differing_replay(self):
-        """emit_check replays the verified snapshot in a separate process of the trusted runtime, after the same replay
-        passed in the check's own process. A replay process that printed no result (killed by the host, out of memory,
-        crashed at start), exited with an error after printing the same result, or could not read the snapshot (the
-        trusted package's package_error) failed around the check: a host fault. Only a replay process that printed a
-        different result says the package's replay differs."""
-        import subprocess as subprocess_module
-        from generative_driver._toolchain import interface
-        from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _host_fault
-        real_run = subprocess_module.run
-        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
-            root = Path(temp).resolve()
-            _, emitted = self.emitted(root, binding)
-            package = emitted["package_dir"]
-            same = real_run([sys.executable, "-I", "-B", "-c", interface.BOOT, package, "replay"], capture_output=True,
-                            text=True, timeout=120).stdout
-            self.assertEqual(json.loads(same)["ok"], True, same)
-            for name, returncode, stdout, host in (
-                    ("a process the host killed", -9, "", True),
-                    ("a process that exited cleanly without a result", 0, "", True),
-                    ("a process that printed half a result", 0, same[: len(same) // 2], True),
-                    ("a process that printed the same result and then failed", 1, same, True),
-                    ("a process that could not read the snapshot", 1, json.dumps(
-                        {"ok": False, "error": {"code": "package_error", "message": "[Errno 13] Permission denied: 'probe.json'"}}), True),
-                    ("a process that printed a different result", 1, json.dumps({"ok": False, "defects": ["differs"]}), False)):
-                with self.subTest(replay=name):
-                    def replay(command, **kwargs):
-                        if "replay" in command:
-                            return subprocess_module.CompletedProcess(command, returncode, stdout, "")
-                        return real_run(command, **kwargs)
-                    with patch.object(subprocess_module, "run", replay):
-                        checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": package})
-                    self.assertFalse(checked["ok"], checked)
-                    if host:
-                        self.assertEqual((checked["_exit"], checked["fault"], checked["replay_status"]), (4, "host", "not_run"), checked)
-                        self.assertTrue(_host_fault(checked))
-                    else:
-                        self.assertEqual((checked["_exit"], checked["replay_status"]), (1, "failed"), checked)
-                        self.assertNotIn("fault", checked)
-                        self.assertFalse(_host_fault(checked))
-                        self.assertEqual(checked["defects"], [{"where": "package replay", "what": "standalone replay differs"}])
-
-    def test_a_replay_process_the_host_keeps_from_the_snapshot_is_a_host_fault_never_a_differing_replay(self):
-        """The replay process reads the verified snapshot whose replay just passed in the check's own process. When the
-        host keeps it from a file of that snapshot (a lock taken after the check read the copy back), the trusted package
-        prints its package_error and exits 1: a failure around the check, which says nothing about the package."""
-        import subprocess as subprocess_module
-        from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _host_fault
-        real_run = subprocess_module.run
-        with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
-            root = Path(temp).resolve()
-            _, emitted = self.emitted(root, binding)
-            locked = []
-            def replay(command, **kwargs):
-                if "replay" not in command:
-                    return real_run(command, **kwargs)
-                probe = Path(command[-2]) / "probe.json"
-                mode = probe.stat().st_mode
-                probe.chmod(0)
-                try:
-                    try:
-                        probe.read_bytes()
-                    except PermissionError:
-                        locked.append(probe)
-                    return real_run(command, **kwargs)
-                finally:
-                    probe.chmod(mode)
-            with patch.object(subprocess_module, "run", replay):
-                checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
-            if not locked:
-                self.skipTest("this host reads a file whose permissions forbid reading it")
-            self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
-                             (4, False, "host", "not_run"), checked)
-            self.assertIn("Permission denied", checked["error"])
-            self.assertTrue(_host_fault(checked))
-            passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
-            self.assertEqual((passed["_exit"], passed["replay_status"]), (0, "passed"), passed)
-
-    def test_a_register_converter_that_fails_to_load_fails_the_check_and_is_no_host_fault(self):
-        """A register package's seeded check imports the candidate's converter and runs it on register files. An error
-        that converter raises, an ImportError or OSError included, is the package's: the check fails (exit 1), naming
-        driver/convert.py when it will not load. It is never reported as a host fault."""
-        from generative_driver.toolkit import call_tool
-        model = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
-                 "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
-                 "identity": {"from": "id", "expect": ["0x42"]},
-                 "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                                "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                 "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
-                 "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
-                 "provenance": [{"item": "operations." + key, "source": "invented register contract"} for key in ("identify", "measure")]}
-        probe = {"address": "0x20", "identity": "0x42", "identity_ok": True,
-                 "samples": [{"t_wall": 0, "values": {"value": 1}, "raw": "23"}], "evidence_kind": "replay"}
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            (root / "probe.json").write_text(json.dumps(probe))
-            for name, converter, defects in (
-                    ("a converter that imports a missing module",
-                     "import module_the_worker_forgot\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
-                    ("a converter that opens a file that is not there",
-                     "open('no-such-calibration.bin', 'rb')\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
-                    # Bytes a conversion cannot cope with are outside the model's domain: no seed runs, and the check fails.
-                    ("a converter that raises an OSError on the bytes",
-                     "def convert(inputs):\n    raise OSError('calibration table unreadable')\n", None),
-                    ("a converter that works", "def convert(inputs):\n    return {'value': inputs['0x10'][0] / 2}\n", [])):
-                with self.subTest(converter=name):
-                    workspace = root / name.replace(" ", "-"); workspace.mkdir()
-                    (workspace / "model.json").write_text(json.dumps(model))
-                    (workspace / "convert.py").write_text(converter)
-                    emitted = call_tool("emit_package", {"run_dir": str(root / "run"), "model_dir": str(workspace),
-                                                         "probe": str(root / "probe.json")})
-                    self.assertEqual(emitted["_exit"], 0, emitted)
-                    checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"],
-                                                       "model_dir": str(workspace), "seeds": 2})
-                    self.assertNotIn("fault", checked)
-                    if defects == []:
-                        self.assertEqual((checked["_exit"], checked["ok"]), (0, True), checked)
-                    else:
-                        self.assertEqual((checked["_exit"], checked["ok"]), (1, False), checked)
-                    if defects:
-                        self.assertEqual([d["where"] for d in checked["defects"]], defects, checked)
-                    elif defects is None:
-                        self.assertEqual(checked["seeds_run"], 0, checked)
-
     def test_emit_check_keeps_a_passed_replay_when_its_temporary_folder_cannot_be_removed(self):
         """On Windows an antivirus or indexer can hold a file open briefly, so removing a temporary folder fails after
         the check finished. That cleanup failure neither discards a passed replay nor reads as a host fault."""
@@ -727,6 +441,411 @@ class ToolFaultTests(unittest.TestCase):
             with patch.object(shutil, "rmtree", held_open):
                 checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
             self.assertEqual((checked["_exit"], checked["ok"], checked["replay_status"]), (0, True, "passed"), checked)
+
+
+REGISTER_MODEL = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
+                  "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
+                  "identity": {"from": "id", "expect": ["0x42"]},
+                  "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
+                                 "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
+                  "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
+                  "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
+                  "provenance": [{"item": "operations." + key, "source": "invented register description"}
+                                 for key in ("identify", "measure")]}
+
+
+def marking(marker):
+    """Python source that writes the file `marker` when it is imported or run."""
+    return (f"with open({str(marker)!r}, 'w') as out:\n    out.write('ran')\n"
+            "def convert(inputs):\n    return {'value': inputs['0x10'][0] / 2}\n")
+
+
+def said(result):
+    """The reason a tool gave for a refusal: its error, its reason and what each of its defects says."""
+    defects = result.get("defects") if isinstance(result.get("defects"), list) else []
+    parts = (result.get("error"), result.get("reason"), *(defect.get("what") for defect in defects))
+    return " ".join(str(part) for part in parts if part)
+
+
+def contents(folder):
+    return {path.relative_to(folder).as_posix(): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+
+
+def register_package(folder, marker):
+    """A folder laid out as the deleted emit stage laid out a register package: its manifest names no package format,
+    and its conversion module and its live suite write the file `marker` when imported or run."""
+    from interface_runtime.package import digest, package_files
+    (folder / "driver").mkdir(parents=True)
+    (folder / "tests").mkdir()
+    (folder / "driver" / "model.json").write_text(json.dumps(REGISTER_MODEL))
+    (folder / "driver" / "convert.py").write_text(marking(marker))
+    (folder / "tests" / "test_live.py").write_text(marking(marker))
+    manifest = {"name": "register", "version": "1.0.0",
+                "kind": "device package generated from interface-model/1 by the driver compiler's emit stage",
+                "files": package_files(folder)}
+    (folder / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    (folder / "manifest.sha256").write_text(digest(folder / "manifest.json") + "\n")
+    return folder
+
+
+class RegisterFamilyTests(unittest.TestCase):
+    """The register model family (schema interface-model/1, with a conversion module a worker wrote) is deleted. The
+    tool refuses a model or a package of it as it refuses any format it does not know, and runs no file of it."""
+
+    def test_01_B1_a_register_model_is_refused_by_its_schema_and_no_file_of_it_runs(self):
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def bus(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a bus was opened")
+        with tempfile.TemporaryDirectory() as temp, patch("generative_driver._toolchain.runner.FtdiI2c", bus), \
+                patch("interface_runtime.evidence.open_transport", bus):
+            root = Path(temp).resolve()
+            marker = root / "convert-ran"
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(json.dumps(REGISTER_MODEL))
+            (model / "convert.py").write_text(marking(marker))
+            supplied = contents(model)
+            # No tool reads the probe record: none exists.
+            probe = str(root / "no-such-probe.json")
+            for tool, arguments in (("model_validate", {}),
+                                    ("probe_run", {"binding": {"url": "ftdi://ftdi:232h/1"}}),
+                                    ("probe_diff", {"probe": probe}),
+                                    ("emit_package", {"probe": probe})):
+                with self.subTest(tool=tool):
+                    run = root / ("run-" + tool)
+                    refused = call_tool(tool, {"run_dir": str(run), "model_dir": str(model), **arguments})
+                    self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                    self.assertIn("interface-model/1", said(refused), refused)
+                    self.assertFalse(marker.exists(), "a file of the register model was imported or run")
+                    self.assertEqual(contents(model), supplied)
+                    if tool == "probe_run":
+                        self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                    # Neither a probe record nor a package folder was written.
+                    self.assertFalse((run / "probe").exists())
+                    self.assertFalse((run / "emit").exists())
+            self.assertEqual(opened, [])
+
+    def test_01_B2_a_register_package_is_refused_by_its_format_and_no_file_of_it_runs(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            marker = root / "package-ran"
+            package = register_package(root / "package", marker)
+            model = root / "model"; model.mkdir()
+            for name in ("model.json", "convert.py"):
+                shutil.copyfile(package / "driver" / name, model / name)
+            supplied = contents(package)
+            for tool, arguments in (("emit_check", {}),
+                                    ("emit_test_live", {"binding": {"url": "ftdi://ftdi:232h/1"}})):
+                for model_dir in ({}, {"model_dir": str(model)}):
+                    with self.subTest(tool=tool, with_model_dir=bool(model_dir)):
+                        run = root / ("run-" + tool + ("-with-model" if model_dir else ""))
+                        refused = call_tool(tool, {"run_dir": str(run), "package_dir": str(package), **arguments,
+                                                   **model_dir})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        self.assertIn("package names no format", said(refused), refused)
+                        self.assertFalse(marker.exists(), "a file of the register package was imported or run")
+                        self.assertEqual(contents(package), supplied)
+                        if tool == "emit_test_live":
+                            self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                        # No live record was written.
+                        self.assertFalse((run / "emit").exists())
+
+    def test_01_B3_interpret_run_refuses_a_deleted_front_end(self):
+        import re
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            listed = set()
+            for front_end in ("interpret-datasheet", "interpret-firmware", "interpret-blackbox"):
+                run, neutral = root / ("run-" + front_end), root / ("neutral-" + front_end)
+                for where, arguments in (("in the run", {}), ("outside the run", {"workspace_root": str(neutral)})):
+                    with self.subTest(front_end=front_end, workspace=where):
+                        refused = call_tool("interpret_run", {"run_dir": str(run), "front_end": front_end,
+                                                              "inputs": {}, **arguments})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        named, _, existing = refused["reason"].partition("; one of ")
+                        self.assertIn(repr(front_end), named, refused)
+                        listed.update(re.findall(r"'([^']+)'", existing))
+                        # No workspace, seal or attempt record was written.
+                        self.assertFalse((run / "interpret").exists())
+                        self.assertFalse(neutral.exists())
+            # The front ends the refusal lists are the ones that exist: each prepares a workspace.
+            self.assertEqual(listed, {"interpret-interface", "interpret-selfdescribing"})
+            for front_end in sorted(listed):
+                prepared = call_tool("interpret_run", {"run_dir": str(root / ("run-" + front_end)),
+                                                       "front_end": front_end, "inputs": {}})
+                self.assertEqual((prepared.get("ok"), prepared["_exit"]), (True, 0), prepared)
+
+
+EARLIER_TAGS = ("interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6")
+
+
+def retagged_package(root, tag):
+    """A package emitted from the example model, whose driver then names `tag` and whose manifest is brought in step
+    with those bytes, so that the tag is all that tells it from a package of today."""
+    from interface_runtime.package import package_files
+    from test_driver_contract import emit_fixture
+    package, _ = emit_fixture(root)
+    model = json.loads((package / DRIVER).read_text())
+    (package / DRIVER).write_text(json.dumps(dict(model, schema=tag)))
+    manifest = json.loads((package / "manifest.json").read_text())
+    manifest.update(files=package_files(package))
+    (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return package
+
+
+class EarlierFormatTests(unittest.TestCase):
+    """One driver format is read, `interface-model/7`. A model that names an earlier tag is refused by that name, and
+    so is a package that holds one (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B2_each_tool_refuses_a_model_of_an_earlier_tag_by_name(self):
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def transport(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a transport was opened")
+        binding = {"binding": {"port": "/dev/null"}}
+        with tempfile.TemporaryDirectory() as temp, patch("interface_runtime.evidence.open_transport", transport):
+            root = Path(temp).resolve()
+            # Neither the probe record nor the replies exist: a tool that read one would fail on that instead.
+            probe, replies = str(root / "no-such-probe.json"), str(root / "no-such-replies.json")
+            for tag in EARLIER_TAGS:
+                model = root / ("model-" + tag[-1]); model.mkdir()
+                (model / "model.json").write_text(json.dumps(dict(example_model(), schema=tag)))
+                supplied = contents(model)
+                for tool, arguments in (("model_validate", {}), ("model_qualify", {"replies": replies}),
+                                        ("interface_describe", {}),
+                                        ("interface_execute", {"operation": "measure", **binding}),
+                                        ("probe_run", {"operation": "measure", **binding}),
+                                        ("probe_diff", {"probe": probe}), ("emit_package", {"probe": probe})):
+                    with self.subTest(tag=tag, tool=tool):
+                        run = root / ("run-" + tag[-1] + "-" + tool)
+                        refused = call_tool(tool, {"run_dir": str(run), "model_dir": str(model), **arguments})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        self.assertIn(repr(tag), said(refused), refused)
+                        self.assertIn("interface-model/7", said(refused), refused)
+                        if tool in ("interface_execute", "probe_run"):
+                            self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                        # Nothing was written: no file beside the model, no record, report or package folder.
+                        self.assertEqual(contents(model), supplied)
+                        for folder in ("probe", "interpret", "emit"):
+                            self.assertFalse((run / folder).exists(), folder)
+            self.assertEqual(opened, [])
+
+    def test_02_B2_a_package_whose_model_names_an_earlier_tag_is_refused_by_name_and_nothing_of_it_runs(self):
+        from generative_driver.sdk import ManagedDriver
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def transport(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a transport was opened")
+        def service(*arguments, **keywords):
+            raise AssertionError("the service was asked for a session")
+        for tag in EARLIER_TAGS:
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as temp, \
+                    patch("interface_runtime.evidence.open_transport", transport), \
+                    patch("interface_runtime.transports.open_transport", transport), \
+                    patch("generative_driver.client.call", service):
+                root = Path(temp).resolve()
+                package = retagged_package(root, tag)
+                supplied = contents(package)
+                for tool, arguments in (("emit_check", {}), ("emit_test_live", {"binding": {"port": "/dev/null"}})):
+                    run = root / ("run-" + tool)
+                    refused = call_tool(tool, {"run_dir": str(run), "package_dir": str(package), **arguments})
+                    self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), (tool, refused))
+                    self.assertIn(repr(tag), said(refused), (tool, refused))
+                    self.assertIn("interface-model/7", said(refused), (tool, refused))
+                    if tool == "emit_test_live":
+                        self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                    # No live record was written.
+                    self.assertFalse((run / "emit").exists())
+                with self.assertRaises(ValueError) as managed:
+                    ManagedDriver.open(package, binding={"port": "/dev/null"}, home=root / "home")
+                self.assertIn(repr(tag), str(managed.exception))
+                self.assertIn("interface-model/7", str(managed.exception))
+                self.assertEqual(contents(package), supplied)
+        self.assertEqual(opened, [])
+
+    def test_02_B2_the_package_check_names_the_tag_before_it_compares_any_hash(self):
+        # The model of a package emitted today is rewritten to an earlier tag and the manifest is left as it was, so
+        # the model's hash no longer matches. The check still refuses the package for its tag.
+        from interface_runtime.package import verify_package
+        from test_driver_contract import emit_fixture
+        with tempfile.TemporaryDirectory() as temp:
+            package, _ = emit_fixture(Path(temp).resolve())
+            model = json.loads((package / DRIVER).read_text())
+            (package / DRIVER).write_text(json.dumps(dict(model, schema="interface-model/5")))
+            checked = verify_package(package)
+            self.assertFalse(checked["ok"])
+            self.assertIn("'interface-model/5'", said(checked), checked)
+            self.assertIn("interface-model/7", said(checked), checked)
+            self.assertNotIn("hash", said(checked), checked)
+
+
+def prepared_workspace(root, front_end):
+    """The interpret workspace `interpret_run` prepares for `front_end`, with what the tool returned."""
+    from generative_driver.toolkit import call_tool
+    prepared = call_tool("interpret_run", {"run_dir": str(root / ("run-" + front_end)), "front_end": front_end,
+                                           "inputs": {}, "mode": "prepare"})
+    if not prepared.get("ok"):
+        raise AssertionError(prepared)
+    return Path(prepared["workspace"]), prepared
+
+
+class WorkerDocumentTests(unittest.TestCase):
+    """Workers get one model document, and every front end asks for meanings
+    (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B8_each_front_end_gets_the_one_model_document_and_no_contract_tool(self):
+        from worker_texts import ASK, earlier_names, model_document, texts_of
+        self.assertTrue(model_document().is_file(), "the tool has no one model document")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for front_end in ("interpret-interface", "interpret-selfdescribing"):
+                with self.subTest(front_end=front_end):
+                    workspace, prepared = prepared_workspace(root, front_end)
+                    self.assertEqual((workspace / "INTERFACE_MODEL.md").read_bytes(), model_document().read_bytes())
+                    for name in ("CONTRACT.md", "contract.py"):
+                        self.assertFalse((workspace / name).exists(), name)
+                    self.assertIn(ASK, (workspace / "BRIEF.md").read_text(encoding="utf-8"))
+                    self.assertNotIn("conversion module", (workspace / "BRIEF.md").read_text(encoding="utf-8"))
+                    self.assertEqual(earlier_names({**texts_of(workspace),
+                                                    "the prompt": prepared["prompt_for_agent"]}), [])
+
+    def test_02_B8_the_model_document_describes_the_one_format_and_every_model_it_shows_validates(self):
+        import re
+        from generative_driver.toolkit import call_tool
+        from interface_runtime.engine import validate_model
+        from worker_texts import earlier_names, model_document
+        self.assertTrue(model_document().is_file(), "the tool has no one model document")
+        text = model_document().read_text(encoding="utf-8")
+        self.assertIn("interface-model/7", text)
+        self.assertEqual(earlier_names({"INTERFACE_MODEL.md": text}), [])
+        # Every field of the format, and the two codes the tool gives a meaning.
+        for field in ("description", "uncertainties", "code", "message", "evidence_refs", "unit", "value", "type",
+                      "minimum", "maximum", "enum", "minLength", "maxLength", "preconditions", "id", "observation",
+                      "operator", "expected", "unit_not_stated", "not_exercised"):
+            self.assertIn("`" + field + "`", text, field)
+        for units in ("UCUM", "`Cel`", "`%`"):
+            self.assertIn(units, text)
+        # A narrowed value and a precondition are for what the evidence fixes.
+        self.assertRegex(text, r"[Nn]arrow[^.]*only where the evidence fixes it")
+        self.assertRegex(text, r"precondition[^.]*only where the evidence shows that the device refuses")
+        blocks = []
+        for block in re.findall(r"```json\n(.*?)```", text, re.S):
+            try:
+                blocks.append(json.loads(block))
+            except ValueError:
+                continue  # A fragment of a model, or several one-line examples.
+        blocks = [block for block in blocks if isinstance(block, dict)]
+        models = [block for block in blocks if str(block.get("schema", "")).startswith("interface-model/")]
+        self.assertTrue(models, "the document shows no complete model")
+        for model in models:
+            checked = validate_model(model)
+            self.assertTrue(checked["ok"], checked["defects"])
+        # The worked model has meanings of every kind, and its predicted replies qualify it.
+        worked = json.dumps(models[-1])
+        for field in ("description", "uncertainties", "value", "preconditions", "unit_not_stated"):
+            self.assertIn('"' + field + '"', worked, field)
+        replies = [block for block in blocks if str(block.get("schema", "")).startswith("interface-replies/")]
+        self.assertTrue(replies, "the document shows no predicted replies")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "model").mkdir()
+            (root / "model/model.json").write_text(json.dumps(models[-1]))
+            (root / "replies.json").write_text(json.dumps(replies[-1]))
+            qualified = call_tool("model_qualify", {"run_dir": str(root / "run"), "model_dir": str(root / "model"),
+                                                    "replies": str(root / "replies.json")})
+            self.assertTrue(qualified.get("ok"), qualified)
+
+    def test_02_B8_no_tool_description_names_an_earlier_format_or_a_contract_file(self):
+        from generative_driver.toolkit import list_tools
+        from worker_texts import earlier_names
+        described = {tool["name"]: tool["description"] for tool in list_tools()}
+        self.assertEqual(earlier_names(described), [])
+        self.assertIn("advice", described["model_validate"])
+        self.assertIn("schema-2", described["model_validate"])
+
+
+def advised_model():
+    """The example model with one more reading: `measure` and its temperature say nothing of their meaning, and
+    `read_level` is described, with a level that has no unit."""
+    model = example_model()
+    model["operations"]["read_level"] = {
+        "effect": "read", "parameters": {"channel": {"type": "integer", "minimum": 0, "maximum": 3}},
+        "description": "Read the level of one channel.",
+        "steps": [{"op": "exchange", "tx": [{"text": "L"}, {"arg": "channel", "format": "ascii"}, {"text": "\n"}],
+                   "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 128}, "timeout_ms": 500,
+                   "capture": "reply"}],
+        "outputs": {"level": {"from": "reply", "kind": "ascii_number", "prefix": "L:",
+                              "description": "Level of the channel."},
+                    "label": {"from": "reply", "kind": "utf8", "description": "The whole reply."}}}
+    model["provenance"].append({"item": "operations.read_level", "source": "independent synthetic fixture"})
+    return model
+
+
+ADVICE = ["operations.identify has no description", "operations.measure has no description",
+          "operations.measure.outputs.temperature has no description",
+          "operations.read_level.parameters.channel has no description",
+          "operations.read_level.outputs.level has no unit and no unit_not_stated uncertainty"]
+
+
+class AdviceTests(unittest.TestCase):
+    """The worker's validator says what a model that validates leaves undocumented."""
+
+    def test_02_B9_model_validate_lists_each_missing_description_and_unit_as_advice(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            folder = root / "model"; folder.mkdir()
+
+            def validated(model):
+                (folder / "model.json").write_text(json.dumps(model))
+                return call_tool("model_validate", {"run_dir": str(root / "run"), "model_dir": str(folder)})
+            advised = validated(advised_model())
+            # Advice changes neither ok nor the exit status.
+            self.assertEqual((advised["ok"], advised["_exit"], advised["defects"]), (True, 0, []), advised)
+            self.assertEqual(advised.get("advice"), ADVICE)
+            # A unit, or an uncertainty that says the evidence states none, answers the advice on a number.
+            for answer in ({"unit": "%"}, {"uncertainties": [{"code": "unit_not_stated", "evidence_refs": [],
+                                                              "message": "The reply format states no unit."}]}):
+                model = advised_model()
+                model["operations"]["read_level"]["outputs"]["level"].update(answer)
+                self.assertEqual(validated(model)["advice"], ADVICE[:-1], answer)
+            # A model that does not validate gets no advice.
+            broken = advised_model()
+            broken["operations"]["measure"]["description"] = " "
+            refused = validated(broken)
+            self.assertEqual((refused["ok"], refused["_exit"], refused["advice"]), (False, 1, []), refused)
+            self.assertEqual([defect["where"] for defect in refused["defects"]], ["operations.measure.description"])
+            # The tool writes no file beside the model.
+            self.assertEqual(sorted(path.name for path in folder.iterdir()), ["model.json"])
+
+    def test_02_B9_the_workspace_validator_prints_the_advice_and_writes_it_with_the_result(self):
+        import os
+        import subprocess
+        import sys
+        from package_env import package_env
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, _ = prepared_workspace(Path(temp).resolve(), "interpret-interface")
+
+            def validated(model):
+                (workspace / "model.json").write_text(json.dumps(model))
+                # The child keeps the system's variables: Python does not start on Windows without them.
+                done = subprocess.run([sys.executable, "validate.py", "."], cwd=workspace,
+                                      env={**os.environ, **package_env()},
+                                      capture_output=True, text=True, timeout=60)
+                printed = json.loads(done.stdout)
+                self.assertEqual(json.loads((workspace / "validation/result.json").read_text()), printed)
+                return done.returncode, printed
+            status, advised = validated(advised_model())
+            self.assertEqual((status, advised["ok"], advised.get("advice")), (0, True, ADVICE), advised)
+            broken = advised_model()
+            broken["operations"]["measure"]["description"] = " "
+            status, refused = validated(broken)
+            self.assertEqual((status, refused["ok"], refused["advice"]), (1, False, []), refused)
 
 
 if __name__ == "__main__":

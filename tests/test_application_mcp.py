@@ -183,7 +183,7 @@ class ApplicationMcpTests(unittest.TestCase):
                     self.fail('the shipped application template must serve MCP: '+str(error))
                 self.assertEqual([tool.name for tool in tools], ['sensor_average'])
                 self.assertEqual(tools[0].input_schema['properties']['count']['maximum'], 16)
-                self.assertIn('Operation measure meaning', tools[0].description)
+                self.assertTrue(tools[0].description.endswith('\nUses sensor.measure: Meaning not documented.'))
                 self.assertFalse(result.is_error, result)
                 value = result.structured_content
                 self.assertEqual(value['outputs'], {'mean': 21.5, 'count': 3, 'unit': 'degC'})
@@ -193,6 +193,44 @@ class ApplicationMcpTests(unittest.TestCase):
                 self.assertTrue(all(child['session_id'] == opened['session_id'] for child in value['calls']))
             finally:
                 call('shutdown', home=home, autostart=False)
+
+    def test_03_B14_the_shipped_measurement_average_runs_as_before_on_a_package_of_format_3(self):
+        from generative_driver.client import call
+        from test_package_data import FILES, emitted, files_of, samp1
+        with tempfile.TemporaryDirectory(prefix='application MCP ') as directory, demonstration_device() as binding:
+            root = Path(directory).resolve()
+            package = Path(emitted(root, samp1())[0]['package_dir'])
+            self.assertEqual(files_of(package), FILES)
+            home = root / 'owner'
+            try:
+                opened = call('device_open', {'package_dir': str(package), 'binding': binding}, home)
+                tools, result = asyncio.run(self.average(package, home, opened['session_id'], {'count': 3}))
+                self.assertEqual([tool.name for tool in tools], ['sensor_average'])
+                self.assertFalse(result.is_error, result)
+                value = result.structured_content
+                self.assertEqual(value['outputs'], {'mean': 21.5, 'count': 3, 'unit': 'degC'})
+                self.assertEqual(len(value['calls']), 3)
+                self.assertTrue(all(child['session_id'] == opened['session_id'] for child in value['calls']))
+            finally:
+                call('shutdown', home=home, autostart=False)
+
+    def test_03_B9_the_child_description_of_an_application_reads_as_the_tool_of_that_operation(self):
+        from generative_driver.examples.measurement_average import average_application
+        from generative_driver.sdk import ManagedDriver
+        from test_driver_contract import RANGE, described_model
+        from test_package_data import emitted
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            model = described_model()
+            model['device'] = {'name': 'SAMP1'}
+            package = Path(emitted(Path(directory).resolve(), model)[0]['package_dir'])
+            [measure] = [tool for tool in json.loads((package / 'mcp.json').read_text(encoding='utf-8'))['tools']
+                         if tool['name'] == 'samp1_measure']
+            self.assertEqual(measure['description'], 'Read the temperature of the probe.\nWarning: ' + RANGE['message'])
+            application = average_application(ManagedDriver(package, 'not-opened'))
+            [tool] = application._catalog()
+            self.assertTrue(tool['description'].endswith('\nUses sensor.measure: ' + measure['description']),
+                            tool['description'])
 
     async def average(self, package, home, session, arguments):
         parameters = StdioServerParameters(command=sys.executable, env=package_env(),

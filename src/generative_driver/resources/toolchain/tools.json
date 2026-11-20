@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "interface_describe",
-      "description": "Describe validated executable (schema 3-6) operations and transport capabilities. No device access.",
+      "description": "Describe the operations of a validated interface model and the transport capabilities. No device access.",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -26,7 +26,7 @@
     },
     {
       "name": "interface_execute",
-      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
+      "description": "Execute one typed operation of an interface model after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -192,7 +192,7 @@
     },
     {
       "name": "interpret_collect",
-      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation (executable schemas 3-6,\nor schema-1 register) and a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
+      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation of the interface model\nand a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -270,18 +270,6 @@
             "additionalProperties": true,
             "title": "Inputs",
             "type": "object"
-          },
-          "wiring": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Wiring"
           },
           "attempt": {
             "default": 1,
@@ -716,7 +704,7 @@
     },
     {
       "name": "model_validate",
-      "description": "Validate schema-1 register conversion, schema-2 evidence, or schema 3-6 executable transactions.\nReturns defects; structural command validation does not prove semantics or authorize physical action.\n",
+      "description": "Validate an interface model's executable transactions and its meanings, or experimental schema-2 evidence.\nReturns defects, among them a schema it has no validator for; structural command validation does not prove\nsemantics or authorize physical action. Beside the result of an interface model comes `advice`: each\noperation, parameter and output without a description, and each number with neither a unit nor a\nunit_not_stated uncertainty. Advice changes neither ok nor the exit status, and it is empty for a model that\ndoes not validate.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -726,16 +714,6 @@
           "model_dir": {
             "title": "Model Dir",
             "type": "string"
-          },
-          "random_files": {
-            "default": 20,
-            "title": "Random Files",
-            "type": "integer"
-          },
-          "seed": {
-            "default": 0,
-            "title": "Seed",
-            "type": "integer"
           }
         },
         "required": [
@@ -743,38 +721,6 @@
           "model_dir"
         ],
         "title": "model_validateArguments",
-        "type": "object"
-      }
-    },
-    {
-      "name": "model_provenance_audit",
-      "description": "Reported, not a gate: does every citation in the model point at something really in the artifact?",
-      "inputSchema": {
-        "properties": {
-          "run_dir": {
-            "type": "string",
-            "description": "Absolute directory for this run's outputs and evidence."
-          },
-          "model_dir": {
-            "title": "Model Dir",
-            "type": "string"
-          },
-          "artifact": {
-            "title": "Artifact",
-            "type": "string"
-          },
-          "kind": {
-            "default": "datasheet",
-            "title": "Kind",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_dir",
-          "model_dir",
-          "artifact"
-        ],
-        "title": "model_provenance_auditArguments",
         "type": "object"
       }
     },
@@ -984,7 +930,7 @@
     },
     {
       "name": "probe_run",
-      "description": "Probe without repairing the model. Schema 1 supports live I2C; schemas 3-6 require an explicit\noperation and trusted binding or replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\nEvery refusal before the device is contacted returns transport_open_attempted false and writes no record:\nmodel bytes the strict reader refuses, an invalid model, the operation, a sample count outside 1..100, the\nevidence bound or a replay fixture (exit 1), a register model's binding or write grant (fault operator, exit 4),\nand a register model the register runtime cannot load (plain UTF-8 JSON, its converter) or drive (exit 1).\n",
+      "description": "Probe without repairing the model: run one operation of an interface model `n` times, with an\nexplicit operation and a trusted binding or a replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\nEvery refusal before the device is contacted returns transport_open_attempted false, with exit 1, and writes\nno record: model bytes the strict reader refuses, a model format the runtime does not know, an invalid model,\nthe operation, a sample count outside 1..100, the evidence bound or a replay fixture.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -999,14 +945,6 @@
             "default": 3,
             "title": "N",
             "type": "integer"
-          },
-          "bus_url": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "default": null,
-            "description": "Explicit ftdi:// adapter URL. No default device is selected."
           },
           "operation": {
             "anyOf": [
@@ -1072,18 +1010,6 @@
             ],
             "default": null,
             "title": "Replay"
-          },
-          "period_override_ms": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Period Override Ms"
           }
         },
         "required": [
@@ -1096,7 +1022,7 @@
     },
     {
       "name": "probe_diff",
-      "description": "What the device did that the model did not predict, as a defect list for an interpret retry.\nFor schemas 3-6 each failed result becomes a defect with its step, error code, fault (transport or\nmodel) and the bytes seen; exit 4 means every failure was a transport fault.\n",
+      "description": "What the device did that the model did not predict, as a defect list for an interpret retry.\nEach failed result becomes a defect with its step, error code, fault (transport or\nmodel) and the bytes seen; exit 4 means every failure was a transport fault.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1123,7 +1049,7 @@
     },
     {
       "name": "emit_package",
-      "description": "Stage 5. Generate the device package from the model and the probe output: a driver that executes the\nbundled model, a reference, an evidence file, a regression suite of invariants, and a manifest.",
+      "description": "Stage 5. Write the package of an interface model and the successful probe record that model wrote: a folder of\nfive files of data that holds no code. README.md says what each operation means, how the package is served and\nwhat was tested; manifest.json names the format, the driver and the hash of every other file; mcp.json holds the\ntools of the driver; drivers/<driver>.json is the model and evidence/<driver>.probe.json the probe record, each\nbyte for byte. The driver is named after the model's device. The model is the one statement of the driver:\nnothing else in the model directory is read.\nA model of a format the runtime does not know is refused before the probe is read.",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1137,18 +1063,6 @@
           "probe_json": {
             "title": "Probe Json",
             "type": "string"
-          },
-          "wiring": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Wiring"
           },
           "name": {
             "anyOf": [
@@ -1179,7 +1093,7 @@
     },
     {
       "name": "emit_check",
-      "description": "Check generated package consistency offline. Schema 1 uses register fixtures; schemas 3-6 verify\nmanifest integrity and runtime currency separately. Current trusted packages run standalone wire replay;\nintact archived runtimes remain verifiable without executing their code. An external manifest pin\nestablishes artifact identity. Executable packages use their bundled model when model_dir is omitted;\nregister packages require it. A package it cannot read or parse, or a register converter that will not load,\nis refused (exit 1). Only a failure outside the package bytes (its temporary folder, reading back its own\nsnapshot copy, starting the replay, or a replay process that ends without a result or cannot read the verified\nsnapshot, an import, memory or a timeout) is fault host with exit 4, which says nothing about the package. This is not physical validation or sequence-safety evidence.\n",
+      "description": "Check a package offline. It is refused (exit 1) unless its manifest names the one package format, the folder\nholds exactly the five files of a package with the hashes the manifest gives, its driver is a valid interface\nmodel, and README.md and mcp.json each equal what the tool renders from the package's driver and evidence; a\npackage it cannot read or parse is refused as well. The check then replays its probe record in process on the\ninstalled runtime, once. integrity_ok says that the package passed the check, replay_status whether the replay\npassed, failed or was not run. With model_dir the package's driver must be that model's bytes. An external\nmanifest pin (expected_manifest_sha256) establishes which package this is.\nOnly a failure outside the package bytes (its temporary folder, reading back its own copy) is fault host with\nexit 4, which says nothing about the package. This is not physical validation or sequence-safety evidence.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1202,11 +1116,6 @@
             "default": null,
             "title": "Model Dir"
           },
-          "seeds": {
-            "default": 20,
-            "title": "Seeds",
-            "type": "integer"
-          },
           "expected_manifest_sha256": {
             "anyOf": [
               {
@@ -1218,16 +1127,6 @@
             ],
             "default": null,
             "title": "Expected Manifest Sha256"
-          },
-          "seed": {
-            "default": 0,
-            "title": "Seed",
-            "type": "integer"
-          },
-          "tol_rel": {
-            "default": 1e-09,
-            "title": "Tol Rel",
-            "type": "number"
           }
         },
         "required": [
@@ -1240,7 +1139,7 @@
     },
     {
       "name": "emit_test_live",
-      "description": "Stage 5. Run the emitted package live. A register package runs its own regression suite on the bus. An\ninterface package runs each of `operations` (default: identity) once through its own command line with\nthe operator's trusted `binding`, the `parameters` given per operation and the `allow_effects` grants,\nafter the same verified snapshot as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call, as is a package that fails its snapshot check: every such refusal\nreturns transport_open_attempted false, with exit 1, except a register package's binding or grant refusal,\nwhich is fault operator with exit 4. A host failure before the first call (reading back the snapshot) is no\nrefusal: fault host with exit 4, also with transport_open_attempted false. A\npackage whose channel resets the device on open needs the reset grant: without it every operation is refused\nbefore the port opens. The identity operation alone verifies the device but exercises\nnone of its functions, nor does an operation that only waits or repeats identity's requests; name the\noperations to test. The result's manifest_sha256 names the snapshot that ran.\nExit 4 is a transport or host fault, inconclusive; when the host cannot write the live record the results are\nstill returned, with fault host.\n",
+      "description": "Stage 5. Run the emitted package live: each of `operations` (default: identity) runs once in a child process on\nthe installed runtime over the package's data, with the operator's trusted `binding`, the `parameters` given per\noperation and the `allow_effects` grants,\nafter the same check of a copy as emit_check; each run lands in emit/live-N.json. A malformed binding or a\nmissing grant is refused before any call, as is a package the check refuses: every such refusal\nreturns transport_open_attempted false, with exit 1. A host failure before the first call (reading back the\ncopy) is no refusal: fault host with exit 4, also with transport_open_attempted false. A\npackage whose channel resets the device on open needs the reset grant: without it every operation is refused\nbefore the port opens. The identity operation alone verifies the device but exercises\nnone of its functions, nor does an operation that only waits or repeats identity's requests; name the\noperations to test. The result's manifest_sha256 names the package whose copy ran.\nExit 4 is a transport or host fault, inconclusive; when the host cannot write the live record the results are\nstill returned, with fault host.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1410,7 +1309,7 @@
     },
     {
       "name": "firmware_collect",
-      "description": "Verify all sealed binary inputs and structurally validate/freeze output with local evidence.\nDoes not assert semantic truth, enforce an OS sandbox, or require register conversion code.\n",
+      "description": "Verify all sealed binary inputs and structurally validate/freeze output with local evidence.\nDoes not assert semantic truth or enforce an OS sandbox.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1528,30 +1427,6 @@
         ],
         "type": "object",
         "title": "acquire_protocol_specArguments"
-      }
-    },
-    {
-      "name": "probe_observe",
-      "description": "Compare a register model with a captured bus record; no live device access.",
-      "inputSchema": {
-        "type": "object",
-        "required": [
-          "run_dir",
-          "model_dir",
-          "bus"
-        ],
-        "properties": {
-          "run_dir": {
-            "type": "string",
-            "description": "Absolute directory for this run's outputs and evidence."
-          },
-          "model_dir": {
-            "type": "string"
-          },
-          "bus": {
-            "type": "string"
-          }
-        }
       }
     },
     {

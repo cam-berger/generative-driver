@@ -35,6 +35,13 @@ def main(argv=None):
     dashboard.add_argument("run_id")
     dashboard.add_argument("--port", type=int, default=0, help="Local port; default selects an available port")
     dashboard.add_argument("--no-open", action="store_true", help="Print the URL without opening a browser")
+    serving = commands.add_parser("serve", help="Serve the tools of a package over MCP on standard input and output, "
+                                                "through a managed session of its own")
+    serving.add_argument("package", help="Folder of a package in the format interface-package/3")
+    serving.add_argument("--binding", required=True,
+                         help="The connection to the device as JSON; README.md of the package shows its form")
+    serving.add_argument("--allow-effect", action="append", default=[], choices=["write", "actuate", "reset"],
+                         help="Permit calls that have this effect; repeat the flag for each effect. A read needs none")
     run = commands.add_parser("run", help="Start a durable run from a JSON specification")
     run.add_argument("--spec", required=True)
     commands.add_parser("tools", help="List installed low-level developer tools")
@@ -82,6 +89,9 @@ def main(argv=None):
         report = smoke()
         print(json.dumps(report, indent=2))
         return 0 if report["ok"] else 1
+    if args.command == "serve":
+        from .serve import serve
+        return serve(args.package, args.binding, args.allow_effect, home=args.home)
     if args.command == "dashboard":
         from .dashboard import watch
         return watch(args.run_id, home=args.home, port=args.port, open_browser=not args.no_open)

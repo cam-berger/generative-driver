@@ -43,15 +43,37 @@ class ToolkitTests(unittest.TestCase):
     def test_packaged_text_assets_work_under_a_non_utf8_system_locale(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp).resolve()
-            script = """import locale,json,sys
+            # An interpret-interface workspace and an interface package, whose name is not ASCII: every packaged text
+            # asset is read and written under a locale that cannot encode it. The run folder has a name that no path
+            # of a temporary folder holds: the tool refuses a workspace whose path carries the run's name.
+            script = """import locale,json,subprocess,sys
 locale.setlocale(locale.LC_CTYPE, 'C')
-from test_package import PackageTests
-PackageTests().test_register_workspace_and_package_validate_outside_installation()
+from pathlib import Path
+from generative_driver.toolkit import call_tool
+from test_package import example_model, example_replay
+def call(tool, **arguments):
+    result = call_tool(tool, {'run_dir': sys.argv[1], **arguments})
+    assert result.get('_exit', 0) == 0, result
+    return result
+prepared = call('interpret_run', front_end='interpret-interface', inputs={}, workspace_root=sys.argv[2])
+workspace = Path(prepared['workspace'])
+(workspace / 'model.json').write_text(json.dumps(example_model()), encoding='utf-8')
+validated = subprocess.run([sys.executable, '-I', '-S', 'validate.py', '.'], cwd=workspace, capture_output=True,
+                           text=True, timeout=30)
+assert validated.returncode == 0, validated.stdout + validated.stderr
+assert call('model_validate', model_dir=str(workspace))['ok']
+replay = Path(sys.argv[2]) / 'replay.json'
+replay.write_text(json.dumps(example_replay()), encoding='utf-8')
+probed = call('probe_run', model_dir=str(workspace), operation='measure', n=1, replay=str(replay))
+emitted = call('emit_package', model_dir=str(workspace), probe=probed['probe'], name='\u03a9 thermometer')
+manifest = json.loads((Path(emitted['package_dir']) / 'manifest.json').read_text(encoding='utf-8'))
+assert manifest['name'] == '\u03a9 thermometer', manifest
+assert call('emit_check', package_dir=emitted['package_dir'])['ok']
 print(json.dumps({'_exit': 0}))
 """
             env = {**os.environ, "PYTHONPATH": os.pathsep.join((str(Path(__import__("generative_driver").__file__).resolve().parents[1]), str(Path(__file__).resolve().parent)))}
             result = subprocess.run([sys.executable, "-X", "utf8=0", "-c", script,
-                str(root / "run"), str(root / "neutral")], cwd=temp, env=env,
+                str(root / "gd-run-0"), str(root / "neutral")], cwd=temp, env=env,
                 capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             output = json.loads(result.stdout)
@@ -287,6 +309,66 @@ print(json.dumps({'_exit': 0}))
             self.assertTrue(result["interpret_input"].endswith("interpret-input.elf"))
             self.assertTrue(result["artifacts"])
             self.assertTrue(any("default-reset" in c for c in commands))
+
+    def test_01_B6_classification_names_no_front_end_for_an_elf_image_a_datasheet_or_a_bus_scan(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import acquire, core
+
+        class Bus:
+            def __init__(self, url, speed):
+                pass
+
+            def probe(self, address):
+                return address == 0x42
+
+            def close(self):
+                pass
+
+        def datasheet(run_dir, part_hint=None):
+            # What acquire_datasheet returns for a part it resolved; the real tool fetches the vendor's file.
+            return {"available": True, "artifact": "acquire/datasheet.pdf", "pages_dir": "acquire/pages",
+                    "revision": "1.24"}
+
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            controller = {"port": "/dev/cu.fake", "flash_backend": "esp32"}
+            with patch.object(core, "sh", self._esp_fake_sh([], image)):
+                elf = call_tool("acquire_classify", {"run_dir": str(root / "elf"), **controller})
+            with patch.object(core, "sh", self._esp_fake_sh([], image, convert_ok=False)):
+                raw = call_tool("acquire_classify", {"run_dir": str(root / "raw"), **controller})
+            with patch.object(acquire, "acquire_datasheet", datasheet):
+                documented = call_tool("acquire_classify", {"run_dir": str(root / "datasheet"), "part_hint": "bme280"})
+            with patch("generative_driver._toolchain.runner.FtdiI2c", Bus):
+                scanned = call_tool("acquire_classify", {"run_dir": str(root / "scan"),
+                                                         "bus_url": "ftdi://ftdi:232h/1"})
+            scan = json.loads((root / "scan" / "acquire" / "scan.json").read_text(encoding="utf-8"))
+            self.assertEqual(scan["acks"], ["0x42"])
+        fields = {"available", "device_class", "artifact", "artifacts", "rungs", "inputs_for_interpret", "_event",
+                  "_exit"}
+        for description, result, device_class, more in (
+                ("elf image", elf, 1, {"interpret_input"}), ("datasheet", documented, 2, set()),
+                ("bus scan", scanned, 4, set())):
+            with self.subTest(description=description):
+                self.assertNotIn("front_end", result)
+                self.assertEqual(set(result), fields | more, result)
+                self.assertEqual((result["available"], result["device_class"], result["_exit"]),
+                                 (True, device_class, 0))
+        self.assertTrue(elf["interpret_input"].endswith("interpret-input.elf"))
+        self.assertEqual(elf["inputs_for_interpret"], {"elf": elf["artifact"]})
+        self.assertIn(elf["artifact"], elf["artifacts"])
+        self.assertEqual(documented["inputs_for_interpret"],
+                         {"datasheet.pdf": "acquire/datasheet.pdf", "pages": "acquire/pages"})
+        self.assertEqual((documented["artifact"], documented["artifacts"]),
+                         ("acquire/datasheet.pdf", ["acquire/datasheet.pdf", "acquire/pages"]))
+        self.assertEqual(scanned["inputs_for_interpret"], {"scan": scanned["artifact"]})
+        self.assertEqual(scanned["artifacts"], [scanned["artifact"]])
+        self.assertEqual([(rung["name"], rung["tried"]) for rung in scanned["rungs"]],
+                         [("flash", False), ("datasheet", True), ("selfdescription", True), ("blackbox", True)])
+        # A raw image is schema 2's input, which stays: it still names the front end that reads it.
+        self.assertEqual(raw["front_end"], "interpret-firmware-binary")
+        self.assertEqual(set(raw), fields | {"interpret_input", "front_end"}, raw)
 
     def test_bus_discovery_never_selects_a_default_adapter(self):
         from generative_driver.toolkit import call_tool
@@ -524,6 +606,36 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             self.assertIn("run_dir", entry["inputSchema"]["required"])
         self.assertIsInstance(resources_root(), Path)
         self.assertTrue(resources_root().is_absolute())
+
+    def test_01_B4_the_tool_list_holds_no_register_tool_and_none_of_its_parameters(self):
+        from generative_driver.toolkit import call_tool, list_tools
+        from package_env import package_env
+        from test_package import example_model
+        command = subprocess.run([sys.executable, "-m", "generative_driver", "tools"], capture_output=True, text=True,
+                                 env={**os.environ, **package_env()}, timeout=60)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        removed = {"interpret_run": {"wiring"}, "emit_package": {"wiring"},
+                   "probe_run": {"bus_url", "period_override_ms"}, "model_validate": {"random_files", "seed"},
+                   "emit_check": {"seeds", "seed", "tol_rel"}}
+        for source, listed in (("list_tools()", list_tools()), ("generative-driver tools", json.loads(command.stdout))):
+            with self.subTest(source=source):
+                tools = {tool["name"]: tool for tool in listed}
+                self.assertEqual({"probe_observe", "model_provenance_audit"} & tools.keys(), set())
+                for name, parameters in removed.items():
+                    self.assertEqual(parameters & tools[name]["inputSchema"]["properties"].keys(), set(), name)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for name in ("probe_observe", "model_provenance_audit"):
+                with self.subTest(tool=name):
+                    refused = call_tool(name, {"run_dir": str(root / "run"), "model_dir": str(root / "model")})
+                    self.assertEqual((refused.get("ok"), refused["_exit"], refused.get("error")),
+                                     (False, 1, "Unknown tool: " + name), refused)
+            # A caller that still passes a removed parameter is not refused for it: the tool ignores it.
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(json.dumps(example_model()), encoding="utf-8")
+            checked = call_tool("model_validate", {"run_dir": str(root / "run"), "model_dir": str(model),
+                                                   "random_files": 3, "seed": 7})
+            self.assertEqual((checked.get("ok"), checked["_exit"]), (True, 0), checked)
 
 
 if __name__ == "__main__":

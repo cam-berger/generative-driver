@@ -1,0 +1,51 @@
+{
+  "approvals": [
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "22267fa48e2caf363984ac09476ab2c1cec25e9e18504d981dd302077b116334",
+      "at": "2026-11-20T01:10:09+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "01",
+      "sha256": "e526738ba4a59248db0f448f6e81c2bb283377d78f25f652981b4fd8ae08e445",
+      "at": "2026-11-20T01:44:06+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "02",
+      "sha256": "615aed76e52e9bd3fc09f9f93b597cbcf82bff480d307eedb15c327dc84c4163",
+      "at": "2026-11-20T04:16:55+00:00"
+    },
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "3cc03b2f843d5583d226ac2baba8e64e7336b2ae8bc085fbaa440d6659e1273f",
+      "at": "2026-11-20T12:03:36+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "03",
+      "sha256": "ab866e29ee73bc0ef5fc76bdd133d0c8b77507283c5bd10bfaf7708bded39920",
+      "at": "2026-11-20T14:26:40+00:00"
+    }
+  ],
+  "done": [
+    {
+      "feature": "01",
+      "sha256": "511ac65750fa5954891dba4d46e61c9aeaa3ec2699c1477f990bc3ed8dace779",
+      "at": "2026-11-20T03:06:26+00:00"
+    },
+    {
+      "feature": "02",
+      "sha256": "3d0d165fd3bfb39b8cc5cab15a004920b4b298ffc92edb68f19e80d7469d37e2",
+      "at": "2026-11-20T05:53:37+00:00"
+    },
+    {
+      "feature": "03",
+      "sha256": "c6f76c40529d93384d66a8e720fc808d79124afd0df27f2b422da25baf24da0f",
+      "at": "2026-11-20T17:33:51+00:00"
+    }
+  ]
+}

@@ -1,16 +1,23 @@
 """Scripted controller contracts, without model inference or evaluator qualification."""
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
 from generative_driver.configurator import Controller
+from test_package_data import FILES, emitted, files_of
 from worker_script import write_scripted_worker
 
 
 SIX_STAGES = ('acquire', 'interpret', 'probe', 'ground', 'emit', 'reuse')
+
+
+def a_package(root):
+    """A package the tool emits from an invented model with replayed evidence, under `root`."""
+    return Path(emitted(Path(root).resolve() / 'emitted')[0]['package_dir'])
 
 
 class FreshReuseControllerTests(unittest.TestCase):
@@ -30,6 +37,7 @@ class FreshReuseControllerTests(unittest.TestCase):
         The real generic reuse preparation supplies the emitted package in isolation.
         """
         command = write_scripted_worker(root)
+        source = a_package(root)
         controller = Controller(root / 'home')
         original_prepare = controller._prepare
 
@@ -49,11 +57,7 @@ class FreshReuseControllerTests(unittest.TestCase):
                 return {'ok': False, 'fault': 'model', 'final_evaluation': True, 'evaluator': {'verdict': 'failed'},
                         'reason': 'Scripted fresh mission failed'}
             if stage == 'emit':
-                package = workspace / 'package'
-                package.mkdir()
-                (package / 'model.json').write_bytes((workspace / 'model.json').read_bytes())
-                (package / 'manifest.json').write_text('{"fixture":"scripted package"}')
-                artifacts = [str(package)]
+                artifacts = [shutil.copytree(source, workspace / 'package')]
             else:
                 artifacts = [str(workspace / 'model.json')]
             return {'ok': True, 'artifacts': artifacts,
@@ -87,9 +91,8 @@ class FreshReuseControllerTests(unittest.TestCase):
                 reuse = assignments[-1]
                 self.assertEqual(len(reuse['inputs']), 1)
                 package = Path(next(iter(reuse['inputs'])))
-                self.assertEqual(json.loads((package / 'manifest.json').read_text()),
-                                 {'fixture': 'scripted package'})
-                self.assertEqual({p.name for p in package.iterdir()}, {'model.json', 'manifest.json'})
+                self.assertEqual(json.loads((package / 'manifest.json').read_text())['schema'], 'interface-package/3')
+                self.assertEqual(files_of(package), FILES)
                 self.assertNotEqual(assignments[-2]['workspace'], reuse['workspace'])
             finally:
                 controller.close()
@@ -153,15 +156,14 @@ class FreshReuseControllerTests(unittest.TestCase):
                 self.assertIn('emitted package', prepared['skip'])
                 self.assertNotIn('inputs', prepared)
                 self.assertNotIn('PRIVATE', json.dumps(prepared))
-                package = root / 'package'; package.mkdir()
-                (package / 'manifest.json').write_text('{}')
+                package = a_package(root)
                 evidence = root / 'private-evidence.json'; evidence.write_text('{}')
                 accepted = [{'stage': 'emit', 'artifacts': [
                     {'path': str(p), 'sha256': digest(p)} for p in (package, evidence)]}]
                 prepared = controller._prepare(spec, 'reuse', root, root / 'fresh', accepted)
                 self.assertEqual(len(prepared['inputs']), 1)
                 self.assertTrue((Path(prepared['inputs'][0]) / 'manifest.json').is_file())
-                self.assertEqual(prepared['objective'], 'Manipulate desired functions')
+                self.assertTrue(prepared['objective'].startswith('Manipulate desired functions '), prepared)
                 self.assertNotIn('private-evidence', json.dumps(prepared))
             finally:
                 controller.close()

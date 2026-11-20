@@ -141,7 +141,7 @@ def _evidence_bound(model, operation, parameters, allow_effects, n):
                 per_sample += 512
                 continue
             rx = step['rx']; received = rx['length'] if rx['mode'] == 'exact' else rx.get('max_bytes',0)
-            transmitted = _tx_bound(step['tx'],op['parameters'],'evidence.tx',model['schema'] == 'interface-model/5')
+            transmitted = _tx_bound(step['tx'],op['parameters'],'evidence.tx')
             per_sample += 4 * (transmitted + received) + len(json.dumps(rx,indent=2)) + 1024
             if 'capture' in step:
                 captures[step['capture']] = received

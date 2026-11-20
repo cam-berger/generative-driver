@@ -1,4 +1,4 @@
-# Client interface, version 4
+# Client interface, version 5
 
 A client that brings its own device, firmware and mission asks five things of the tool: start a run on a device it supplies, replace that device, post one final verdict, read the run's records and its frozen driver, and stop or seal a run. This page says what the client sends, what it gets back and when the tool refuses. The module `generative_driver.client_interface` holds the same in code, and its `VERSION` is the number in the title.
 
@@ -132,6 +132,20 @@ driver = frozen_driver(result['accepted_handoffs'])  # {'path': ..., 'sha256': .
 
 `path` is where the service keeps the driver. The client reads the files there, on the same machine. `sha256` is `generative_driver.integrity.digest` of that path.
 
+The frozen driver is a folder of data in the format `interface-package/3`. It holds five files and no code:
+
+| File | What it holds |
+|---|---|
+| `README.md` | The documentation: the device's name, its operations, how to serve the driver, what was tested and what the evidence does not show. |
+| `manifest.json` | The format, the name, the version, the drivers and the SHA-256 of each of the other four files. |
+| `mcp.json` | The MCP side: the tools an agent is served, and an entry for an MCP client. |
+| `drivers/<driver>.json` | The driver of one controller: an interface model in the format `interface-model/7`. |
+| `evidence/<driver>.probe.json` | The probe record that driver wrote. |
+
+`<driver>` is the name of the driver, which the manifest gives in `drivers`. A frozen driver holds one driver. The tool refuses a folder of any other format.
+
+The tool runs a frozen driver with the command `generative-driver serve`, started as a process. `generative-driver serve PACKAGE --binding JSON` checks the folder `PACKAGE` and serves the driver's tools over MCP on its standard input and output, for the device at the binding. [The extension guide](extending-drivers-and-mcp.md#serve-a-package) describes the command.
+
 A run that an earlier version of the tool started on a case is neither resumed nor graded: `resume`, `attach_device` and `record_evaluation` refuse it, and the client starts a new run.
 
 ## Stop or seal a run
@@ -159,7 +173,7 @@ The service keeps its records in its home. The home is the folder `default_home(
 
 A `payload` is JSON text. The rows are what `events` and `result` are made from. The rows of `handoffs` are read in the order they were written, which is SQLite's own `rowid`. The final verdict of a run is the row of `verdicts` whose `id` is the id of the run followed by `:final`.
 
-`runs/<run id>/` in the home is the run's folder, and a client may read every file in it. `supplied/package-events.jsonl` there holds one JSON object on a line for each call a worker made on the driver package, with `actor`, `stage`, `operation`, `revision`, `attempt_id`, `assignment_id`, `package_sha256`, `parameters` and `result`. A line has `mcp` when the call came through a server of the package, and `observation` and `before_observation` when the device offers readings. Every file named `_agent_events.jsonl` under the run's folder is the transcript of one worker. An interpret worker works in a temporary workspace outside the run's folder, which its `stage.assigned` event names as `workspace`.
+`runs/<run id>/` in the home is the run's folder, and a client may read every file in it. `supplied/package-events.jsonl` there holds one JSON object on a line for each call a worker made on the driver package, with `actor`, `stage`, `operation`, `revision`, `attempt_id`, `assignment_id`, `package_sha256`, `parameters`, `result` and `mcp`. Every line has `mcp`, the configurator's record that the call came through the server of the package. A line has `observation` and `before_observation` when the device offers readings. Every file named `_agent_events.jsonl` under the run's folder is the transcript of one worker. An interpret worker works in a temporary workspace outside the run's folder, which its `stage.assigned` event names as `workspace`.
 
 The service makes these folders directly in a run's folder: `supplied`, `work`, `accepted`, `checks`, `preparation`, `tool-calls`, `snapshots`, `replay-candidate`, `kit-analysis`, `interpret-tasks` and `device-first`. A client may add files and folders of its own directly in a run's folder under other names, and the service never changes or removes them.
 
@@ -192,4 +206,4 @@ Any listed module may be imported for where it is installed.
 
 `interface_runtime` is the runtime a driver package runs on. `validate_model` of `interface_runtime.engine` checks a device model without opening a transport.
 
-Nothing else in the tool is part of this interface. The operator clears an uncertain effect through the command line or the MCP server, outside this interface.
+Nothing else in the tool is part of this interface. A managed session, in which the service holds a device for one package outside a run, and the developer tools lie outside this interface: it names `call_tool`, and nothing of which developer tools there are, what one takes or what it gives. The operator clears an uncertain effect through the command line or the MCP server, outside this interface.

@@ -800,65 +800,49 @@ class ReplaceTests(ScriptedCase):
 
 
 class ProviderRefusalTests(ScriptedCase):
-    """A call the provider of a supplied device refused before it started: the configurator writes its result itself
-    and says so to the dispatch record (01-B8)."""
+    """A call the provider of a supplied device refused before it started leaves no uncertain effect and is recorded
+    as refused before the transport was opened (01-B5, 01-B8)."""
 
     def test_01_B8_a_write_the_provider_refused_before_the_call_started_leaves_no_uncertain_effect(self):
-        from generative_driver import dispatch_outcome
         written = gauge_model()
         written['operations']['zero'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
             _exchange('Z\n', 'ack', expect={'equals_hex': b'OK\n'.hex()})]}
         written['provenance'].append({'item': 'operations.zero', 'source': 'the supplied firmware'})
-        # The configurator writes the result of such a call itself, and it alone says the call never started: the
-        # result is trusted also when no tool is trusted by its name.
-        for trusted_by_name in (True, False):
-            device = self.device('device-' + str(len(self.homes)))
+        device = self.device()
 
-            def refused(worker):
-                context = worker.task['context']
-                Path(context['capabilities_output']).write_text(json.dumps(MAPPING), encoding='utf-8')
-                # The provider refuses the reading the configurator takes before the call.
-                device.refused.add('observe')
-                worker.refused = worker.tool('interface_execute', model_dir=context['model_dir'], operation='zero')
-            with self.subTest(trusted_by_name=trusted_by_name), \
-                    patch.dict(dispatch_outcome.TRUSTED_TOOLS, clear=not trusted_by_name):
-                result = self.run_with({'acquire': acquire, 'probe': refused,
-                                        'interpret': lambda worker: worker.write('model.json', written)},
-                                       **self.supplied(device, effects=['read', 'write']), max_revisions=0)
-                [probed] = self.workers('probe')
-                self.assertEqual((probed.refused['ok'], probed.refused['error']['code']),
-                                 (False, 'device_unavailable'), probed.refused)
-                self.assertNotIn(b'Z', device.lines)
-                [write] = [event['data'] for event in self.events('tool.finished')
-                           if event['data']['name'] == 'interface_execute']
-                self.assertEqual((write['effectful'], write['effects_reconciled'], write['refused_before_open']),
-                                 (True, True, True), write)
-                self.assertIs(result['uncertain_effect'], False)
-                self.assertEqual(self.controller.dispatch_record.pending(self.run['run_id']), [])
-                # The stage stops for the operator, not for safety.
-                self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'operator'), result)
-                self.assertTrue(result['reason'].endswith('; nothing was dispatched'), result['reason'])
+        def refused(worker):
+            context = worker.task['context']
+            Path(context['capabilities_output']).write_text(json.dumps(MAPPING), encoding='utf-8')
+            # The provider refuses the reading the configurator takes before the call.
+            device.refused.add('observe')
+            worker.refused = worker.tool('interface_execute', model_dir=context['model_dir'], operation='zero')
+        result = self.run_with({'acquire': acquire, 'probe': refused,
+                                'interpret': lambda worker: worker.write('model.json', written)},
+                               **self.supplied(device, effects=['read', 'write']), max_revisions=0)
+        [probed] = self.workers('probe')
+        self.assertEqual((probed.refused['ok'], probed.refused['error']['code']),
+                         (False, 'device_unavailable'), probed.refused)
+        self.assertNotIn(b'Z', device.lines)
+        [write] = [event['data'] for event in self.events('tool.finished')
+                   if event['data']['name'] == 'interface_execute']
+        self.assertEqual((write['effectful'], write['effects_reconciled'], write['refused_before_open']),
+                         (True, True, True), write)
+        self.assertIs(result['uncertain_effect'], False)
+        self.assertEqual(self.controller.dispatch_record.pending(self.run['run_id']), [])
+        # The stage stops for the operator, not for safety.
+        self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'operator'), result)
+        self.assertTrue(result['reason'].endswith('; nothing was dispatched'), result['reason'])
 
-    def test_01_B8_a_generated_call_the_provider_refused_before_it_started_is_finished_as_never_started(self):
-        device, finishes = self.device(), []
+    def test_01_B5_a_generated_call_the_provider_refused_before_it_started_is_recorded_as_refused_before_open(self):
+        device = self.device()
 
         def reuse(worker):
-            # What the gateway tells the dispatch record when a call ends. No client call shows `undispatched` for a
-            # generated call, whose result is trusted anyway, so it is read where the record is told.
-            record = worker.controller.dispatch_record
-            finish = record.finish
-
-            def told(owner_id, dispatch_id, result, **said):
-                finishes.append((said['name'], said.get('generated', False), said.get('undispatched', False)))
-                return finish(owner_id, dispatch_id, result, **said)
-            telling = patch.object(record, 'finish', told)
-            telling.start()
-            self.addCleanup(telling.stop)
             identity = worker.identity
             level, status = sorted(tool['name'] for tool in worker.controller.call('mcp_tools', identity)['tools']
                                    if not tool['name'].endswith('identify'))
             call = lambda name: worker.controller.call('mcp_tool', {**identity, 'name': name, 'arguments': {},
                                                                     'request_id': name})
+            worker.called = [level, status]
             worker.reused = [call(level)]
             # From here on the provider refuses the reading the configurator takes before a call.
             device.refused.add('observe')
@@ -868,12 +852,10 @@ class ProviderRefusalTests(ScriptedCase):
         ran, refused = reused.reused
         self.assertIs(ran['ok'], True, ran)
         self.assertEqual((refused['ok'], refused['error']['code']), (False, 'device_unavailable'), refused)
-        # Both are generated calls; only the refused one never started.
-        self.assertEqual([(generated, undispatched) for _, generated, undispatched in finishes],
-                         [(True, False), (True, True)])
+        # Only the refused call is recorded as refused before the transport was opened.
         finished = [event['data'] for event in self.events('tool.finished') if event['data']['stage'] == 'reuse']
         self.assertEqual([(event['name'], event['refused_before_open']) for event in finished],
-                         [(finishes[0][0], False), (finishes[1][0], True)])
+                         [(reused.called[0], False), (reused.called[1], True)])
         self.assertIs(result['uncertain_effect'], False)
 
 

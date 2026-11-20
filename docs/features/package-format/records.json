@@ -23,6 +23,12 @@
       "feature": null,
       "sha256": "3cc03b2f843d5583d226ac2baba8e64e7336b2ae8bc085fbaa440d6659e1273f",
       "at": "2026-11-20T12:03:36+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "03",
+      "sha256": "ab866e29ee73bc0ef5fc76bdd133d0c8b77507283c5bd10bfaf7708bded39920",
+      "at": "2026-11-20T14:26:40+00:00"
     }
   ],
   "done": [

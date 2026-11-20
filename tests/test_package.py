@@ -381,7 +381,7 @@ class ToolFaultTests(unittest.TestCase):
         package."""
         import interface_runtime.package as runtime_package
         from generative_driver.toolkit import call_tool
-        from generative_driver.configurator import _declared_refusal, _host_fault, _live_outcome, digest
+        from generative_driver.dispatch_outcome import read
         seen = []
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding:
             root = Path(temp).resolve()
@@ -401,15 +401,14 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual((checked["_exit"], checked["ok"], checked["fault"], checked["replay_status"]),
                              (4, False, "host", "not_run"), checked)
             self.assertTrue(checked["error"].startswith("PermissionError: "), checked)
-            self.assertTrue(_host_fault(checked))
+            self.assertTrue(read("emit_check", checked).host_fault)
             self.assertEqual((live["_exit"], live["ok"], live["fault"], live["transport_open_attempted"]),
                              (4, False, "host", False), live)
             self.assertNotIn("results", live)
             self.assertTrue(live["error"].startswith("PermissionError: "), live)
-            self.assertFalse(_declared_refusal(live))
-            event = {"name": "emit_test_live", "connected": True, "ok": False, "result": live, "dispatch_id": "7",
-                     "argument_sha256": {"package_dir": digest(package)}}
-            self.assertEqual(_live_outcome(event), ("inconclusive", "host fault (PermissionError)"))
+            reading = read("emit_test_live", live)
+            self.assertFalse(reading.refused_before_open)
+            self.assertEqual((reading.outcome, reading.detail), ("inconclusive", "host fault (PermissionError)"))
             self.assertEqual(seen, [])
             # The same package on a host that reads its copy back.
             passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": str(package)})

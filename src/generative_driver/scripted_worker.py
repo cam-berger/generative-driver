@@ -83,7 +83,8 @@ class _Gateway:
         self.record['called_tools'].append(name)
         reply = await self.session.call_tool(name, arguments)
         result = json.loads(reply.content[0].text)
-        if result.get('_exit', 0) != 0 or not result.get('ok', result.get('available', True)):
+        from .dispatch_outcome import read
+        if not read(name, result).succeeded:
             error = result.get('error')
             raise _StepFailed(name + ' failed: ' + str(result.get('error_message') or result.get('reason')
                                                       or (error.get('message') if isinstance(error, dict) else error)))

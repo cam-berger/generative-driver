@@ -25,8 +25,8 @@ env:
   GHIDRA_URL: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.2_build/ghidra_12.2_PUBLIC_20261016.zip
   GHIDRA_SHA256: 2c2cd776db3c1f6a097ba418922378ac3649cadd5e844a6f5f088ae628a7be67
   JDK_RELEASE: https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.5.1%2B2
-  # Espressif's GCC 14.2.0 for Xtensa, the release the export gate was first observed with.
-  XTENSA_RELEASE: https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20260121
+  # Espressif's GCC 16.2.0 for Xtensa. The export gate was first observed with GCC 14.2.0.
+  XTENSA_RELEASE: https://github.com/espressif/crosstool-NG/releases/download/esp-16.2.0_20261109
   # The Gradle version of the release's own support/gradle wrapper, used to build its macOS natives.
   GRADLE_RELEASE: https://services.gradle.org/distributions
 jobs:
@@ -41,15 +41,15 @@ jobs:
           - os: macos-26
             jdk: OpenJDK25U-jdk_aarch64_mac_hotspot_25.0.5.1_2.tar.gz
             jdk_sha256: 248353ea41be39d5d2c1c67c7ce0ae4d1668966aacd0c5308464bc1be42f677b
-            xtensa: xtensa-esp-elf-14.2.0_20260121-aarch64-apple-darwin.tar.xz
-            xtensa_sha256: a450db49cea5f191a96345c5b7f0e1a9671a9cf132fecfd9fb1faf6c2a30637e
+            xtensa: xtensa-esp-elf-16.2.0_20261109-aarch64-apple-darwin.tar.xz
+            xtensa_sha256: 0da96eb709a16cb5fd09bbf4ef573b27c4896a8a626208bfccdb267b6833756a
             gradle: gradle-9.8.0-bin.zip
             gradle_sha256: bafd5ce9cfaea0fbccfdc8439a1ac42fbd4cd9c89dc9a988228d8a2639a58e6c
           - os: windows-2025
             jdk: OpenJDK25U-jdk_x64_windows_hotspot_25.0.5.1_2.zip
             jdk_sha256: 849d380ab0a64d9098e7d3a2de28beb73841c3b255c8284f019ccd8748c5eb5b
-            xtensa: xtensa-esp-elf-14.2.0_20260121-x86_64-w64-mingw32.zip
-            xtensa_sha256: 82cbe0353c2e7c96acc8755c854aaa2d93d346c6a378fc692e60b3912c560108
+            xtensa: xtensa-esp-elf-16.2.0_20261109-x86_64-w64-mingw32.zip
+            xtensa_sha256: 8de83704fdcf58189e337cbc63a1167a3c3cc078e193efa7fdc113bdf000c337
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:

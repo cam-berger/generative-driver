@@ -2,7 +2,8 @@
 dispatch-outcome Run, 01-B5 to 01-B16).
 
 The record runs on a temporary SQLite database that holds only what it reads, with a lock and an event writer of the
-test. No configurator, no worker, no model run and no device.
+test. Results are written as the tools and the runtime write them, by the helpers of the outcome reading's tests. No
+configurator, no worker, no model run and no device.
 """
 import itertools
 import json
@@ -14,6 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from generative_driver.dispatch_record import DispatchRecord, marks
+from test_dispatch_outcome import OTHER, before_contact, driver_result, executed, host_before_contact, interface_result
 
 # What the record reads, the journal the test's writer keeps, and one table of a caller's own for the hooks.
 SCHEMA = '''
@@ -40,6 +42,13 @@ STORED_BEFORE = '''
 RUN = {'kind': 'run', 'name': 'interface_execute', 'actor': 'worker', 'stage': 'probe', 'assignment_id': 'probe-1'}
 SESSION = {'kind': 'session', 'name': 'measure', 'actor': 'client'}
 OWNERS = (('run', RUN, 'runs'), ('session', SESSION, 'device_sessions'))
+# A generated tool of a run: the configurator itself runs the package's operation, under a name of the package.
+GENERATED = {**RUN, 'name': 'set_level', 'stage': 'reuse', 'assignment_id': 'reuse-1'}
+# Results of a worker's `interface_execute`, by what became of the requested command.
+SUCCEEDED = executed(interface_result())
+NEVER_OPENED = executed(interface_result(ok=False, steps=(), opened=False, identity=False, fault='operator',
+                                         code='effect'))
+FAILED_AFTER_SENDING = executed(interface_result(ok=False))
 STATEMENT = {'source': 'operator at the bench', 'message': 'The earlier worker has stopped and the output reads off',
              'prior_execution_stopped': True}
 INCOMPLETE_STATEMENT = ('Resolving an uncertain effect requires effect_resolution "confirmed_safe" and an observation '
@@ -537,6 +546,227 @@ class ReplacementTests(RecordCase):
         self.assertEqual(self.state('run', 'run'), ([write], True))
 
 
+class FinishCase(RecordCase):
+    def finish(self, owner_id, call, dispatch, result, **more):
+        """Finish a dispatch as its caller does, with the fields of its start."""
+        return self.record.finish(owner_id, dispatch, result, **call, **more)
+
+    def finished(self, owner_id):
+        """The payload of the owner's one `tool.finished`."""
+        [(_, payload)] = self.events(owner_id, 'tool.finished')
+        return payload
+
+
+class FinishTests(FinishCase):
+    def test_01_B5_a_dispatch_of_a_run_that_returns_a_result_is_recorded_as_finished_with_its_fields_and_facts(self):
+        result = executed(interface_result(operation='read_level', steps=(('identify', 'exchange'),
+                                                                          ('read_level', 'exchange'))))
+        artifacts = {'/runs/run/probe/interface-1.json': 'c' * 64}
+        dispatch = self.record.begin('run', **RUN, effects=['read'])
+        event = self.finish('run', RUN, dispatch, result, facts={'connected': True}, artifacts=artifacts)
+        [(stored, payload)] = self.events('run', 'tool.finished')
+        self.assertEqual(event, stored)
+        self.assertEqual(payload, {
+            'stage': 'probe', 'assignment_id': 'probe-1', 'name': 'interface_execute', 'actor': 'worker',
+            'effectful': False, 'connected': True, 'ok': True, 'result': result, 'artifacts': artifacts,
+            'dispatch_id': str(dispatch), 'effects_reconciled': False, 'refused_before_open': False})
+        self.assertEqual(self.journal(), [('run', 'tool.started'), ('run', 'tool.finished')])
+
+    def test_01_B5_a_finished_dispatch_of_a_session_is_recorded_with_no_stage_no_assignment_and_no_artifact(self):
+        result = driver_result(ok=False, dispatched=False, opened=False, fault='operator', code='effect')
+        dispatch = self.record.begin('session', **SESSION, effects=['read'])
+        event = self.finish('session', SESSION, dispatch, result, generated=True)
+        [(stored, payload)] = self.events('session', 'tool.finished')
+        self.assertEqual(event, stored)
+        self.assertEqual(payload, {
+            'stage': None, 'assignment_id': None, 'name': 'measure', 'actor': 'client', 'effectful': False,
+            'ok': False, 'result': result, 'artifacts': {}, 'dispatch_id': str(dispatch),
+            'effects_reconciled': False, 'refused_before_open': True})
+
+    def test_01_B5_a_fact_never_replaces_a_field_of_the_finished_dispatch(self):
+        result = executed(interface_result())
+        dispatch = self.record.begin('run', **RUN, effects=['read'])
+        self.finish('run', RUN, dispatch, result, facts={
+            'ok': False, 'result': {}, 'dispatch_id': '0', 'effects_reconciled': True, 'operation': 'measure'})
+        payload = self.finished('run')
+        self.assertEqual((payload['ok'], payload['result'], payload['dispatch_id'], payload['effects_reconciled'],
+                          payload['operation']), (True, result, str(dispatch), False, 'measure'))
+
+    def test_01_B5_a_result_that_is_no_object_is_recorded_as_it_is_and_as_failed(self):
+        dispatch = self.record.begin('run', **RUN, effects=['read'])
+        self.finish('run', RUN, dispatch, None)
+        payload = self.finished('run')
+        self.assertEqual((payload['ok'], payload['result'], payload['refused_before_open']), (False, None, False))
+
+    def test_01_B5_what_the_caller_writes_after_the_finish_commits_with_it(self):
+        seen = []
+
+        def after_finish(db, event_id):
+            seen.append(event_id)
+            db.execute('INSERT INTO invocations VALUES(?,?)', (event_id, 'request-1'))
+        dispatch = self.record.begin('session', **SESSION, effects=['read'])
+        event = self.finish('session', SESSION, dispatch, driver_result(), generated=True, after_finish=after_finish)
+        self.assertEqual(seen, [event])
+        self.assertEqual(self.rows('SELECT dispatch_id,request_id FROM invocations'), [(event, 'request-1')])
+
+    def test_01_B5_a_finish_whose_caller_fails_after_it_records_nothing(self):
+        def after_finish(db, event_id):
+            db.execute('INSERT INTO invocations VALUES(?,?)', (event_id, 'request-1'))
+            raise RuntimeError('scripted failure of the caller')
+        dispatch = self.record.begin('session', **SESSION, effects=['read'])
+        with self.assertRaisesRegex(RuntimeError, 'scripted failure of the caller'):
+            self.finish('session', SESSION, dispatch, driver_result(), generated=True, after_finish=after_finish)
+        self.assertEqual(self.journal(), [('session', 'tool.started')])
+        self.assertEqual(self.rows('SELECT * FROM invocations'), [])
+
+
+class ClearTests(FinishCase):
+    """A marked dispatch that returns a result: the reading of the result decides whether its effect stays
+    uncertain."""
+
+    def marked(self, owner_id, call, result, **more):
+        """Whether the result cleared a write of the owner, after the record's state and its event were compared."""
+        write = self.record.begin(owner_id, **call, effects=['write'])
+        self.finish(owner_id, call, write, result, **more)
+        payload = self.finished(owner_id)
+        cleared = payload['effects_reconciled']
+        self.assertIs(payload['effectful'], True)
+        self.assertEqual(self.state(owner_id, call['kind']), ([], False) if cleared else ([write], True))
+        return cleared
+
+    def at_reuse(self):
+        """Move the run to fresh reuse, where a generated tool is called."""
+        self.change("UPDATE runs SET stage='reuse'")
+        self.change("UPDATE assignments SET id='reuse-1'")
+
+    def test_01_B7_a_marked_dispatch_of_a_worker_stays_uncertain_only_when_its_command_may_have_gone_out(self):
+        for label, result, cleared in (
+                ('it succeeded', SUCCEEDED, True),
+                ('its transport was never opened', NEVER_OPENED, True),
+                ('its identity read failed', executed(interface_result(
+                    ok=False, steps=(('identify', 'exchange'),), identity=False)), True),
+                ('it failed after its step went out', FAILED_AFTER_SENDING, False),
+                ('its record passed while the call did not succeed', executed(interface_result(), _exit=1), False)):
+            with self.subTest(result=label):
+                self.fresh()
+                self.assertIs(self.marked('run', RUN, result), cleared)
+                self.assertIs(self.finished('run')['ok'], result is SUCCEEDED)
+
+    def test_01_B7_a_marked_dispatch_the_configurator_ran_itself_is_read_as_a_generated_one(self):
+        guard_refused = driver_result(ok=False, dispatched=False, code='precondition_failed', fault='operator')
+        unsaid = driver_result(ok=False)
+        del unsaid['requested_command_dispatched']
+        for label, result, cleared in (('it succeeded', driver_result(), True),
+                                       ('a guard refused the call', guard_refused, True),
+                                       ('it sent its command and failed', driver_result(ok=False), False),
+                                       ('it does not say whether it sent', unsaid, False)):
+            with self.subTest(owner='session', result=label):
+                self.fresh()
+                self.assertIs(self.marked('session', SESSION, result, generated=True), cleared)
+            with self.subTest(owner='run', result=label):
+                self.fresh()
+                self.at_reuse()
+                self.assertIs(self.marked('run', GENERATED, result, generated=True), cleared)
+
+    def test_01_B7_a_result_that_says_nothing_was_sent_clears_only_when_the_caller_says_it_ran_the_operation(self):
+        self.at_reuse()
+        self.assertIs(self.marked('run', GENERATED, driver_result(ok=False, dispatched=False)), False)
+
+    def test_01_B8_a_trusted_result_without_execution_records_clears_when_it_stopped_before_its_first_device_call(self):
+        for label, result, cleared, refused in (
+                ('a refusal before contact', before_contact(), True, True),
+                ('a host fault before contact', host_before_contact(), True, False),
+                ('a toolchain error', {'ok': False, 'error': 'OSError: disk full', '_exit': 1}, False, False),
+                ('no object', None, False, False)):
+            with self.subTest(result=label):
+                self.fresh()
+                self.assertIs(self.marked('run', RUN, result), cleared)
+                self.assertIs(self.finished('run')['refused_before_open'], refused)
+
+    def test_01_B8_a_result_that_is_not_trusted_clears_only_by_success(self):
+        other = {**RUN, 'name': OTHER}
+        for label, result, cleared in (('it succeeded', SUCCEEDED, True),
+                                       ('a refusal before contact', before_contact(), False),
+                                       ('its transport was never opened', NEVER_OPENED, False)):
+            with self.subTest(result=label):
+                self.fresh()
+                self.assertIs(self.marked('run', other, result), cleared)
+                self.assertIs(self.finished('run')['refused_before_open'], False)
+
+    def test_01_B8_a_call_the_configurator_says_never_started_clears_whatever_its_tool(self):
+        unavailable = {'schema': 'interface-result/1', 'ok': False, 'transport_open_attempted': False, 'outputs': {},
+                       'units': {}, 'transcript': [], 'error': {
+                           'fault': 'operator', 'code': 'device_unavailable',
+                           'message': 'The device provider is unavailable; nothing was dispatched: gone'}}
+        other = {**RUN, 'name': OTHER}
+        self.assertIs(self.marked('run', other, unavailable), False)
+        self.fresh()
+        self.assertIs(self.marked('run', other, unavailable, undispatched=True), True)
+        self.assertIs(self.finished('run')['refused_before_open'], True)
+
+    def test_01_B9_a_write_that_succeeded_is_cleared_also_when_its_owner_was_cancelled_while_it_ran(self):
+        for owner_id, call, table in OWNERS:
+            for label, result, more, cleared in (
+                    ('it succeeded', SUCCEEDED if owner_id == 'run' else driver_result(), {}, True),
+                    ('its transport was never opened', NEVER_OPENED, {}, True),
+                    ('it failed after its step went out', FAILED_AFTER_SENDING, {}, False)):
+                with self.subTest(owner=owner_id, result=label):
+                    self.fresh()
+                    write = self.record.begin(owner_id, **call, effects=['write'])
+                    self.change(f"UPDATE {table} SET cancelled=1,status='cancelled'")
+                    self.finish(owner_id, call, write, result, generated=owner_id == 'session')
+                    self.assertIs(self.finished(owner_id)['effects_reconciled'], cleared)
+                    self.assertEqual(self.state(owner_id, call['kind']), ([], False) if cleared else ([write], True))
+
+    def test_01_B6_a_read_that_fails_after_its_step_went_out_leaves_no_uncertain_effect(self):
+        for owner_id, call, _ in OWNERS:
+            with self.subTest(owner=owner_id):
+                self.fresh()
+                read = self.record.begin(owner_id, **call, effects=['read', 'reset'])
+                self.finish(owner_id, call, read, FAILED_AFTER_SENDING)
+                payload = self.finished(owner_id)
+                self.assertEqual((payload['effectful'], payload['effects_reconciled']), (False, False))
+                self.assertEqual(self.state(owner_id, call['kind']), ([], False))
+
+    def test_01_B6_the_end_of_a_read_leaves_the_pending_effect_of_another_dispatch(self):
+        write = self.record.begin('run', **RUN, effects=['write'])
+        self.record.abandon('run', write, name='interface_execute', actor='worker', reason='timeout', stage='probe',
+                            assignment_id='probe-1')
+        read = self.record.begin('run', **RUN, effects=['read'])
+        self.finish('run', RUN, read, SUCCEEDED)
+        payload = self.finished('run')
+        self.assertEqual((payload['effectful'], payload['effects_reconciled']), (False, False))
+        self.assertEqual(self.state('run', 'run'), ([write], True))
+
+    def test_01_B7_a_cleared_dispatch_leaves_its_owner_uncertain_while_another_pending_effect_remains(self):
+        self.fresh(STORED_BEFORE)
+        self.finish('run', RUN, 9, SUCCEEDED)
+        self.assertEqual(self.state('run', 'run'), ([7], True))
+        self.assertEqual(self.state('session', 'session'), ([8], True))
+        self.finish('run', RUN, 7, SUCCEEDED)
+        self.assertEqual(self.state('run', 'run'), ([], False))
+        self.assertEqual(self.state('session', 'session'), ([8], True))
+        self.assertEqual([payload['effects_reconciled'] for _, payload in self.events('run', 'tool.finished')],
+                         [True, True])
+
+    def test_01_B16_the_end_of_a_read_leaves_a_flag_that_has_no_pending_effect(self):
+        for owner_id, call, table in OWNERS:
+            with self.subTest(owner=owner_id):
+                self.fresh()
+                self.change(f'UPDATE {table} SET uncertain=1')
+                read = self.record.begin(owner_id, **call, effects=['read'])
+                self.finish(owner_id, call, read, SUCCEEDED)
+                self.assertEqual(self.state(owner_id, call['kind']), ([], True))
+
+    def test_01_B7_a_cleared_dispatch_whose_caller_fails_after_the_finish_stays_pending(self):
+        def after_finish(db, event_id):
+            raise RuntimeError('scripted failure of the caller')
+        write = self.record.begin('session', **SESSION, effects=['write'])
+        with self.assertRaisesRegex(RuntimeError, 'scripted failure of the caller'):
+            self.finish('session', SESSION, write, driver_result(), generated=True, after_finish=after_finish)
+        self.assertEqual(self.state('session', 'session'), ([write], True))
+
+
 class LockTests(RecordCase):
     """The record takes the configurator's lock for what it does in a transaction of its own, and none inside the
     caller's transaction."""
@@ -569,6 +799,11 @@ class LockTests(RecordCase):
     def test_01_B11_a_dispatch_starts_only_under_the_configurators_lock(self):
         self.assertFalse(self.returns_while_locked(lambda: self.record.begin('run', **RUN, effects=['write'])))
         self.assertEqual(self.journal(), [('run', 'tool.started')])
+
+    def test_01_B5_a_dispatch_finishes_only_under_the_configurators_lock(self):
+        write = self.record.begin('run', **RUN, effects=['write'])
+        self.assertFalse(self.returns_while_locked(lambda: self.record.finish('run', write, SUCCEEDED, **RUN)))
+        self.assertEqual(self.state('run', 'run'), ([], False))
 
     def test_01_B14_in_a_transaction_of_its_own_the_record_waits_for_the_lock(self):
         for method, call in (

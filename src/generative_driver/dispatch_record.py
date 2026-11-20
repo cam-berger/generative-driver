@@ -7,6 +7,8 @@ of a run and device sessions all record theirs here, so the rule for what leaves
 import json
 from contextlib import contextmanager
 
+from . import dispatch_outcome
+
 _MARKING = frozenset({'write', 'actuate'})
 # For each kind of owner: the table that holds it, the status in which it is active, and the refusal of a dispatch
 # for one that is not.
@@ -72,6 +74,36 @@ class DispatchRecord:
                 after_start(db, dispatch_id)
             return dispatch_id
 
+    def finish(self, owner_id, dispatch_id, result, *, kind, name, actor, generated=False, undispatched=False,
+               stage=None, assignment_id=None, facts=None, artifacts=None, after_finish=None):
+        """The id of the event `tool.finished`, which records the dispatch with the `result` its tool returned. `facts`
+        are the caller's own fields of the event; a field of the record wins over a fact of the same name.
+
+        The outcome reading of the result decides what becomes of a marked dispatch. `generated` says the
+        configurator itself ran an operation of a package, and `undispatched` that it wrote the result itself because
+        the call never started. A marked dispatch the reading clears loses its pending effect, and its owner stays
+        uncertain only while it has another one; this holds also when the owner was cancelled while the call ran. Any
+        other dispatch leaves the pending effects and the flag as they are.
+
+        `after_finish(db, event_id)` writes what the caller keeps with the finish, inside the record's lock and
+        transaction; if it raises, the finish is not recorded either."""
+        reading = dispatch_outcome.read(name, result, generated=generated, undispatched=undispatched)
+        with self._lock, self._connect() as db:
+            marked = _marked(db, dispatch_id)
+            cleared = marked and not reading.leaves_uncertain
+            if cleared:
+                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?', (dispatch_id,))
+                db.execute(f'UPDATE {_OWNERS[kind][0]} SET uncertain=EXISTS(SELECT 1 FROM pending_effects '
+                           'WHERE run_id=?) WHERE id=?', (owner_id, owner_id))
+            event_id = self._write_event(owner_id, 'tool.finished', {
+                **(facts or {}), 'stage': stage, 'assignment_id': assignment_id, 'name': name, 'actor': actor,
+                'effectful': marked, 'ok': reading.succeeded, 'result': result, 'artifacts': artifacts or {},
+                'dispatch_id': str(dispatch_id), 'effects_reconciled': cleared,
+                'refused_before_open': reading.refused_before_open}, db)
+            if after_finish is not None:
+                after_finish(db, event_id)
+            return event_id
+
     def abandon(self, owner_id, dispatch_id, *, name, actor, reason, stage=None, assignment_id=None, error=None):
         """Whether the dispatch has a pending effect, once it is recorded as `tool.abandoned`: it ended without a
         result. Nothing says what such a call did, so its pending effect stays. `reason` says what ended the call
@@ -80,8 +112,7 @@ class DispatchRecord:
             self._write_event(owner_id, 'tool.abandoned', {
                 'stage': stage, 'assignment_id': assignment_id, 'name': name, 'dispatch_id': str(dispatch_id),
                 'reason': reason, **({'type': error[0], 'message': error[1]} if error else {}), 'actor': actor}, db)
-            return db.execute('SELECT 1 FROM pending_effects WHERE dispatch_id=?',
-                              (dispatch_id,)).fetchone() is not None
+            return _marked(db, dispatch_id)
 
     def uncertain(self, owner_id, *, kind, db=None):
         """Whether the owner is uncertain: its flag is set. An owner that is not stored is not uncertain."""
@@ -132,6 +163,11 @@ class DispatchRecord:
         else:
             with self._lock, self._connect() as own:
                 yield own
+
+
+def _marked(db, dispatch_id):
+    """Whether the dispatch was marked: it has a pending effect. Nothing resolves one while its call is in flight."""
+    return db.execute('SELECT 1 FROM pending_effects WHERE dispatch_id=?', (dispatch_id,)).fetchone() is not None
 
 
 def _current(db, run_id, stage, assignment_id):

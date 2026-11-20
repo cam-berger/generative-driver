@@ -1,0 +1,12 @@
+- 01: `STANDARDS.md` line 26 says a worktree links `.venv` to the main checkout's environment. This Run's worktree has its own, made with `uv sync --extra dev`.
+- 01: `docs/support.md` lines 14 and 21 still describe "Model 1" and a register model's write steps, and `docs/design.md` lines 80 to 87 still describe register probe records and the seeded check. Feature 05 rewrites the documents.
+- 01: `.scratch/open-notes/kit-fixes-noticed.md` lines 11 and 28 cite `random_files` in `_toolchain/interpret.py` and `resources/tools/model_exec.py:56`, which no longer exist.
+- 01: `_toolchain/interface.py`: `fault_class` has no caller and `TRANSPORT_CODES` is imported without use. `_toolchain/interpret.py` imports `shlex` without use. All three were so before this Feature.
+- 01: `model_qualify` in `_toolchain/interface.py` has no `@core.tool` decorator, unlike its neighbours, so its calls leave no event.
+- 01: `skills/interpret-interface/SKILL.md` line 8, `skills/interpret-selfdescribing/SKILL.md` line 8 and `_toolchain/firmware.py` line 290 still speak of a "conversion module".
+- 01: In `tools.json`, `acquire_register_sweep` still says "Class 4 only" and `probe_diff` still says "For schemas 3-6". Nothing interprets a sweep now. The Spec leaves the acquire side as it is.
+- 01: `tests/test_configurator.py` lines 278 and 1258 still write scripted models with the schema `scripted-model`. No device call reaches them today; one would now be refused at the gateway.
+- 01: `pyftdi` is not installed in this worktree's environment, so `runner.FtdiI2c` and the two acquire tools that open it were exercised only through stand-ins.
+- 01: From the Reviewer: the module doc of `_toolchain/emit.py` says every file of a package is rendered from the model and the probe output, but `emit_package` also copies the driver entry and the runtime. Feature 04 makes the sentence true.
+- 01: From the Reviewer: the test of 01-B6 replaces the whole tool `acquire_datasheet`, not its network call, so it would not notice a change in that tool's result shape.
+- 01: From the Reviewer: not shown on Windows. Everything ran on macOS, with no hosted job.

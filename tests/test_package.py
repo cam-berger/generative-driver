@@ -97,95 +97,6 @@ class PackageTests(unittest.TestCase):
                 for name in [n for n in sys.modules if n == "driver" or n.startswith("driver.")]:
                     sys.modules.pop(name, None)
 
-    def test_register_validation_preserves_supplied_model_bytes_and_inventory(self):
-        from generative_driver.toolkit import call_tool
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            model_dir = root / "model"
-            model_dir.mkdir()
-            model = {"schema": "interface-model/1", "channel": {"type": "i2c", "address_7bit": "0x20"},
-                "identity": {"from": "id", "expect": ["0x42"]},
-                "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                    "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                "conversion": {"module": "convert.py", "outputs": {"value": "count"}}, "safety": {},
-                "provenance": [{"item": "operations.identify"}, {"item": "operations.measure"}]}
-            supplied = {"model.json": json.dumps(model).encode(),
-                        "convert.py": b'def convert(inputs):\n    return {"value": inputs["0x10"][0]}\n'}
-            for name, content in supplied.items():
-                (model_dir / name).write_bytes(content)
-            checked = call_tool("model_validate", {"run_dir": str(root / "run"),
-                "model_dir": str(model_dir), "random_files": 0})
-            self.assertTrue(checked["ok"], checked)
-            self.assertEqual({p.relative_to(model_dir).as_posix(): p.read_bytes()
-                              for p in model_dir.rglob("*") if p.is_file()}, supplied)
-
-    def test_register_workspace_and_package_validate_outside_installation(self):
-        from generative_driver.toolkit import call_tool
-        with tempfile.TemporaryDirectory(prefix="register case ") as temp:
-            root = Path(temp).resolve()
-            def call(tool_name, **arguments):
-                result = call_tool(tool_name, {"run_dir": str(root / "trial"), **arguments})
-                self.assertEqual(result.get("_exit", 0), 0, result)
-                return result
-            prepared = call("interpret_run", front_end="interpret-blackbox", inputs={},
-                            workspace_root=str(root / "neutral"))
-            workspace = Path(prepared["workspace"])
-            model = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
-                "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
-                "identity": {"from": "id", "expect": ["0x42"]},
-                "operations": {"init": [{"op": "reg_write", "reg": "0x01", "bytes": ["0x02"]}],
-                    "identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                    "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
-                "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
-                "provenance": [{"item": "operations." + key, "source": "invented register contract"}
-                               for key in ("init", "identify", "measure")]}
-            (workspace / "model.json").write_text(json.dumps(model))
-            (workspace / "convert.py").write_text('def convert(inputs):\n    return {"value": inputs["0x10"][0] / 2}\n')
-            validated = subprocess.run([sys.executable, "-I", "-S", "validate.py", "."], cwd=workspace,
-                                       capture_output=True, text=True, timeout=30)
-            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
-            self.assertTrue(call("model_validate", model_dir=str(workspace))["ok"])
-            for binding in (None, {"url": "ftdi://selected/1"}):
-                denied_probe = call_tool("probe_run", {"run_dir": str(root / "denied"),
-                    "model_dir": str(workspace), "binding": binding})
-                self.assertEqual(denied_probe["_exit"], 4, denied_probe)
-                self.assertEqual(denied_probe.get("fault"), "operator", denied_probe)
-            probe = root / "register-probe.json"
-            probe.write_text(json.dumps({"address": "0x20", "identity": "0x42", "identity_ok": True,
-                "samples": [{"t_wall": 0, "values": {"value": 17.5}, "raw": "23"}], "evidence_kind": "replay"}))
-            emitted = call("emit_package", model_dir=str(workspace), probe=str(probe), name="Ω register")
-            relocated = root / "moved register package"; shutil.move(emitted["package_dir"], relocated)
-            checked = call("emit_check", package_dir=str(relocated), model_dir=str(workspace), seeds=3)
-            self.assertTrue(checked["ok"], checked)
-            self.assertEqual(checked["values_mismatched"], 0)
-            self.assertEqual(checked["footprint_mismatched"], 0)
-            refused = subprocess.run([sys.executable, "-m", "driver", "measure"], cwd=relocated,
-                                     capture_output=True, text=True, timeout=10)
-            self.assertEqual(refused.returncode, 2, refused.stdout + refused.stderr)
-            self.assertIn("--url", refused.stderr)
-            denied = subprocess.run([sys.executable, "-m", "driver", "--url", "ftdi://selected/1", "--json", "measure"],
-                                    cwd=relocated, capture_output=True, text=True, timeout=10)
-            self.assertNotEqual(denied.returncode, 0)
-            self.assertIn("grant", denied.stdout, denied.stdout + denied.stderr)
-            self.assertNotIn("pyftdi", denied.stdout)
-            for binding in (None, {"url": "ftdi://selected/1"}):
-                refused_live = call_tool("emit_test_live", {"run_dir": str(root / "live-refused"),
-                    "package_dir": str(relocated), "binding": binding})
-                self.assertEqual(refused_live["_exit"], 4, refused_live)
-                self.assertEqual(refused_live.get("fault"), "operator", refused_live)
-                # Refused before the suite ran: nothing reached the device.
-                self.assertIs(refused_live.get("transport_open_attempted"), False, refused_live)
-
-            marker = root / "must-not-run"
-            with (relocated / "driver/device.py").open("a", encoding="utf-8") as stream:
-                stream.write(f"\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n")
-            rejected = call_tool("emit_check", {"run_dir": str(root / "check-tampered"),
-                "package_dir": str(relocated), "model_dir": str(workspace), "seeds": 1})
-            self.assertFalse(marker.exists(), "A changed package must be rejected before import")
-            self.assertFalse(rejected["ok"], rejected)
-            self.assertFalse(rejected.get("integrity_ok", True), rejected)
-
     def test_emitted_package_relocates_and_replays_without_source_checkout(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory(prefix="package with spaces ") as temp:
@@ -309,26 +220,6 @@ class ToolFaultTests(unittest.TestCase):
             self.assertEqual(seen, [])
             self.assertFalse((run / "emit").exists())
 
-    def test_a_register_live_test_refuses_the_operators_binding_or_grants_as_its_contract_says(self):
-        """A register package's live suite refuses a binding that is no FTDI url, or a write without its grant, before
-        the bus opens: fault operator with exit 4, not exit 1 as an interface package's refusals are."""
-        from generative_driver.toolkit import call_tool, list_tools
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            package = root / "register-package"; (package / "driver").mkdir(parents=True)
-            (package / "manifest.json").write_text(json.dumps({"name": "register"}))
-            (package / "driver" / "model.json").write_text(json.dumps({"schema": "interface-model/1",
-                                                                        "operations": {"init": [{"op": "reg_write"}]}}))
-            for name, binding in (("a binding that is no FTDI url", {"host": "127.0.0.1", "port": 9}),
-                                  ("a write without its grant", {"url": "ftdi://ftdi:232h/1"})):
-                with self.subTest(refusal=name):
-                    live = call_tool("emit_test_live", {"run_dir": str(root / "run"), "package_dir": str(package), "binding": binding})
-                    self.assertEqual((live["_exit"], live["ok"], live["fault"], live["transport_open_attempted"]),
-                                     (4, False, "operator", False), live)
-        description = " ".join(next(t for t in list_tools() if t["name"] == "emit_test_live")["description"].split())
-        self.assertIn("every such refusal returns transport_open_attempted false, with exit 1, except a register package's "
-                      "binding or grant refusal, which is fault operator with exit 4.", description)
-
     def test_emit_check_reports_a_host_fault_as_one_and_a_broken_package_as_a_refusal(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE)) as binding:
@@ -412,8 +303,7 @@ class ToolFaultTests(unittest.TestCase):
 
     def test_probe_run_declares_every_refusal_it_makes_before_it_opens_the_device(self):
         """probe_run reads the model's bytes and checks the model, the operation, the sample count, the evidence bound
-        and a replay fixture before any transport opens; each refusal says so, and the device sees nothing. So does a
-        register probe's refusal of the operator's binding or grants."""
+        and a replay fixture before any transport opens; each refusal says so, and the device sees nothing."""
         from interface_runtime import evidence
         from generative_driver.toolkit import call_tool
         seen, opened, real_open = [], [], evidence.open_transport
@@ -430,29 +320,26 @@ class ToolFaultTests(unittest.TestCase):
         invalid = tcp_model()
         invalid["operations"]["measure"]["steps"] = []
         text = json.dumps(tcp_model())
-        register = json.dumps({"schema": "interface-model/1", "operations": {"init": [{"op": "reg_write"}]}})
         with tempfile.TemporaryDirectory() as temp, line_device(dict(DEVICE), seen) as binding, \
                 patch("interface_runtime.evidence.open_transport", recording_open):
             root = Path(temp).resolve()
-            for name, content, arguments, exit_code, says in (
-                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), {}, 1,
+            for name, content, arguments, says in (
+                    ("a duplicate JSON key", text.replace('"device": {', '"device": {"name": "twice", ', 1), {},
                      "ValueError: duplicate JSON key: name"),
-                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), {}, 1,
+                    ("a non-finite constant", text.replace('"timeout_ms": 500', '"timeout_ms": NaN', 1), {},
                      "ValueError: non-finite JSON constant: NaN"),
                     ("nesting deeper than the parser allows", text[:-1] + ', "x": ' + "[" * 100000 + "]" * 100000 + "}",
-                     {}, 1, "RecursionError: "),
-                    ("no model.json", None, {}, 1, "ValueError: model_dir holds no model.json"),
-                    ("a model that is no JSON object", "[]", {}, 1, "ValueError: model.json is not a JSON object"),
-                    ("an invalid model", json.dumps(invalid), {}, 1, "ValueError: invalid model: "),
-                    ("no operation", text, {"operation": None}, 1, "ValueError: schema 3 probe requires an explicit operation"),
-                    ("an operation the model does not have", text, {"operation": "erase"}, 1, "ValueError: unknown operation"),
-                    ("too many samples", text, {"n": 101}, 1, "ValueError: sample count must be integer 1..100"),
-                    ("no samples", text, {"n": 0}, 1, "ValueError: sample count must be integer 1..100"),
-                    ("an evidence bound the model exceeds", json.dumps(bounded), {"operation": "dump", "n": 100}, 1,
+                     {}, "RecursionError: "),
+                    ("no model.json", None, {}, "ValueError: model_dir holds no model.json"),
+                    ("a model that is no JSON object", "[]", {}, "ValueError: model.json is not a JSON object"),
+                    ("an invalid model", json.dumps(invalid), {}, "ValueError: invalid model: "),
+                    ("no operation", text, {"operation": None}, "ValueError: schema 3 probe requires an explicit operation"),
+                    ("an operation the model does not have", text, {"operation": "erase"}, "ValueError: unknown operation"),
+                    ("too many samples", text, {"n": 101}, "ValueError: sample count must be integer 1..100"),
+                    ("no samples", text, {"n": 0}, "ValueError: sample count must be integer 1..100"),
+                    ("an evidence bound the model exceeds", json.dumps(bounded), {"operation": "dump", "n": 100},
                      "ValueError: requested probe exceeds evidence bound"),
-                    ("a replay fixture that is not there", text, {"replay": str(root / "missing-replay.json")}, 1, "FileNotFoundError: "),
-                    ("a register binding that is no FTDI url", register, {}, 4, None),
-                    ("a register write without its grant", register, {"binding": {"url": "ftdi://ftdi:232h/1"}}, 4, None)):
+                    ("a replay fixture that is not there", text, {"replay": str(root / "missing-replay.json")}, "FileNotFoundError: ")):
                 with self.subTest(refusal=name):
                     model = root / name.replace(" ", "-"); model.mkdir()
                     if content is not None:
@@ -460,11 +347,8 @@ class ToolFaultTests(unittest.TestCase):
                     refused = call_tool("probe_run", {"run_dir": str(root / "run"), "model_dir": str(model),
                                                       **{"operation": "measure", "n": 1, "binding": binding, **arguments}})
                     self.assertEqual((refused["_exit"], refused["ok"], refused["transport_open_attempted"]),
-                                     (exit_code, False, False), refused)
-                    if says is None:
-                        self.assertEqual(refused["fault"], "operator", refused)
-                    else:
-                        self.assertTrue(refused["error"].startswith(says), refused)
+                                     (1, False, False), refused)
+                    self.assertTrue(refused["error"].startswith(says), refused)
                     self.assertNotIn("results", refused)
                     self.assertNotIn("probe", refused)
             self.assertEqual((seen, opened), ([], []))
@@ -658,52 +542,6 @@ class ToolFaultTests(unittest.TestCase):
             passed = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
             self.assertEqual((passed["_exit"], passed["replay_status"]), (0, "passed"), passed)
 
-    def test_a_register_converter_that_fails_to_load_fails_the_check_and_is_no_host_fault(self):
-        """A register package's seeded check imports the candidate's converter and runs it on register files. An error
-        that converter raises, an ImportError or OSError included, is the package's: the check fails (exit 1), naming
-        driver/convert.py when it will not load. It is never reported as a host fault."""
-        from generative_driver.toolkit import call_tool
-        model = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
-                 "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
-                 "identity": {"from": "id", "expect": ["0x42"]},
-                 "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
-                                "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
-                 "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
-                 "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
-                 "provenance": [{"item": "operations." + key, "source": "invented register contract"} for key in ("identify", "measure")]}
-        probe = {"address": "0x20", "identity": "0x42", "identity_ok": True,
-                 "samples": [{"t_wall": 0, "values": {"value": 1}, "raw": "23"}], "evidence_kind": "replay"}
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp).resolve()
-            (root / "probe.json").write_text(json.dumps(probe))
-            for name, converter, defects in (
-                    ("a converter that imports a missing module",
-                     "import module_the_worker_forgot\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
-                    ("a converter that opens a file that is not there",
-                     "open('no-such-calibration.bin', 'rb')\ndef convert(inputs):\n    return {'value': 1}\n", ["driver/convert.py"]),
-                    # Bytes a conversion cannot cope with are outside the model's domain: no seed runs, and the check fails.
-                    ("a converter that raises an OSError on the bytes",
-                     "def convert(inputs):\n    raise OSError('calibration table unreadable')\n", None),
-                    ("a converter that works", "def convert(inputs):\n    return {'value': inputs['0x10'][0] / 2}\n", [])):
-                with self.subTest(converter=name):
-                    workspace = root / name.replace(" ", "-"); workspace.mkdir()
-                    (workspace / "model.json").write_text(json.dumps(model))
-                    (workspace / "convert.py").write_text(converter)
-                    emitted = call_tool("emit_package", {"run_dir": str(root / "run"), "model_dir": str(workspace),
-                                                         "probe": str(root / "probe.json")})
-                    self.assertEqual(emitted["_exit"], 0, emitted)
-                    checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"],
-                                                       "model_dir": str(workspace), "seeds": 2})
-                    self.assertNotIn("fault", checked)
-                    if defects == []:
-                        self.assertEqual((checked["_exit"], checked["ok"]), (0, True), checked)
-                    else:
-                        self.assertEqual((checked["_exit"], checked["ok"]), (1, False), checked)
-                    if defects:
-                        self.assertEqual([d["where"] for d in checked["defects"]], defects, checked)
-                    elif defects is None:
-                        self.assertEqual(checked["seeds_run"], 0, checked)
-
     def test_emit_check_keeps_a_passed_replay_when_its_temporary_folder_cannot_be_removed(self):
         """On Windows an antivirus or indexer can hold a file open briefly, so removing a temporary folder fails after
         the check finished. That cleanup failure neither discards a passed replay nor reads as a host fault."""
@@ -727,6 +565,142 @@ class ToolFaultTests(unittest.TestCase):
             with patch.object(shutil, "rmtree", held_open):
                 checked = call_tool("emit_check", {"run_dir": str(root / "checks"), "package_dir": emitted["package_dir"]})
             self.assertEqual((checked["_exit"], checked["ok"], checked["replay_status"]), (0, True, "passed"), checked)
+
+
+REGISTER_MODEL = {"schema": "interface-model/1", "device": {"name": "invented register sensor"},
+                  "channel": {"type": "i2c", "address_7bit": "0x20", "speed_hz": 100000},
+                  "identity": {"from": "id", "expect": ["0x42"]},
+                  "operations": {"identify": [{"op": "reg_read", "reg": "0x00", "len": 1, "as": "id"}],
+                                 "measure": [{"op": "reg_read", "reg": "0x10", "len": 1, "as": "raw"}]},
+                  "conversion": {"module": "convert.py", "entry": "convert", "outputs": {"value": {"unit": "count"}}},
+                  "safety": {"safe_reads": ["0x00", "0x10"], "known_safe_writes": [], "never": []},
+                  "provenance": [{"item": "operations." + key, "source": "invented register description"}
+                                 for key in ("identify", "measure")]}
+
+
+def marking(marker):
+    """Python source that writes the file `marker` when it is imported or run."""
+    return (f"with open({str(marker)!r}, 'w') as out:\n    out.write('ran')\n"
+            "def convert(inputs):\n    return {'value': inputs['0x10'][0] / 2}\n")
+
+
+def said(result):
+    """The reason a tool gave for a refusal: its error, its reason and what each of its defects says."""
+    defects = result.get("defects") if isinstance(result.get("defects"), list) else []
+    parts = (result.get("error"), result.get("reason"), *(defect.get("what") for defect in defects))
+    return " ".join(str(part) for part in parts if part)
+
+
+def contents(folder):
+    return {path.relative_to(folder).as_posix(): path.read_bytes() for path in folder.rglob("*") if path.is_file()}
+
+
+def register_package(folder, marker):
+    """A folder laid out as the deleted emit stage laid out a register package: its manifest names no package format,
+    and its conversion module and its live suite write the file `marker` when imported or run."""
+    from interface_runtime.package import digest, package_files
+    (folder / "driver").mkdir(parents=True)
+    (folder / "tests").mkdir()
+    (folder / "driver" / "model.json").write_text(json.dumps(REGISTER_MODEL))
+    (folder / "driver" / "convert.py").write_text(marking(marker))
+    (folder / "tests" / "test_live.py").write_text(marking(marker))
+    manifest = {"name": "register", "version": "1.0.0",
+                "kind": "device package generated from interface-model/1 by the driver compiler's emit stage",
+                "files": package_files(folder)}
+    (folder / "manifest.json").write_text(json.dumps(manifest, indent=1))
+    (folder / "manifest.sha256").write_text(digest(folder / "manifest.json") + "\n")
+    return folder
+
+
+class RegisterFamilyTests(unittest.TestCase):
+    """The register model family (schema interface-model/1, with a conversion module a worker wrote) is deleted. The
+    tool refuses a model or a package of it as it refuses any format it does not know, and runs no file of it."""
+
+    def test_01_B1_a_register_model_is_refused_by_its_schema_and_no_file_of_it_runs(self):
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def bus(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a bus was opened")
+        with tempfile.TemporaryDirectory() as temp, patch("generative_driver._toolchain.runner.FtdiI2c", bus), \
+                patch("interface_runtime.evidence.open_transport", bus):
+            root = Path(temp).resolve()
+            marker = root / "convert-ran"
+            model = root / "model"; model.mkdir()
+            (model / "model.json").write_text(json.dumps(REGISTER_MODEL))
+            (model / "convert.py").write_text(marking(marker))
+            supplied = contents(model)
+            # No tool reads the probe record: none exists.
+            probe = str(root / "no-such-probe.json")
+            for tool, arguments in (("model_validate", {}),
+                                    ("probe_run", {"binding": {"url": "ftdi://ftdi:232h/1"}}),
+                                    ("probe_diff", {"probe": probe}),
+                                    ("emit_package", {"probe": probe})):
+                with self.subTest(tool=tool):
+                    run = root / ("run-" + tool)
+                    refused = call_tool(tool, {"run_dir": str(run), "model_dir": str(model), **arguments})
+                    self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                    self.assertIn("interface-model/1", said(refused), refused)
+                    self.assertFalse(marker.exists(), "a file of the register model was imported or run")
+                    self.assertEqual(contents(model), supplied)
+                    if tool == "probe_run":
+                        self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                    # Neither a probe record nor a package folder was written.
+                    self.assertFalse((run / "probe").exists())
+                    self.assertFalse((run / "emit").exists())
+            self.assertEqual(opened, [])
+
+    def test_01_B2_a_register_package_is_refused_by_its_format_and_no_file_of_it_runs(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            marker = root / "package-ran"
+            package = register_package(root / "package", marker)
+            model = root / "model"; model.mkdir()
+            for name in ("model.json", "convert.py"):
+                shutil.copyfile(package / "driver" / name, model / name)
+            supplied = contents(package)
+            for tool, arguments in (("emit_check", {}),
+                                    ("emit_test_live", {"binding": {"url": "ftdi://ftdi:232h/1"}})):
+                for model_dir in ({}, {"model_dir": str(model)}):
+                    with self.subTest(tool=tool, with_model_dir=bool(model_dir)):
+                        run = root / ("run-" + tool + ("-with-model" if model_dir else ""))
+                        refused = call_tool(tool, {"run_dir": str(run), "package_dir": str(package), **arguments,
+                                                   **model_dir})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        self.assertIn("package format is not one this kit knows", said(refused), refused)
+                        self.assertFalse(marker.exists(), "a file of the register package was imported or run")
+                        self.assertEqual(contents(package), supplied)
+                        if tool == "emit_test_live":
+                            self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                        # No live record was written.
+                        self.assertFalse((run / "emit").exists())
+
+    def test_01_B3_interpret_run_refuses_a_deleted_front_end(self):
+        import re
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            listed = set()
+            for front_end in ("interpret-datasheet", "interpret-firmware", "interpret-blackbox"):
+                run, neutral = root / ("run-" + front_end), root / ("neutral-" + front_end)
+                for where, arguments in (("in the run", {}), ("outside the run", {"workspace_root": str(neutral)})):
+                    with self.subTest(front_end=front_end, workspace=where):
+                        refused = call_tool("interpret_run", {"run_dir": str(run), "front_end": front_end,
+                                                              "inputs": {}, **arguments})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        named, _, existing = refused["reason"].partition("; one of ")
+                        self.assertIn(repr(front_end), named, refused)
+                        listed.update(re.findall(r"'([^']+)'", existing))
+                        # No workspace, seal or attempt record was written.
+                        self.assertFalse((run / "interpret").exists())
+                        self.assertFalse(neutral.exists())
+            # The front ends the refusal lists are the ones that exist: each prepares a workspace.
+            self.assertEqual(listed, {"interpret-interface", "interpret-selfdescribing"})
+            for front_end in sorted(listed):
+                prepared = call_tool("interpret_run", {"run_dir": str(root / ("run-" + front_end)),
+                                                       "front_end": front_end, "inputs": {}})
+                self.assertEqual((prepared.get("ok"), prepared["_exit"]), (True, 0), prepared)
 
 
 if __name__ == "__main__":

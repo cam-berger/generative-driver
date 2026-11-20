@@ -19,7 +19,7 @@ from interface_runtime.engine import execute, validate_model
 
 def make_model():
     return {
-        "schema": "interface-model/3", "device": {"name": "Demo"},
+        "schema": "interface-model/7", "device": {"name": "Demo"},
         "channel": {"type": "uart", "baudrate": 115200},
         "identity": {"operation": "identify"},
         "operations": {
@@ -190,7 +190,6 @@ def test_identity_requested_only_runs_once(model):
     (("operations", "identify", "parameters"), {"x": {"type": "integer", "minimum": 0, "maximum": 1}}),
     (("operations", "measure", "outputs", "temperature", "regex"), ".*"),
     (("operations", "measure", "outputs", "temperature", "from"), "missing"),
-    (("operations", "measure", "steps", 0, "expect"), {"equals_hex": "00", "prefix_hex": "00"}),
     (("operations", "measure", "steps", 0, "rx"), {"mode": "exact", "length": -1}),
     (("operations", "measure", "steps", 0, "rx"), {"mode": "up_to", "max_bytes": 0}),
     (("operations", "measure", "steps", 0, "rx"), {"mode": "until", "delimiter_hex": "0a", "max_bytes": 1, "length": 1}),
@@ -486,6 +485,161 @@ def test_resetting_channel_replay_opens_once(model):
     with patch.object(ReplayFactory, "__call__", counting):
         evidence = run_samples(model, "measure", n=3, binding={}, allow_effects=("reset",), replay=fixture)
     assert evidence["ok"] and evidence["session"] == "single" and len(calls) == 1
+
+
+EARLIER_TAGS = ["interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6"]
+
+
+@parametrize("tag", EARLIER_TAGS)
+def test_02_B2_validate_model_refuses_an_earlier_tag_with_one_defect_that_names_it(model, tag):
+    model["schema"] = tag
+    checked = validate_model(model)
+    assert not checked["ok"]
+    assert [defect["where"] for defect in checked["defects"]] == ["schema"], checked
+    assert repr(tag) in checked["defects"][0]["what"], checked
+    assert "interface-model/7" in checked["defects"][0]["what"], checked
+    assert checked["checks_run"] == ["interface-model/7"]
+    boundary = Boundary([])
+    result = run(model, boundary)
+    assert not result["ok"] and not boundary.opened
+    assert repr(tag) in result["error"]["message"], result
+
+
+CAVEAT = {"code": "range_unverified", "message": "The upper range was not exercised.",
+          "evidence_refs": ["decomp.c: function+offset"]}
+GUARD = {"id": "warm", "description": "The probe must read 21.5 before the level changes.",
+         "observation": {"operation": "measure", "parameters": {}, "output": "temperature"},
+         "operator": "eq", "expected": 21.5}
+
+
+def described(model):
+    """`model` with every meaning field of the format: a description and uncertainties on an operation, a parameter and
+    an output, a parameter's unit, the value of a number and of a text, and a precondition."""
+    measure, set_level = model["operations"]["measure"], model["operations"]["set_level"]
+    measure.update(description="Read the temperature of the probe.", uncertainties=[copy.deepcopy(CAVEAT)])
+    measure["outputs"]["temperature"].update(description="Temperature of the probe.", uncertainties=[],
+                                             value={"type": "number", "minimum": -40, "maximum": 125})
+    measure["outputs"]["count"] = {"from": "reply", "kind": "ascii_number", "prefix": "T:",
+                                   "value": {"type": "integer", "enum": [21, 22]}}
+    measure["outputs"]["text"] = {"from": "reply", "kind": "utf8", "strip": True, "description": "The reply as text.",
+                                  "uncertainties": [copy.deepcopy(CAVEAT)],
+                                  "value": {"type": "string", "enum": ["T:21", "T:22"], "minLength": 4, "maxLength": 4}}
+    set_level.update(description="Set the output level.", uncertainties=[], preconditions=[copy.deepcopy(GUARD)])
+    set_level["parameters"]["level"].update(description="Level of the output.", unit="%",
+                                            uncertainties=[copy.deepcopy(CAVEAT)])
+    return model
+
+
+def test_02_B3_validate_model_accepts_every_meaning_field(model):
+    checked = validate_model(described(model))
+    assert checked == {"ok": True, "defects": [], "checks_run": ["interface-model/7"]}, checked
+    # The meanings change nothing on the wire.
+    boundary = Boundary([(b"ID?\n", b"DEMO-42\n"), (b"SET 7\n", b"OK\n")])
+    result = run(model, boundary, "set_level", {"level": 7}, allow_effects=["write"])
+    assert result["ok"], result
+
+
+_OPERATION = ("operations", "measure")
+_OUTPUT = _OPERATION + ("outputs", "temperature")
+_PARAMETER = ("operations", "set_level", "parameters", "level")
+_GUARDS = ("operations", "set_level", "preconditions")
+
+
+@parametrize("path,value,field", [
+    (_OPERATION + ("description",), "  ", "description"),
+    (_OPERATION + ("description",), "x" * 8193, "description"),
+    (_OPERATION + ("description",), 7, "description"),
+    (_OUTPUT + ("description",), "", "description"),
+    (_PARAMETER + ("description",), None, "description"),
+    (_OPERATION + ("uncertainties",), {}, "uncertainties"),
+    (_OPERATION + ("uncertainties",), [CAVEAT] * 65, "uncertainties"),
+    (_OPERATION + ("uncertainties",), [{"code": "c", "message": "m"}], "uncertainties"),
+    (_OPERATION + ("uncertainties",), [{**CAVEAT, "severity": "high"}], "uncertainties"),
+    (_OPERATION + ("uncertainties",), [{**CAVEAT, "code": " "}], "uncertainties"),
+    (_OPERATION + ("uncertainties",), [{**CAVEAT, "message": "m" * 8193}], "uncertainties"),
+    (_OUTPUT + ("uncertainties",), [{**CAVEAT, "evidence_refs": [""]}], "uncertainties"),
+    (_OUTPUT + ("uncertainties",), [{**CAVEAT, "evidence_refs": ["r"] * 129}], "uncertainties"),
+    (_PARAMETER + ("uncertainties",), [{**CAVEAT, "evidence_refs": ["r" * 2049]}], "uncertainties"),
+    (_PARAMETER + ("uncertainties",), [{**CAVEAT, "evidence_refs": "decomp.c"}], "uncertainties"),
+    (_PARAMETER + ("unit",), 5, "unit"),
+    (_PARAMETER + ("unit",), None, "unit"),
+    (_OUTPUT + ("value",), {}, "value"),
+    (_OUTPUT + ("value",), "number", "value"),
+    (_OUTPUT + ("value",), {"type": "string"}, "value"),
+    (_OUTPUT + ("value",), {"type": "boolean"}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "minimum": 5, "maximum": 1}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "minimum": "low"}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "maximum": True}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "enum": []}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "enum": 21.5}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "minLength": 1}, "value"),
+    (_OUTPUT + ("value",), {"type": "number", "contentEncoding": "hex"}, "value"),
+    (_OPERATION + ("outputs", "text", "value"), {"type": "number"}, "value"),
+    (_OPERATION + ("outputs", "text", "value"), {"type": "string", "minimum": 0}, "value"),
+    (_OPERATION + ("outputs", "text", "value"), {"type": "string", "maxLength": 65537}, "value"),
+    (_OPERATION + ("outputs", "text", "value"), {"type": "string", "minLength": -1}, "value"),
+    (_OPERATION + ("outputs", "text", "value"), {"type": "string", "minLength": 1.5}, "value"),
+    (_GUARDS, {}, "preconditions"),
+    (_GUARDS, [dict(GUARD, id=str(index)) for index in range(17)], "preconditions"),
+    (_GUARDS, [{key: value for key, value in GUARD.items() if key != "operator"}], "preconditions"),
+    (_GUARDS, [{**GUARD, "severity": "high"}], "preconditions"),
+    (_GUARDS, [GUARD, GUARD], "preconditions"),
+    (_GUARDS, [{**GUARD, "id": ""}], "preconditions"),
+    (_GUARDS, [{**GUARD, "description": " "}], "preconditions"),
+    (_GUARDS, [{**GUARD, "operator": "ne"}], "preconditions"),
+    (_GUARDS, [{**GUARD, "observation": {**GUARD["observation"], "timeout_ms": 5}}], "preconditions"),
+    (_GUARDS, [{**GUARD, "observation": {**GUARD["observation"], "operation": "missing"}}], "preconditions"),
+    (_GUARDS, [{**GUARD, "observation": {**GUARD["observation"], "parameters": {"level": 1}}}], "preconditions"),
+    (_GUARDS, [{**GUARD, "observation": {**GUARD["observation"], "output": "missing"}}], "preconditions"),
+    (_GUARDS, [{**GUARD, "expected": "warm"}], "preconditions"),
+    (_GUARDS, [{**GUARD, "expected": 500}], "preconditions"),
+])
+def test_02_B3_a_meaning_that_breaks_a_rule_is_one_defect_that_names_the_operation_and_the_field(model, path, value,
+                                                                                               field):
+    described(model)
+    target = model
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = copy.deepcopy(value)
+    checked = validate_model(model)
+    assert not checked["ok"] and len(checked["defects"]) == 1, checked
+    where = checked["defects"][0]["where"].split(".")
+    assert where[:2] == list(path[:2]), checked
+    assert field in where, checked
+    boundary = Boundary([])
+    assert not run(model, boundary)["ok"] and not boundary.opened
+
+
+def test_02_B3_a_precondition_observes_an_unguarded_read_operation(model):
+    described(model)
+    # The observed operation changes the device: it is no read.
+    model["operations"]["measure"]["effect"] = "write"
+    written = validate_model(model)
+    assert [defect["where"].split(".")[:3] for defect in written["defects"]] == [
+        ["operations", "set_level", "preconditions"]], written
+    # The observed operation has a precondition of its own.
+    model["operations"]["measure"].update(effect="read", preconditions=[
+        {**copy.deepcopy(GUARD), "observation": {"operation": "identify", "parameters": {}, "output": "identity"},
+         "expected": "DEMO-42"}])
+    guarded = validate_model(model)
+    assert [defect["where"].split(".")[:3] for defect in guarded["defects"]] == [
+        ["operations", "set_level", "preconditions"]], guarded
+
+
+@parametrize("path", [
+    _OPERATION + ("summary",), _OUTPUT + ("schema",), _OUTPUT + ("contentEncoding",), _PARAMETER + ("title",),
+    _PARAMETER + ("value",), _OPERATION + ("unit",), ("operations", "identify", "outputs", "identity", "preconditions"),
+])
+def test_02_B3_a_field_the_format_does_not_name_is_refused_as_an_unknown_field(model, path):
+    described(model)
+    target = model
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = "text"
+    checked = validate_model(model)
+    assert not checked["ok"], checked
+    assert [(defect["where"], defect["what"]) for defect in checked["defects"]] == [
+        (".".join(path[:-1]), "unknown fields")], checked
 
 
 class EngineTests(unittest.TestCase):

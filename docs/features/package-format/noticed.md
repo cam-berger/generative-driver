@@ -10,3 +10,16 @@
 - 01: From the Reviewer: the module doc of `_toolchain/emit.py` says every file of a package is rendered from the model and the probe output, but `emit_package` also copies the driver entry and the runtime. Feature 04 makes the sentence true.
 - 01: From the Reviewer: the test of 01-B6 replaces the whole tool `acquire_datasheet`, not its network call, so it would not notice a change in that tool's result shape.
 - 01: From the Reviewer: not shown on Windows. Everything ran on macOS, with no hosted job.
+- 02: `docs/extending-drivers-and-mcp.md` lines 19, 99, 105, 107 and 111 still describe an authored contract and protocol, `runtime_schema` as a versioned vocabulary and `interface-model/3` to `/6` as readable formats. Only the one link was this Feature's to change.
+- 02: `docs/adr/0008-run-the-installed-runtime-over-package-data.md` lines 5 and 13 say the installed runtime reads every earlier format. ADR 0010 and this Feature end that, and ADR 0008 does not say so.
+- 02: `src/generative_driver/configurator.py` still names things "contract" against the wording rule of `STANDARDS.md`: `model_contract`, `executable_model_contract` and `candidate-task-contract/1`; `device_first.py` too. All were there before this Feature.
+- 02: `operation_warnings` in `src/interface_runtime/contracts.py` has no docstring.
+- 02: The fragment that `resources/interpret_tasks/HANDLER.md` shows has `"description": ""`, the one value of that field the validator refuses. A handler's own validator run catches it.
+- 02: The model document says a precondition's `id` is unique in the operation; the engine also asks for text that is not empty. The Spec's table has the same words.
+- 02: The interpret seal and the result of `interpret_run` still carry `schema_document`, which is now always `INTERFACE_MODEL.md`.
+- 02: From the Reviewer, small matters of the Standards: `tests/worker_texts.py` line 38 is 121 columns; `NUMERIC_DECODERS` in `meanings.py` and `UNDOCUMENTED` in `contracts.py` have no caller outside their module; `unknown_format` in `_toolchain/interface.py` only passes on to `format_refusal`; two refusal messages start in lower case, as their neighbours do.
+- 02: Some lines of `tests/test_configurator.py` are longer than 120 columns. They were so before; only a tag or a word in them changed.
+- 02: The two wheel tests are skipped unless `GD_TEST_WHEEL` is set. A wheel built from this tree was checked by hand: it ships `resources/docs/INTERFACE_MODEL.md` and `interface_runtime/meanings.py` and none of the deleted files, and both tests pass on it.
+- 02: Two tests are skipped because `pypdf` is not installed in this environment.
+- 02: Not shown on Windows. Everything ran on macOS, with no hosted job.
+- 02: No model run was started, so nothing here shows how a model worker does with the longer model document.

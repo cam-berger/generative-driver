@@ -27,7 +27,7 @@ def sample_reply(raw_temperature, sequence):
 
 
 def _model(name, operations):
-    return {"schema": "interface-model/6", "device": {"name": name},
+    return {"schema": "interface-model/7", "device": {"name": name},
             "channel": {"type": "tcp"}, "identity": {"operation": "identify"},
             "operations": operations,
             "provenance": [{"item": "operations." + key, "source": "independent public toy fixture"}

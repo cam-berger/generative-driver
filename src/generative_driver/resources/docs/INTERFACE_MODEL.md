@@ -1,8 +1,8 @@
-# Executable interface model, schema 6
+# Executable interface model
 
-One model describes one channel/device using supplied evidence. Record unknown semantics in `NOTES.md`; the host supplies physical bindings. Validation checks structure, not firmware fidelity or physical safety.
+One model, `model.json`, states one driver: how the bytes travel on one channel of one device, and what each operation, parameter and output means. Its tag is `interface-model/7`, the one format the tools read; a model with any other tag is refused. Write both parts from supplied evidence. The host supplies physical bindings. Validation checks structure, not firmware fidelity or physical safety.
 
-Schema 6 adds USB frames, byte payloads, string/bit decoders and request/reply matching to schemas 3–5. Use `interface-model/6` for these features. Earlier models remain valid under their own tags. This guide includes the shared contract needed to use this version.
+A model is a JSON object with exactly `schema`, `device`, `channel`, `identity`, `operations` and `provenance`. The sections on the wire come first. "Meanings" says what a model states beside its wire steps, and the worked example shows both.
 
 ## Transport and engine
 
@@ -40,17 +40,17 @@ def execute(model: dict, operation: str, parameters=None, *, binding=None,
 | SPI | `cs`, `clock_hz`, `mode`, `bit_order` (`msb_first` only) | FTDI URL; `exact` |
 | UART | `baudrate`; optional `bytesize`, `parity`, `stopbits` | `{"port":"..."}`; `exact`, `until`, `up_to`, `lines`, `frame` |
 | TCP | `type:"tcp"` | `{"host":"...","port":1234}`; `exact`, `until`, `up_to`, `lines`, `frame` |
-| USB | `interface`, `in_endpoint`, `out_endpoint`, `transfer` (`bulk`/`interrupt`) | Integer vendor/product IDs, optional serial; `exact`, `up_to`, schema-6 `frame` |
+| USB | `interface`, `in_endpoint`, `out_endpoint`, `transfer` (`bulk`/`interrupt`) | Integer vendor/product IDs, optional serial; `exact`, `up_to`, `frame` |
 
 USB endpoints must match descriptor types/directions; exactly one device must match the binding. No implicit configuration change/kernel-driver detach: explicit binding grants are required. USB-CDC uses UART and an OS serial binding. Only USB supports `control`.
 
-Results use `interface-result/1`: `ok`, operation, outputs, units, `identity_verified` and ordered transcript (operation/step, TX/RX hex, USB setup). Failure adds `error:{code,message}` and empty outputs/units. `attempted` does not prove bytes reached the device; `completed` means response shape passed, not expectations/decoding. Replay cannot imply hardware verification. Model errors are `validation_error`, post-open expectation/decoder errors `execution_error`; transport errors retain their own codes.
+Results use `interface-result/1`: `ok`, operation, outputs, units, `identity_verified` and ordered transcript (operation/step, TX/RX hex, USB setup). Failure adds `error:{code,message}` and empty outputs/units. A decoded output outside the `value` its model states fails with `output_schema_violation`, and the reading is kept under `invalid_outputs`. `attempted` does not prove bytes reached the device; `completed` means response shape passed, not expectations/decoding. Replay cannot imply hardware verification. Model errors are `validation_error`, post-open expectation/decoder errors `execution_error`; transport errors retain their own codes.
 
-`validate_model` returns `ok`, `defects:[{where,what}]`, and `checks_run` naming the model's accepted schema tag. Unknown fields are rejected, not ignored.
+`validate_model` returns `ok`, `defects:[{where,what}]`, and `checks_run`, which names `interface-model/7`. A model with any other tag is refused, and the defect names the tag. Unknown fields are rejected, not ignored.
 
 ## Operations and bounds
 
-Each operation contains `effect`, `parameters`, `steps`, `outputs` and has provenance. Effects are `read`, `write` or `actuate`; non-read effects require grants. Identity names a read operation with no parameters and a nonempty response expectation. Every output references a valid unique capture; captures cannot be overwritten.
+Each operation contains `effect`, `parameters`, `steps`, `outputs` and has provenance. Beside them it may say what it means; see "Meanings". Effects are `read`, `write` or `actuate`; non-read effects require grants. Identity names a read operation with no parameters and a nonempty response expectation. Every output references a valid unique capture; captures cannot be overwritten.
 
 | Limit | Value |
 |---|---|
@@ -63,7 +63,7 @@ Each operation contains `effect`, `parameters`, `steps`, `outputs` and has prove
 | `until` / `up_to` | `max_bytes` 1–65536 |
 | `lines` | `max_bytes` 2–65536 |
 
-Parameters are bounded finite `integer`/`number`, or string enums without control characters. Arguments must match exactly; booleans are not numbers. No free command passthrough. TX parts are `{"hex":"..."}`, UTF-8 `{"text":"..."}`, or `{"arg":"name","format":"..."}`. Formats: `ascii`, `u8`, `u16le`, `u16be`, `u32le`, `u32be`, `i16le`, `i16be`, `i32le`, `i32be`, `f32le`, `f32be`. Bounds must fit the encoding; literal text may contain protocol delimiters.
+Parameters are bounded finite `integer`/`number`, string enums without control characters, or bounded `bytes` (see "Byte payloads and decoders"). Arguments must match exactly; booleans are not numbers. No free command passthrough. TX parts are `{"hex":"..."}`, UTF-8 `{"text":"..."}`, or `{"arg":"name","format":"..."}`. Formats: `ascii`, `u8`, `u16le`, `u16be`, `u32le`, `u32be`, `i16le`, `i16be`, `i32le`, `i32be`, `f32le`, `f32be`. Bounds must fit the encoding; literal text may contain protocol delimiters.
 
 Steps are `exchange`, `usb_control`, or `{"op":"delay","ms":N}`. Control adds `setup:{request_type,request,value,index}` to TX/RX/capture/expect. First two fields are unsigned 8-bit, last two unsigned 16-bit; each is an integer or `{"arg":"integer_parameter"}`. Direction, data and receive lengths must agree. Control supports neither `until` nor `lines`.
 
@@ -79,7 +79,7 @@ Streams handle partial reads/writes and retain bytes beyond delimiters. Short ex
 
 All supplied positive forms must hold. Byte forms: `equals_hex` (whole reply), `prefix_hex`, `contains_text` (substring anywhere, including errors). Line forms, only with `lines`/`until`: `contains_line`, `line_prefix_present`, `first_line_prefix`, `final_line_equals`, `final_line_token` (first whitespace token of last line). Literals are nonempty, within receive bounds; line literals are printable ASCII and token forms a single token. JSON keys cannot repeat; choose different forms to pin different identity fields.
 
-`reject_line_prefix` names 1–16 distinct nonempty printable ASCII prefixes. Any matching error line fails even when positives hold. Every `lines` step needs this rejection list and at least one positive guard. Schema 3 retains its exactly-one-byte-guard rule under its own tag.
+`reject_line_prefix` names 1–16 distinct nonempty printable ASCII prefixes. Any matching error line fails even when positives hold. Every `lines` step needs this rejection list and at least one positive guard.
 
 | Decoder | Fields / result |
 |---|---|
@@ -103,7 +103,7 @@ Keys are nonempty printable ASCII without whitespace; line prefixes are nonempty
 
 ## Complete line replies
 
-UART/TCP only, schema 4+. Read through the first completion line, retaining later bytes for the next exchange:
+UART/TCP only. Read through the first completion line, retaining later bytes for the next exchange:
 
 ```json
 {"mode":"lines","max_bytes":1024,"end":{"line_equals":"ok"}}
@@ -118,7 +118,7 @@ Use completion-aware `lines`, never `up_to` or newline-only `until`, for multi-l
 
 ## Binary frames and integrity
 
-Schema 5+ stream frames begin with known sync bytes and contain a byte-count length. Schema 6 also supports USB frames.
+Frames begin with known sync bytes and contain a byte-count length. They are read from a UART or TCP stream, and from USB (see "Framed USB replies").
 
 TX check part:
 
@@ -146,7 +146,7 @@ Algorithms: `crc8`, `crc8_maxim`, `crc16_ccitt_false`, `crc16_xmodem`, `crc16_ke
 
 Read only through declared frame end once known; buffer later bytes. The engine repeats sync/length/end/integrity checks for every transport, including replay. `expect.equals_hex` or `prefix_hex` must start with sync and pin beyond it. Pin the response code, not merely sync/length. `reject_prefix_hex` lists 1–16 distinct nonempty error prefixes, including applicable length bytes; any match fails. Line forms cannot guard frames. Decoder offsets start at the first sync byte.
 
-## Schema 6 payloads and decoders
+## Byte payloads and decoders
 
 Bytes parameters use `{"type":"bytes","min_length":m,"max_length":n}`: `0 ≤ m ≤ n`, `1 ≤ n ≤ 4096`. Arguments are even-length hex strings with no whitespace/`0x`, holding m–n bytes. Invalid arguments fail before transmission. Keep command bytes literal; this is a bounded payload, not whole-command passthrough.
 
@@ -162,7 +162,7 @@ String encoding is strict `ascii` (default) or `utf-8`; invalid bytes fail `exec
 
 ## USB channels
 
-Take settings from descriptors. `interface` is 0–255 (default 0), alternate setting 0 only. Endpoint addresses are JSON integers (IN bit 7 set; e.g. 0x82 → 130). `transfer` defaults to `bulk`, or `interrupt`; both endpoints must match descriptors and have nonzero packet size. Schema 6 requires OUT for any possibly nonempty exchange TX and IN for any exchange receive. Control-only models need neither. Retagging schema 5 may newly reject these missing endpoints at validation.
+Take settings from descriptors. `interface` is 0–255 (default 0), alternate setting 0 only. Endpoint addresses are JSON integers (IN bit 7 set; e.g. 0x82 → 130). `transfer` defaults to `bulk`, or `interrupt`; both endpoints must match descriptors and have nonzero packet size. A model needs OUT for any possibly nonempty exchange TX and IN for any exchange receive; validation refuses a model without them. Control-only models need neither.
 
 Binding: integer `vendor_id`/`product_id` 0–65535, optional `serial_number`, boolean `allow_set_configuration` and `allow_detach_kernel_driver` (both false). Exactly one device must match. Configuration permission selects the first configuration only if none is active; detach permission applies to the selected interface, with reattach on close. Channel/descriptor defects are `channel`; malformed/ambiguous/missing-device bindings or ungranted permissions are `binding`.
 
@@ -184,7 +184,7 @@ A `read` operation may never allow request_type bit 7 clear, including parameter
 
 ### Framed USB replies
 
-Use schema-6 `frame` with `max_reads` 1–4096, `max_bytes` and timeout. Read whole IN packets until one complete frame; zero-length packets consume a read and do not finish it. Retain surplus for the next framed exchange. Bad sync/length/check/trailer fails without searching for another frame.
+Use `frame` with `max_reads` 1–4096, `max_bytes` and timeout. Read whole IN packets until one complete frame; zero-length packets consume a read and do not finish it. Retain surplus for the next framed exchange. Bad sync/length/check/trailer fails without searching for another frame.
 
 ```json
 {"mode":"frame","sync_hex":"1234",
@@ -205,47 +205,131 @@ Fault the first identity transfer and first requested-operation transfer: change
 
 The padding diagnostic zero-pads `up_to` replies and compares outputs; differing outputs expose length-sensitive decoding but do not affect verdict. Qualification checks predicted bytes/guards, never device truth.
 
+## Meanings
+
+A fresh agent that uses the emitted driver reads nothing of your evidence. It gets the generated tools, and each tool shows what the model says an operation, a parameter and an output mean. So say it in the model, beside the wire steps. Every field of this section is optional. Where one is missing the driver says so wherever it is shown: a missing `description` reads `Meaning not documented.` and adds a warning to every result.
+
+| Where | Field | Rule |
+|---|---|---|
+| operation, parameter, output | `description` | Text that is not blank, at most 8192 characters. What the device does or reports, in a user's words. |
+| operation, parameter, output | `uncertainties` | A list of at most 64 entries. Each is exactly `code`, `message` and `evidence_refs`: code and message are non-blank text of at most 8192 characters, and `evidence_refs` is a list of at most 128 non-blank texts of at most 2048 characters. |
+| parameter, output | `unit` | Text. An output's `unit` stands in its decoder. |
+| output | `value` | What the decoded value may be; see "Narrowed values". |
+| operation | `preconditions` | A list of at most 16 entries; see "Preconditions". |
+
+An operation's fields stand beside its `effect`, a parameter's beside its `type`, and an output's in its decoder, beside `from` and `kind`. A field this document does not name is refused as an unknown field. A meaning that breaks a rule, such as a blank description, makes the model invalid, as a wrong wire step does.
+
+### Descriptions
+
+Describe each operation, parameter and output by its observable meaning: what the device does or reports, in the words a user of the device would use, not the bytes it sends. Keep a description to what the evidence supports.
+
+### Uncertainties
+
+`uncertainties` holds the caveats a reader should know. Write one where the evidence leaves a meaning open. Its `message` says what is uncertain and why, its `code` is a short name of your choice, and `evidence_refs` cites the evidence: a file, a function or address, a string, a probe record. The driver shows each uncertainty as a warning in the tool and in every result of the operation. Keep longer reasoning in `NOTES.md`.
+
+Two codes have a meaning to the tools:
+
+- `unit_not_stated`, on a number without a `unit`, says that the evidence states none. The tool then reads `Unit: not stated by the device.` and not `Unit: unknown.`
+- `not_exercised`, on an operation, says that interpretation did not run it on the device. Use it when your instructions ask for it.
+
+### Units
+
+Write units as UCUM codes: `Cel` for degrees Celsius, `hPa`, `%`, `V`, and `1` for a count or a ratio. Write the `unit` of each number.
+
+When the evidence states no unit for a number, leave `unit` out and add an uncertainty with the code `unit_not_stated`. Its message and `evidence_refs` say where you searched the evidence for a unit: the reply format, the handler, the strings, any document. Never guess a unit, however likely one seems.
+
+### Narrowed values
+
+An output's `value` says what the decoded value may be. `type` is required: `integer` or `number` for a decoder that gives a number (`integer`, `float32`, `ascii_number`, `kv_number`), `string` for every other. With a number, `minimum`, `maximum` and `enum` may follow; with a string, `enum`, `minLength` and `maxLength`. Bounds are finite and ordered, an `enum` is a list that is not empty, and lengths are integers from 0 to 65536. No other keyword is allowed.
+
+```json
+{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"mask":7,
+ "unit":"1","description":"Operating mode, a number from 0 to 7.","value":{"type":"integer","minimum":0,"maximum":7}}
+```
+
+Without `value`, any number or any text the decoder gives is accepted. Narrow a `value` only where the evidence fixes it: the width of a bit field, a table of every code the firmware sends. A `value` is checked wherever the model runs, in a probe as in the emitted driver. A reading outside it fails the operation with `output_schema_violation`, and at probe that drives a repair. A range you only expect is no `value`; write it in the description.
+
+### Preconditions
+
+A precondition says that the device must report a given value before an operation may be sent.
+
+```json
+"preconditions":[{"id":"idle_mode",
+  "description":"The logger stores a label only in mode 0.",
+  "observation":{"operation":"read_status","parameters":{},"output":"mode"},
+  "operator":"eq","expected":0}]
+```
+
+Each entry is exactly `id`, `description`, `observation`, `operator` and `expected`. The `id` is unique in the operation, the description is not blank, and the operator is `eq`. The `observation` is exactly `operation`, `parameters` and `output`: a read operation of the same model that has no precondition of its own, arguments that operation accepts, and one of its outputs. `expected` is a value that output may have. All preconditions of an operation must hold.
+
+Only the emitted driver applies preconditions. Before each call it runs the observation afresh. When the observed value differs it refuses the call with `precondition_failed` and sends nothing more; when the observation itself fails, the code is `precondition_unavailable`. Validation checks a precondition, but a probe of the model does not observe it, so a wrong one is first noticed when the driver runs. Write a precondition only where the evidence shows that the device refuses the operation unless a read operation reports a given value.
+
 ## Worked example
 
 Invented protocol; these values describe no real product. Replace every illustrative provenance source with supplied evidence.
 
 ```json
 {
-  "schema":"interface-model/6",
+  "schema":"interface-model/7",
   "device":{"name":"FROSTLINE TL-9 thermal logger (name from the firmware's name reply)"},
   "channel":{"type":"usb","interface":0,"in_endpoint":130,"out_endpoint":1,"transfer":"bulk"},
   "identity":{"operation":"identify"},
   "operations":{
     "identify":{
       "effect":"read", "parameters":{},
+      "description":"Check that the device is a FROSTLINE TL-9 logger and report its name and release.",
       "steps":[
         {"op":"usb_control","setup":{"request_type":128,"request":6,"value":256,"index":0},
          "tx":[],"rx":{"mode":"exact","length":18},"timeout_ms":1000,"capture":"device",
          "expect":{"prefix_hex":"120100020000004034127856"}},
         {"op":"exchange","tx":[{"hex":"4e"}],"rx":{"mode":"up_to","max_bytes":64},"timeout_ms":1000,"capture":"name",
          "expect":{"prefix_hex":"4e00","contains_text":"FROSTLINE TL-9","reject_prefix_hex":["4ee2"]}}],
-      "outputs":{"model_name":{"from":"name","kind":"cstring","offset":2,"max_length":32},
-                 "release_major":{"from":"device","kind":"integer","offset":13,"size":1,"byteorder":"little","signed":false}}
+      "outputs":{"model_name":{"from":"name","kind":"cstring","offset":2,"max_length":32,
+                               "description":"Product name the firmware reports."},
+                 "release_major":{"from":"device","kind":"integer","offset":13,"size":1,"byteorder":"little","signed":false,
+                                  "unit":"1","description":"Major number of the device release, from the device descriptor."}}
     },
     "read_serial":{
       "effect":"read", "parameters":{},
+      "description":"Read the serial number of the logger.",
       "steps":[{"op":"exchange","tx":[{"hex":"53"}],"rx":{"mode":"up_to","max_bytes":64},"timeout_ms":1000,"capture":"sn",
         "expect":{"prefix_hex":"5300","reject_prefix_hex":["53e2"]}}],
       "outputs":{"serial":{"from":"sn","kind":"lpstring","length_offset":2,"length_size":1,"byteorder":"little",
-                           "offset":3,"includes_terminator":false}}
+                           "offset":3,"includes_terminator":false,"description":"Serial number, as text."}}
     },
     "read_status":{
       "effect":"read", "parameters":{},
+      "description":"Read the operating mode, the alarm flag, the battery charge, the temperature and the logging interval.",
       "steps":[{"op":"exchange","tx":[{"hex":"54"}],"rx":{"mode":"up_to","max_bytes":64},"timeout_ms":1000,"capture":"st",
         "expect":{"prefix_hex":"5400","reject_prefix_hex":["54e2"]}}],
-      "outputs":{"mode":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"mask":7},
-                 "alarm":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"shift":7,"mask":1},
-                 "battery":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"shift":8,"mask":255,"unit":"percent"},
-                 "temperature":{"from":"st","kind":"integer","offset":4,"size":2,"byteorder":"little","signed":true,"scale":0.01,"unit":"degC"}}
+      "outputs":{"mode":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"mask":7,
+                         "unit":"1","description":"Operating mode, a number from 0 to 7. Mode 0 is idle.",
+                         "value":{"type":"integer","minimum":0,"maximum":7},
+                         "uncertainties":[{"code":"mode_names_unknown",
+                           "message":"PROTOCOL.md names mode 0 as idle and gives no name for modes 1 to 7.",
+                           "evidence_refs":["PROTOCOL.md section 3.4, status word bit table"]}]},
+                 "alarm":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"shift":7,"mask":1,
+                          "unit":"1","description":"1 while the temperature alarm is raised, 0 otherwise.",
+                          "value":{"type":"integer","enum":[0,1]}},
+                 "battery":{"from":"st","kind":"integer","offset":2,"size":2,"byteorder":"little","signed":false,"shift":8,"mask":255,
+                            "unit":"%","description":"Battery charge."},
+                 "temperature":{"from":"st","kind":"integer","offset":4,"size":2,"byteorder":"little","signed":true,"scale":0.01,
+                                "unit":"Cel","description":"Temperature at the logger's sensor."},
+                 "interval":{"from":"st","kind":"integer","offset":6,"size":2,"byteorder":"little","signed":false,
+                             "description":"Logging interval.",
+                             "uncertainties":[{"code":"unit_not_stated",
+                               "message":"PROTOCOL.md gives the logging interval as a number and states no unit; the firmware strings name none.",
+                               "evidence_refs":["PROTOCOL.md section 3.4","strings.tsv"]}]}}
     },
     "write_label":{
       "effect":"write",
-      "parameters":{"label":{"type":"bytes","min_length":1,"max_length":32}},
+      "description":"Store a label of 1 to 32 bytes in the logger.",
+      "parameters":{"label":{"type":"bytes","min_length":1,"max_length":32,
+                             "description":"The label, as the bytes to store. PROTOCOL.md shows ASCII text."}},
+      "preconditions":[{"id":"idle_mode",
+        "description":"The logger stores a label only in mode 0; in any other mode it answers the error 4CE1.",
+        "observation":{"operation":"read_status","parameters":{},"output":"mode"},
+        "operator":"eq","expected":0}],
       "steps":[{"op":"exchange",
         "tx":[{"hex":"4c"},{"arg":"label","format":"length_u8"},{"arg":"label","format":"raw"},
               {"check":"crc8","over_parts":[1,3],"byteorder":"little"}],
@@ -255,6 +339,10 @@ Invented protocol; these values describe no real product. Replace every illustra
     },
     "clear_alarm":{
       "effect":"write", "parameters":{},
+      "description":"Clear the temperature alarm.",
+      "uncertainties":[{"code":"alarm_may_return",
+        "message":"PROTOCOL.md does not say whether the alarm is raised again while the temperature stays out of range.",
+        "evidence_refs":["PROTOCOL.md section 4"]}],
       "steps":[{"op":"usb_control","setup":{"request_type":64,"request":17,"value":0,"index":0},
         "tx":[],"rx":{"mode":"exact","length":0},"timeout_ms":1000}],
       "outputs":{}
@@ -264,17 +352,19 @@ Invented protocol; these values describe no real product. Replace every illustra
     {"item":"operations.identify","source":"descriptor.json: device descriptor bytes 0-11; PROTOCOL.md section 3.1, command 4E"},
     {"item":"operations.read_serial","source":"PROTOCOL.md section 3.2, command 53, counted string without terminator"},
     {"item":"operations.read_status","source":"PROTOCOL.md section 3.4, command 54, status word bit table"},
-    {"item":"operations.write_label","source":"PROTOCOL.md section 3.6, command 4C, CRC-8 over count and label"},
+    {"item":"operations.write_label","source":"PROTOCOL.md section 3.6, command 4C, CRC-8 over count and label; error 4CE1 outside mode 0"},
     {"item":"operations.clear_alarm","source":"PROTOCOL.md section 4, vendor request 0x11"}
   ]
 }
 ```
 
-The logger has interface 0, OUT 0x01, IN 0x82, 64-byte bulk packets. Success status is 00; E1/E2 are argument/unknown-command errors. Status `540083572efb` yields mode 3, alarm 1, battery 87%, temperature −12.34 degC. Label ALPHA-3 sends `4c07414c5048412d339c`, including count and CRC-8. Identity pins descriptor VID/PID then the firmware name.
+The logger has interface 0, OUT 0x01, IN 0x82, 64-byte bulk packets. Success status is 00; E1/E2 are argument/unknown-command errors. Status `540083572efb3c00` yields mode 3, alarm 1, battery 87 %, temperature −12.34 Cel and interval 60. Label ALPHA-3 sends `4c07414c5048412d339c`, including count and CRC-8. Identity pins descriptor VID/PID then the firmware name.
+
+What the example says of meaning: every operation, parameter and output has a description. The mode is narrowed to the three bits its mask leaves, and the alarm to its one bit. The battery is not narrowed, because nothing in the evidence bounds it below the width of its field. The interval has no unit, and its uncertainty says where a unit was searched. The emitted driver reads the status before it stores a label and sends the label only in mode 0.
 
 ## Qualification
 
-Run configured Python 3.11+ (full interpreter path on Windows): `python3 validate.py .`, then `python3 qualify.py . replies.json`. Fix defects; submit only when every operation with replies qualifies. The result is `qualification/result.json`, exit 0 on success. List uncovered operations in notes.
+Run configured Python 3.11+ (full interpreter path on Windows): `python3 validate.py .`, then `python3 qualify.py . replies.json`. Fix defects; submit only when every operation with replies qualifies. Beside `ok` and `defects`, `validate.py` prints `advice` and writes it to `validation/result.json`: each operation, parameter and output without a `description`, and each number with neither a `unit` nor a `unit_not_stated` uncertainty. Advice is no defect and changes neither `ok` nor the exit status; answer each line from the evidence, or with an uncertainty. The result is `qualification/result.json`, exit 0 on success. List uncovered operations in notes.
 
 `interface-replies/1` supplies one array of reply lines per exchange, including completion, excluding delays; include `parameters` when required. Derive replies from supplied evidence, not from model guards.
 
@@ -289,7 +379,7 @@ Predicted replies for the example:
  "operations":{
    "identify":{"steps":[{"hex":"120100020000004034127856000101020301"},{"hex":"4e0046524f53544c494e4520544c2d3900"}]},
    "read_serial":{"steps":[{"hex":"530009544c392d3030343137"}]},
-   "read_status":{"steps":[{"hex":"540083572efb"}]},
+   "read_status":{"steps":[{"hex":"540083572efb3c00"}]},
    "write_label":{"steps":[{"hex":"4c00"}],"parameters":{"label":"414c5048412d33"}},
    "clear_alarm":{"steps":[{"hex":""}]}
  }}
@@ -297,4 +387,4 @@ Predicted replies for the example:
 
 ## Unsupported
 
-CAN, GPIO, 1-Wire, USB isochronous, automatic reconnect/retry, custom conversion code, SPI full-duplex and custom dummy fill are unsupported. Also unsupported: byte stuffing/escaping (SLIP, COBS, HDLC), non-byte-count lengths and searching noise for sync. Schema 6 also excludes nonzero USB alternate settings, data-dependent multi-frame aggregation, host-appended ZLP, UTF-16 text and sign extension of narrow bit fields. Record unsupported behavior; do not approximate it.
+CAN, GPIO, 1-Wire, USB isochronous, automatic reconnect/retry, custom conversion code, SPI full-duplex and custom dummy fill are unsupported. Also unsupported: byte stuffing/escaping (SLIP, COBS, HDLC), non-byte-count lengths and searching noise for sync. Also excluded: nonzero USB alternate settings, data-dependent multi-frame aggregation, host-appended ZLP, UTF-16 text and sign extension of narrow bit fields. Record unsupported behavior; do not approximate it.

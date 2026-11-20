@@ -26,7 +26,6 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
 
 ```json
 {
-  "schema": "interface-model/4",
   "device": {"name": "DEMO-42"},
   "channel": {"type": "uart", "baudrate": 115200},
   "framing": "ASCII commands ending in a newline; each reply is one line ending in a newline",
@@ -37,8 +36,6 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
 }
 ```
 
-- `schema`: the interface-model tag the commands need: `interface-model/4` for text lines, `interface-model/5` for
-  binary frames, `interface-model/6` for USB or byte parameters.
 - `device.name`: the name the firmware gives itself, or null.
 - `channel`: the model's channel object. Use `BINDING_CONTEXT.json`'s `runtime_channel` when it is supplied; a UART
   needs its `baudrate`.
@@ -50,6 +47,8 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
   and each handler: a switch case, a string compare, a call.
   To give a command's handler task a document page, add the page's path as `DOCUMENTS.json` lists it, such as
   `documents/1-datasheet/002.txt`, as an entry of the command's evidence.
+
+The inventory names no model format: the configurator writes the model's format tag itself.
 
 List only commands the evidence shows. If you find no command, write an empty list: the run then interprets with a
 single worker. Write what you were unsure of in `NOTES.md`.

@@ -1,5 +1,5 @@
 {
-  "schema": "interface-model/3",
+  "schema": "interface-model/7",
   "device": {
     "name": "stand-in device"
   },
@@ -37,6 +37,7 @@
     },
     "measure": {
       "effect": "read",
+      "description": "Read the temperature the stand-in device reports.",
       "parameters": {},
       "steps": [
         {
@@ -59,7 +60,17 @@
         "temperature": {
           "from": "reply",
           "kind": "ascii_number",
-          "prefix": "T:"
+          "prefix": "T:",
+          "description": "The temperature the stand-in device reports.",
+          "uncertainties": [
+            {
+              "code": "unit_not_stated",
+              "message": "The stand-in device's reply T:21.5 states no unit.",
+              "evidence_refs": [
+                "stand-in device reply T:21.5"
+              ]
+            }
+          ]
         }
       }
     }

@@ -1,5 +1,7 @@
-"""Bounded declarative interface-model/3, /4, /5 and /6 validation and transaction execution.
+"""Bounded declarative validation and transaction execution of the interface model, in its one format.
 
+A driver is stated once, as an interface model tagged `interface-model/7`; a model that names any other tag is refused
+by that name (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3).
 Only the trusted binding selects a host resource. Effects are caller grants to
 model declarations, not a proof that a byte sequence is physically harmless.
 """
@@ -8,7 +10,7 @@ import math
 import struct
 import time
 
-from . import checks
+from . import checks, meanings
 from .faults import Fault, classify_failure
 
 
@@ -72,7 +74,7 @@ def _json_model(model):
     return raw
 
 
-SCHEMAS = ("interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6")
+SCHEMA = "interface-model/7"
 GRANTS = ("read", "write", "actuate", "reset")
 
 _FORMATS = {
@@ -83,30 +85,61 @@ _FORMATS = {
     "f32le": ("<f", -3.4028234663852886e38, 3.4028234663852886e38),
     "f32be": (">f", -3.4028234663852886e38, 3.4028234663852886e38),
 }
-# Schema 6: a bytes argument inserted verbatim, or its byte count as a fixed-width field.
+# A bytes argument inserted verbatim, or its byte count as a fixed-width field.
 _LENGTH_FORMATS = {"length_u8": ("B", 255), "length_u16le": ("<H", 65535), "length_u16be": (">H", 65535)}
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
 
 
-def _parameter(spec, where, schema6=False):
-    _fields(spec, ("type",), ("minimum", "maximum", "enum", "min_length", "max_length"), where)
+def format_refusal(model):
+    """Why this runtime refuses `model` for its format, or None for a model that names the one format it reads. The
+    reason names the tag found and the tag read."""
+    found = model.get("schema") if type(model) is dict else None
+    return None if found == SCHEMA else ("model format is not one this kit knows: " + repr(found)[:120]
+                                         + "; it reads " + SCHEMA)
+
+
+# What an operation, a parameter and an output may say of their meaning; a parameter may also state its unit.
+_MEANINGS = ("description", "uncertainties")
+
+
+def _checked(where, check, *arguments):
+    """Apply a rule of `meanings`, giving its refusal as a defect at `where`."""
+    try:
+        check(*arguments)
+    except ValueError as exc:
+        raise ModelError(where, str(exc)) from None
+
+
+def _meaning(value, where):
+    """Check the description and the uncertainties an operation, a parameter or an output states; each is optional."""
+    if "description" in value:
+        _checked(where + ".description", meanings.check_description, value["description"])
+    if "uncertainties" in value:
+        _checked(where + ".uncertainties", meanings.check_uncertainties, value["uncertainties"])
+
+
+def _parameter(spec, where):
+    meant = _MEANINGS + ("unit",)
+    _fields(spec, ("type",), ("minimum", "maximum", "enum", "min_length", "max_length") + meant, where)
+    _meaning(spec, where)
+    if "unit" in spec:
+        _require(type(spec["unit"]) is str, where + ".unit", "unit must be string")
     kind = spec["type"]
     if kind in ("integer", "number"):
-        _fields(spec, ("type", "minimum", "maximum"), (), where)
+        _fields(spec, ("type", "minimum", "maximum"), meant, where)
         lo, hi = spec["minimum"], spec["maximum"]
         _require(_finite(lo) and _finite(hi) and lo <= hi, where, "finite ordered numeric bounds required")
         if kind == "integer":
             _require(type(lo) is int and type(hi) is int, where, "integer bounds required")
     elif kind == "string":
-        _fields(spec, ("type", "enum"), (), where)
+        _fields(spec, ("type", "enum"), meant, where)
         values = spec["enum"]
         _require(type(values) is list and bool(values), where, "nonempty string enum required")
         _require(all(type(v) is str and all(ord(c) >= 32 and not 127 <= ord(c) <= 159 for c in v) for v in values), where, "enum strings cannot contain control characters")
         _require(len(set(values)) == len(values), where, "duplicate enum value")
     elif kind == "bytes":
         # A bounded byte string the caller supplies as hex, for payloads whose content and length vary.
-        _require(schema6, where, "bytes parameters require interface-model/6")
-        _fields(spec, ("type", "min_length", "max_length"), (), where)
+        _fields(spec, ("type", "min_length", "max_length"), meant, where)
         _integer(spec["min_length"], 0, 4096, where)
         _integer(spec["max_length"], 1, 4096, where)
         _require(spec["min_length"] <= spec["max_length"], where, "min_length exceeds max_length")
@@ -114,13 +147,8 @@ def _parameter(spec, where, schema6=False):
         raise ModelError(where, "unsupported parameter type")
 
 
-def _tx_bound(parts, parameters, where, _former_flag=None, *, level=6):
-    """Validate a tx list and return its largest encoded length.
-
-    `level` is the model's schema number; validation passes it so that a part the declared schema lacks
-    is refused. Sizing callers run after validation and may omit it. The fourth positional argument, a
-    former schema-5 flag, is accepted for those callers and ignored.
-    """
+def _tx_bound(parts, parameters, where):
+    """Validate a tx list and return its largest encoded length."""
     _require(type(parts) is list, where, "tx must be a list")
     total = 0
     for i, part in enumerate(parts):
@@ -128,7 +156,6 @@ def _tx_bound(parts, parameters, where, _former_flag=None, *, level=6):
         _fields(part, (), ("hex", "text", "arg", "format", "check", "over_parts", "byteorder"), loc)
         if "check" in part:
             # A checksum over the encoded bytes of earlier parts of this same tx list.
-            _require(level >= 5, loc, "tx check parts require interface-model/5")
             _fields(part, ("check", "over_parts", "byteorder"), (), loc)
             span = part["over_parts"]
             _require(type(span) is list and len(span) == 2 and all(type(v) is int for v in span)
@@ -150,7 +177,6 @@ def _tx_bound(parts, parameters, where, _former_flag=None, *, level=6):
             _require(type(fmt) is str and (fmt in ("ascii", "raw") or fmt in _FORMATS or fmt in _LENGTH_FORMATS),
                      loc, "unknown argument format")
             if fmt == "raw" or fmt in _LENGTH_FORMATS:
-                _require(level >= 6, loc, "raw and length argument formats require interface-model/6")
                 _require(p["type"] == "bytes", loc, "raw and length formats require a bytes parameter")
                 if fmt == "raw":
                     total += p["max_length"]
@@ -195,7 +221,7 @@ def _end(end, where):
         _require(value.split() == [value], where, "line_token must be a single token")
 
 
-def _rx(rx, channel_type, control, where, schema4=False, schema5=False, schema6=False):
+def _rx(rx, channel_type, control, where):
     _fields(rx, ("mode",), ("length", "max_bytes", "delimiter_hex", "end", "newline", "max_lines",
                             "sync_hex", "check", "end_hex", "max_reads"), where)
     mode = rx["mode"]
@@ -204,15 +230,10 @@ def _rx(rx, channel_type, control, where, schema4=False, schema5=False, schema6=
     _require(mode in allowed, where, "unsupported receive mode for channel")
     if mode == "frame":
         # Length-prefixed binary frame: sync bytes, a length field, optional check and end bytes.
-        _require(schema5, where, "frame receive mode requires interface-model/5")
-        _require(channel_type != "usb" or schema6, where,
-                 "USB frame receive requires interface-model/6")
         try:
             spec = checks.frame_spec(rx)
         except checks.CheckError as exc:
             raise ModelError(where, str(exc)) from exc
-        _require(schema6 or not ({"body_mask", "padding"} & rx["length"].keys()), where,
-                 "composite frame lengths require interface-model/6")
         _require(channel_type == "usb" or "max_reads" not in rx, where,
                  "max_reads applies only to USB frames")
         _require(channel_type != "usb" or "max_reads" in rx, where,
@@ -221,7 +242,6 @@ def _rx(rx, channel_type, control, where, schema4=False, schema5=False, schema6=
     if mode == "lines":
         # Completion-aware line protocol: read whole lines until one satisfies `end`, consume
         # exactly through that line, and leave later bytes for the next exchange.
-        _require(schema4, where, "lines receive mode requires interface-model/4")
         _fields(rx, ("mode", "max_bytes", "end"), ("newline", "max_lines"), where)
         _integer(rx["max_bytes"], 2, 65536, where)
         _end(rx["end"], where)
@@ -245,16 +265,12 @@ _REJECT_FORMS = ("reject_line_prefix", "reject_prefix_hex")
 _LINE_FORMS = ("contains_line", "line_prefix_present", "first_line_prefix", "final_line_equals", "final_line_token")
 
 
-def _expect(expect, bound, where, schema4=False, mode=None, rx=None, schema5=False):
+def _expect(expect, bound, where, mode, rx):
     _fields(expect, (), _BYTE_FORMS + _LINE_FORMS + _REJECT_FORMS, where)
     positives = [k for k in expect if k not in _REJECT_FORMS]
-    if not schema4:
-        _require(len(expect) == 1 and len(positives) == 1 and positives[0] in _BYTE_FORMS, where,
-                 "exactly one expectation form required")
-    else:
-        _require(positives, where, "at least one positive expectation form required")
-        _require(mode in ("lines", "until") or not any(k in _LINE_FORMS for k in positives), where,
-                 "line expectations require a lines or until receive mode")
+    _require(positives, where, "at least one positive expectation form required")
+    _require(mode in ("lines", "until") or not any(k in _LINE_FORMS for k in positives), where,
+             "line expectations require a lines or until receive mode")
     for key in positives:
         value = expect[key]
         if key in ("equals_hex", "prefix_hex"):
@@ -268,17 +284,15 @@ def _expect(expect, bound, where, schema4=False, mode=None, rx=None, schema5=Fal
                 _require(value.split() == [value], where, "final_line_token must be a single token")
         _require(len(literal) <= bound, where, "expectation exceeds receive bound")
     if "reject_line_prefix" in expect:
-        _require(schema4, where, "reject_line_prefix requires interface-model/4")
         rejects = expect["reject_line_prefix"]
         _require(type(rejects) is list and 1 <= len(rejects) <= 16, where, "reject_line_prefix needs 1-16 entries")
         for item in rejects:
             _text(item, where)
         _require(len(set(rejects)) == len(rejects), where, "duplicate reject_line_prefix entry")
-    if schema4 and mode == "lines":
+    if mode == "lines":
         _require(expect.get("reject_line_prefix"), where,
                  "lines receive mode requires reject_line_prefix naming the device's error lines")
     if "reject_prefix_hex" in expect:
-        _require(schema5, where, "reject_prefix_hex requires interface-model/5")
         rejects = expect["reject_prefix_hex"]
         _require(type(rejects) is list and 1 <= len(rejects) <= 16, where, "reject_prefix_hex needs 1-16 entries")
         literals = [_hex(item, where, True) for item in rejects]
@@ -323,9 +337,12 @@ def _setup(setup, parameters, tx_bound, rx_bound, where, effect="read"):
              "SET_ADDRESS, SET_CONFIGURATION and SET_INTERFACE belong to the host and cannot be modelled")
 
 
-def _decoder(decoder, captures, where, schema4=False, schema6=False):
-    _fields(decoder, ("from", "kind"), ("unit", "strip", "prefix", "offset", "size", "byteorder", "signed", "scale", "offset_value", "key", "line_prefix",
-                                        "mask", "shift", "max_length", "encoding", "length_offset", "length_size", "includes_terminator"), where)
+def _decoder(decoder, captures, where):
+    meant = _MEANINGS + ("value",)
+    _fields(decoder, ("from", "kind"),
+            ("unit", "strip", "prefix", "offset", "size", "byteorder", "signed", "scale", "offset_value", "key",
+             "line_prefix", "mask", "shift", "max_length", "encoding", "length_offset", "length_size",
+             "includes_terminator") + meant, where)
     _require(type(decoder["from"]) is str and decoder["from"] in captures, where, "unknown source capture")
     kind = decoder["kind"]
     options = {"hex": (), "utf8": ("strip",), "ascii_number": ("prefix",),
@@ -334,13 +351,13 @@ def _decoder(decoder, captures, where, schema4=False, schema6=False):
                "kv_number": ("scale", "offset_value"), "kv_text": (), "line_text": ("strip",),
                "cstring": ("max_length", "encoding"), "lpstring": ("encoding",)}
     _require(type(kind) is str and kind in options, where, "unknown decoder")
-    _require(schema4 or kind not in ("kv_number", "kv_text", "line_text"), where, "decoder requires interface-model/4")
-    _require(schema6 or kind not in ("cstring", "lpstring"), where, "decoder requires interface-model/6")
     required = {"integer": ("offset", "size", "byteorder", "signed"), "float32": ("offset", "byteorder"),
                 "kv_number": ("key",), "kv_text": ("key",), "line_text": ("line_prefix",), "cstring": ("offset",),
                 "lpstring": ("length_offset", "length_size", "byteorder", "offset", "includes_terminator")}.get(kind, ())
-    _fields(decoder, ("from", "kind") + required, ("unit",) + options[kind], where)
-    _require(schema6 or not {"mask", "shift"} & decoder.keys(), where, "mask and shift require interface-model/6")
+    _fields(decoder, ("from", "kind") + required, ("unit",) + options[kind] + meant, where)
+    _meaning(decoder, where)
+    if "value" in decoder:
+        _checked(where + ".value", meanings.check_value_rule, decoder["value"], kind)
     if "key" in decoder:
         _text(decoder["key"], where)
         _require(decoder["key"].split() == [decoder["key"]], where, "key must not contain whitespace")
@@ -385,12 +402,43 @@ def _decoder(decoder, captures, where, schema4=False, schema6=False):
         _require(decoder["encoding"] in ("ascii", "utf-8"), where, "encoding must be ascii or utf-8")
 
 
+def _preconditions(operations, name, where):
+    """Check the preconditions of operation `name` against the validated `operations` of its model."""
+    conditions = operations[name]["preconditions"]
+    _require(type(conditions) is list and len(conditions) <= 16, where,
+             "preconditions must be a list of at most 16 entries")
+    seen = set()
+    for index, condition in enumerate(conditions):
+        loc = where + "." + str(index)
+        _fields(condition, ("id", "description", "observation", "operator", "expected"), (), loc)
+        _require(type(condition["id"]) is str and bool(condition["id"]) and condition["id"] not in seen, loc,
+                 "precondition id must be nonempty text, unique in the operation")
+        seen.add(condition["id"])
+        _require(type(condition["description"]) is str and bool(condition["description"].strip()), loc,
+                 "precondition description must be text that is not blank")
+        _require(condition["operator"] == "eq", loc, "unsupported precondition operator")
+        source = condition["observation"]
+        _fields(source, ("operation", "parameters", "output"), (), loc + ".observation")
+        observed = operations.get(source["operation"]) if type(source["operation"]) is str else None
+        _require(observed is not None and observed["effect"] == "read" and not observed.get("preconditions")
+                 and type(source["output"]) is str and source["output"] in observed["outputs"], loc + ".observation",
+                 "preconditions require a declared unguarded read observation")
+        try:
+            _arguments(observed["parameters"], source["parameters"])
+        except ModelError as exc:
+            raise ModelError(loc + ".observation",
+                             "observation parameters are not arguments its operation accepts: " + str(exc)) from None
+        decoder = observed["outputs"][source["output"]]
+        _checked(loc + ".expected", meanings.check_value, condition["expected"],
+                 decoder.get("value", meanings.default_value(decoder["kind"])), "expected")
+
+
 def _validate(model):
     _json_model(model)
+    # The tag is looked at first, so a model of another format is refused by its name whatever else it holds.
+    _require(type(model) is not dict or "schema" not in model or format_refusal(model) is None,
+             "schema", format_refusal(model))
     _fields(model, ("schema", "device", "channel", "identity", "operations", "provenance"), (), "model")
-    _require(model["schema"] in SCHEMAS, "schema", "unsupported model schema: " + repr(model["schema"])[:120])
-    level = int(model["schema"].rsplit("/", 1)[1])
-    schema4, schema5, schema6 = level >= 4, level >= 5, level >= 6
     _fields(model["device"], ("name",), (), "device")
     _require(model["device"]["name"] is None or type(model["device"]["name"]) is str, "device.name", "must be string or null")
     from .transports import validate_channel
@@ -404,13 +452,14 @@ def _validate(model):
     for name, operation in operations.items():
         loc = "operations." + name
         _require(_name(name), loc, "invalid operation name")
-        _fields(operation, ("effect", "parameters", "steps", "outputs"), (), loc)
+        _fields(operation, ("effect", "parameters", "steps", "outputs"), _MEANINGS + ("preconditions",), loc)
         _require(operation["effect"] in ("read", "write", "actuate"), loc, "unknown effect")
+        _meaning(operation, loc)
         parameters = operation["parameters"]
         _require(type(parameters) is dict and len(parameters) <= 32, loc, "at most 32 parameters")
         for pname, spec in parameters.items():
             _require(_name(pname), loc, "invalid parameter name")
-            _parameter(spec, loc + ".parameters." + pname, schema6)
+            _parameter(spec, loc + ".parameters." + pname)
         steps, captures, duration = operation["steps"], {}, 0
         _require(type(steps) is list and 1 <= len(steps) <= 128, loc, "requires 1–128 steps")
         for i, step in enumerate(steps):
@@ -427,12 +476,12 @@ def _validate(model):
             _require(not control or model["channel"]["type"] == "usb", sloc, "control requires USB channel")
             _integer(step["timeout_ms"], 1, 60000, sloc)
             duration += step["timeout_ms"]
-            tx_bound = _tx_bound(step["tx"], parameters, sloc + ".tx", level=level)
-            rx_bound = _rx(step["rx"], model["channel"]["type"], control, sloc + ".rx", schema4, schema5, schema6)
+            tx_bound = _tx_bound(step["tx"], parameters, sloc + ".tx")
+            rx_bound = _rx(step["rx"], model["channel"]["type"], control, sloc + ".rx")
             if "match" in step:
-                _require(schema6 and model["channel"]["type"] == "usb" and not control
+                _require(model["channel"]["type"] == "usb" and not control
                          and step["rx"]["mode"] == "frame", sloc,
-                         "request/reply matching requires a schema-6 USB frame exchange")
+                         "request/reply matching requires a USB frame exchange")
                 rules = step["match"]
                 _require(type(rules) is list and 1 <= len(rules) <= 8, sloc + ".match",
                          "match requires 1–8 byte ranges")
@@ -446,7 +495,7 @@ def _validate(model):
                     _require(rule["tx_offset"] + rule["size"] <= tx_bound
                              and rule["rx_offset"] + rule["size"] <= fixed_header, rloc,
                              "match range exceeds the request or fixed response header")
-            if schema6 and model["channel"]["type"] == "usb" and not control:
+            if model["channel"]["type"] == "usb" and not control:
                 # Refused here rather than by the transport, which could only refuse once opened.
                 _require(tx_bound == 0 or "out_endpoint" in model["channel"], sloc, "a USB exchange that transmits requires channel out_endpoint")
                 _require(rx_bound == 0 or "in_endpoint" in model["channel"], sloc, "a USB exchange that receives requires channel in_endpoint")
@@ -457,7 +506,7 @@ def _validate(model):
             _require(step["rx"]["mode"] != "frame" or "expect" in step, sloc,
                      "frame receive mode requires an expectation pinning the reply beyond its sync bytes")
             if "expect" in step:
-                _expect(step["expect"], rx_bound, sloc + ".expect", schema4, step["rx"]["mode"], step["rx"], schema5)
+                _expect(step["expect"], rx_bound, sloc + ".expect", step["rx"]["mode"], step["rx"])
             if "capture" in step:
                 capture = step["capture"]
                 _require(_name(capture) and capture not in captures, sloc, "invalid or overwritten capture")
@@ -467,7 +516,11 @@ def _validate(model):
         _require(type(outputs) is dict, loc, "outputs must be object")
         for oname, decoder in outputs.items():
             _require(_name(oname), loc, "invalid output name")
-            _decoder(decoder, captures, loc + ".outputs." + oname, schema4, schema6)
+            _decoder(decoder, captures, loc + ".outputs." + oname)
+    # A precondition observes another operation, so it is checked once every operation is.
+    for name, operation in operations.items():
+        if "preconditions" in operation:
+            _preconditions(operations, name, "operations." + name + ".preconditions")
     identity = model["identity"]["operation"]
     _require(type(identity) is str and identity in operations, "identity", "identity references unknown operation")
     identity_op = operations[identity]
@@ -489,8 +542,8 @@ def validate_model(model):
         _validate(model)
     except (ModelError, ValueError, TypeError, KeyError, OverflowError, RecursionError, UnicodeError) as exc:
         return {"ok": False, "defects": [{"where": getattr(exc, "where", "model"), "what": str(exc)}],
-                "checks_run": [model["schema"] if type(model) is dict and model.get("schema") in SCHEMAS else "interface-model/3"]}
-    return {"ok": True, "defects": [], "checks_run": [model["schema"]]}
+                "checks_run": [SCHEMA]}
+    return {"ok": True, "defects": [], "checks_run": [SCHEMA]}
 
 
 def _arguments(specs, parameters):
@@ -828,8 +881,18 @@ class Session:
                             spec = checks.frame_spec(step["rx"])
                             data = data[:checks.frame_data_end(data, spec)]
                         decoder_captures[step["capture"]] = data
-                return {name: _decode(decoder, captures if decoder["kind"] == "hex" else decoder_captures)
-                        for name, decoder in op["outputs"].items()}
+                outputs = {name: _decode(decoder, captures if decoder["kind"] == "hex" else decoder_captures)
+                           for name, decoder in op["outputs"].items()}
+                # A reading outside what the model says the output may be is the model's fault, wherever it runs.
+                for name, decoder in op["outputs"].items():
+                    if "value" in decoder:
+                        try:
+                            meanings.check_value(outputs[name], decoder["value"], "outputs." + name)
+                        except ValueError as exc:
+                            violation = ModelError("outputs." + name, str(exc), code="output_schema_violation")
+                            violation.invalid_outputs = outputs
+                            raise violation from None
+                return outputs
 
             identity = model["identity"]["operation"]
             identity_outputs = run(identity, {})
@@ -846,6 +909,8 @@ class Session:
                 result['error']['fault'] = classify_failure(result)
             else:
                 result['error']['fault'] = Fault.MODEL.value if isinstance(exc, UnicodeError) else Fault.HOST.value
+            if hasattr(exc, 'invalid_outputs'):
+                result['invalid_outputs'] = exc.invalid_outputs
             if validated and self.transport is not None:
                 try:
                     self.close()

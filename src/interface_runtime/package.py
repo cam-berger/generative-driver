@@ -1,4 +1,7 @@
-"""Non-executing package integrity checks; hashes are integrity, not signatures."""
+"""Non-executing package integrity checks; hashes are integrity, not signatures.
+
+A package states its driver once, in `driver/model.json`; its contract, protocol and tool catalog are checked as what
+the runtime computes from that model (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
 import hashlib
 from pathlib import Path, PurePosixPath
 from .evidence import read_json
@@ -43,6 +46,14 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
         manifest = read_json(root/'manifest.json', 1048576)
         if type(manifest) is dict and manifest.get('schema') not in _PACKAGE_FORMATS:
             raise ValueError('package format is not one this kit knows: ' + _named(manifest.get('schema')))
+        # The model's tag is looked at before anything is compared, so a package emitted with an earlier driver format
+        # is refused by that name and not for a hash (docs/adr/0010-a-package-is-data-in-one-format.md).
+        model = root/'driver/model.json'
+        if model.is_file() and not model.is_symlink():
+            from .engine import format_refusal
+            refusal = format_refusal(read_json(model, 1048576))
+            if refusal is not None:
+                raise ValueError(refusal)
         fields = {'schema','name','version','model_sha256','probe_sha256','source_evidence_kind','files'}
         if type(manifest) is dict and manifest.get('schema') == 'interface-package/2':
             fields |= {'contract_sha256', 'protocol_sha256', 'mcp_catalog_sha256'}
@@ -77,10 +88,19 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
             for name in ('contract', 'protocol'):
                 if files.get('driver/'+name+'.json') != manifest[name+'_sha256']:
                     raise ValueError('manifest '+name+' hash mismatch')
-            from .contracts import compile_contract
-            compiled = compile_contract(read_json(root/'driver/contract.json'), read_json(root/'driver/protocol.json'))
-            if compiled != read_json(root/'driver/model.json'):
-                raise ValueError('model projection differs from driver contract and protocol')
+            from .contracts import contract_view, protocol_view
+            from .engine import validate_model
+            stated = read_json(root/'driver/model.json')
+            validated = validate_model(stated)
+            if not validated['ok']:
+                raise ValueError('driver/model.json is not a valid interface model: '
+                                 + '; '.join(d['where'] + ': ' + d['what'] for d in validated['defects'][:4]))
+            contract = contract_view(stated)
+            # The two files are copies of the model's views until the package's files change, so each is compared as a
+            # whole and no tag of its own is looked at.
+            for name, view in (('driver/contract.json', contract), ('driver/protocol.json', protocol_view(stated))):
+                if read_json(root/name) != view:
+                    raise ValueError(name + ' differs from the view of driver/model.json')
             from .catalog import render_catalog, RENDERERS
             catalog = read_json(root/'mcp-tools.json')
             if files.get('mcp-tools.json') != manifest['mcp_catalog_sha256']:
@@ -93,7 +113,7 @@ def verify_package(root, expected_model_sha256=None, expected_manifest_sha256=No
                                  + _named(catalog.get('renderer_version')))
             # Each catalog is checked under the renderer it names, so a kit that renders new catalogs differently
             # still verifies the ones it wrote before.
-            if catalog != render_catalog(read_json(root/'driver/contract.json'), manifest['contract_sha256'],
+            if catalog != render_catalog(contract, manifest['contract_sha256'],
                                          catalog.get('namespace'), catalog['renderer_version']):
                 raise ValueError('MCP catalog differs from the public driver contract')
         if manifest['source_evidence_kind'] not in ('live','replay'):

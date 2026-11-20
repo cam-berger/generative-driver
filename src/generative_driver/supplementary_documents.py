@@ -26,9 +26,9 @@ _DOCUMENTS = ('The files under documents/, listed in DOCUMENTS.json, are supplem
 _TRUTH = ('The firmware is the truth, and so are the device\'s replies where you have them: where a document disagrees '
           'with the firmware or the device, follow the firmware or the device')
 _DEVICE_TRUTH = 'The device\'s replies are the truth: where a document disagrees with them, follow the device'
-_CITE = (', and record the disagreement in NOTES.md and as an uncertainty in contract.json. In provenance, cite a '
-         'document page by its path, such as documents/1-datasheet/002.txt. DOCUMENTS.json names each page left out '
-         'by its size bound.')
+_CITE = (', and record the disagreement in NOTES.md and as an uncertainty of the operation in model.json. In '
+         'provenance, cite a document page by its path, such as documents/1-datasheet/002.txt. DOCUMENTS.json names '
+         'each page left out by its size bound.')
 
 
 def sealed_inputs(folder, handoff, calls):

@@ -157,7 +157,7 @@ class ImportedToolTests(unittest.TestCase):
                 patch('socket.create_connection', side_effect=AssertionError('a transport was opened')):
             report = validate_model(gauge_model())
             self.assertEqual((report['ok'], report['defects']), (True, []))
-            self.assertIs(validate_model({'schema': 'interface-model/3'})['ok'], False)
+            self.assertIs(validate_model({'schema': 'interface-model/7'})['ok'], False)
 
 
 # The keys of `result` for any run, to which a supplied run adds the `client_record` its `start` sent.

@@ -4,7 +4,7 @@
   "tools": [
     {
       "name": "interface_describe",
-      "description": "Describe validated executable (schema 3-6) operations and transport capabilities. No device access.",
+      "description": "Describe the operations of a validated interface model and the transport capabilities. No device access.",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -26,7 +26,7 @@
     },
     {
       "name": "interface_execute",
-      "description": "Execute one typed schema 3-6 operation after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
+      "description": "Execute one typed operation of an interface model after identity verification. Bindings are explicit host choices.\nOnly read effects by default; write/actuate require grants. Explicit replay is offline evidence. Every refusal\nbefore the transport opens (model bytes, validation, operation, evidence bound, replay fixture) returns\ntransport_open_attempted false (exit 1).\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -192,7 +192,7 @@
     },
     {
       "name": "interpret_collect",
-      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation (executable schemas 3-6)\nand a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
+      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation of the interface model\nand a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -704,7 +704,7 @@
     },
     {
       "name": "model_validate",
-      "description": "Validate an interface model's executable transactions (schemas 3-6), or experimental schema-2 evidence.\nReturns defects, among them a schema it has no validator for; structural command validation does not prove\nsemantics or authorize physical action.\n",
+      "description": "Validate an interface model's executable transactions and its meanings, or experimental schema-2 evidence.\nReturns defects, among them a schema it has no validator for; structural command validation does not prove\nsemantics or authorize physical action. Beside the result of an interface model comes `advice`: each\noperation, parameter and output without a description, and each number with neither a unit nor a\nunit_not_stated uncertainty. Advice changes neither ok nor the exit status, and it is empty for a model that\ndoes not validate.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -930,7 +930,7 @@
     },
     {
       "name": "probe_run",
-      "description": "Probe without repairing the model: run one operation of an interface model (schemas 3-6) `n` times, with an\nexplicit operation and a trusted binding or a replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\nEvery refusal before the device is contacted returns transport_open_attempted false, with exit 1, and writes\nno record: model bytes the strict reader refuses, a model format the runtime does not know, an invalid model,\nthe operation, a sample count outside 1..100, the evidence bound or a replay fixture.\n",
+      "description": "Probe without repairing the model: run one operation of an interface model `n` times, with an\nexplicit operation and a trusted binding or a replay trace. Evidence kind and model hash are recorded.\nA failed probe returns error_code; exit 4 is a transport fault (inconclusive), exit 1 a model failure.\nEvery refusal before the device is contacted returns transport_open_attempted false, with exit 1, and writes\nno record: model bytes the strict reader refuses, a model format the runtime does not know, an invalid model,\nthe operation, a sample count outside 1..100, the evidence bound or a replay fixture.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1022,7 +1022,7 @@
     },
     {
       "name": "probe_diff",
-      "description": "What the device did that the model did not predict, as a defect list for an interpret retry.\nFor schemas 3-6 each failed result becomes a defect with its step, error code, fault (transport or\nmodel) and the bytes seen; exit 4 means every failure was a transport fault.\n",
+      "description": "What the device did that the model did not predict, as a defect list for an interpret retry.\nEach failed result becomes a defect with its step, error code, fault (transport or\nmodel) and the bytes seen; exit 4 means every failure was a transport fault.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1049,7 +1049,7 @@
     },
     {
       "name": "emit_package",
-      "description": "Stage 5. Generate the device package from an interface model and the successful probe record that model\nwrote: the model with its driver contract and declarative protocol, a driver entry and a copy of the\nruntime, the probe record, the rendered MCP tool catalog, a reference, and a manifest that holds the hash\nof every file. A model of a format the runtime does not know is refused before the probe is read.",
+      "description": "Stage 5. Generate the device package from an interface model and the successful probe record that model\nwrote: the model, the driver contract and the declarative protocol computed from it, a driver entry and a copy of the\nruntime, the probe record, the rendered MCP tool catalog, a reference, and a manifest that holds the hash\nof every file. The model is the one statement of the driver: nothing else in the model directory is read.\nA model of a format the runtime does not know is refused before the probe is read.",
       "inputSchema": {
         "properties": {
           "run_dir": {

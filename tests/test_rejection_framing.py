@@ -16,7 +16,7 @@ def line_model(max_lines=2):
     identify["expect"]["contains_line"] = "DEVICE=LAB"
     apply = step("APPLY", "reply", max_lines)
     apply["expect"]["first_line_prefix"] = "END"
-    return {"schema": "interface-model/4", "device": {"name": "Scripted controller"},
+    return {"schema": "interface-model/7", "device": {"name": "Scripted controller"},
             "channel": {"type": "tcp"}, "identity": {"operation": "identify"},
             "operations": {
                 "identify": {"effect": "read", "parameters": {},

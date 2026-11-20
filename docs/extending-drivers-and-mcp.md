@@ -14,7 +14,7 @@ Device-specific Python plugins, dynamic imports and expressions are outside the 
 
 ## Public operation
 
-The [format reference](../src/generative_driver/resources/docs/DRIVER_CONTRACT.md) describes `driver-contract/1`, `driver-protocol/1` and `interface-package/2`. Public parameters, effects and units have one authority in the contract. The protocol references their names and supplies the steps and decoders. `driver/model.json` is a checked executable projection.
+The [format reference](../src/generative_driver/resources/docs/INTERFACE_MODEL.md) describes `driver-contract/1`, `driver-protocol/1` and `interface-package/2`. Public parameters, effects and units have one authority in the contract. The protocol references their names and supplies the steps and decoders. `driver/model.json` is a checked executable projection.
 
 Start with a supported executable `model.json` and independently checked probe evidence. `emit_package` derives a conservative contract/protocol pair. Missing meanings receive explicit operation, parameter or output warnings. To provide supported meanings, author `contract.json` and `protocol.json` beside `model.json` before emission. Supply both authored files together; a lone document is rejected. Their compiled projection must match the probed model. Changing wire behavior requires new probe/ground evidence. In a generic run, the interpret worker writes `contract.json` alone with `contract.py draft` and `check`. Emit derives `protocol.json` from the model, keeps each operation whose entry still compiles to it, and its notes name the operations that got the imported entry.
 

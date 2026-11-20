@@ -64,6 +64,42 @@ class StagePreparationTests(unittest.TestCase):
             self.assertEqual(hashes['image.bin'], hashlib.sha256((workspace / 'image.bin').read_bytes()).hexdigest())
 
 
+class OneFormatTests(unittest.TestCase):
+    """A run on a supplied device asks its interpret worker for meanings, with the one model document, and hands on the
+    model alone (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B8_a_run_on_a_supplied_device_gives_its_interpret_worker_the_one_model_document(self):
+        from worker_texts import ASK, earlier_names, model_document, texts_of
+        self.assertTrue(model_document().is_file(), 'the tool has no one model document')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_stage('interpret', root / 'run', root / 'worker')
+            self.addCleanup(__import__('shutil').rmtree, Path(prepared['work_dir']).parent, True)
+            workspace = Path(prepared['work_dir'])
+            self.assertEqual((workspace / 'INTERFACE_MODEL.md').read_bytes(), model_document().read_bytes())
+            for name in ('CONTRACT.md', 'contract.py'):
+                self.assertFalse((workspace / name).exists(), name)
+            self.assertIn(ASK, (workspace / 'BRIEF.md').read_text(encoding='utf-8'))
+            self.assertEqual(earlier_names({**texts_of(workspace), 'the prompt': prepared['prompt']}), [])
+
+    def test_02_B13_the_interpret_handoff_carries_no_contract_or_protocol_a_worker_still_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = prepare_stage('interpret', root / 'run', root / 'worker')
+            self.addCleanup(__import__('shutil').rmtree, Path(prepared['work_dir']).parent, True)
+            workspace = Path(prepared['work_dir'])
+            model = example_model()
+            model['operations']['measure']['description'] = 'Read the temperature of the probe.'
+            (workspace / 'model.json').write_text(json.dumps(model), encoding='utf-8')
+            (workspace / 'NOTES.md').write_text('The reply states degrees Celsius.\n', encoding='utf-8')
+            for name in ('contract.json', 'protocol.json'):
+                (workspace / name).write_text('{"schema": "written by a worker of an earlier kit"}', encoding='utf-8')
+            checked = observe_stage('interpret', root / 'run', workspace, {'status': 'completed'})
+            self.assertEqual(sorted(Path(a).name for a in checked['artifacts']), ['NOTES.md', 'model.json'])
+            handed = next(Path(a) for a in checked['artifacts'] if Path(a).name == 'model.json')
+            self.assertEqual(json.loads(handed.read_text(encoding='utf-8')), model)
+
+
 if __name__ == '__main__':
     unittest.main()
 

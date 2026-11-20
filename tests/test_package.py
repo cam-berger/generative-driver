@@ -19,7 +19,7 @@ def example_model():
         if expected:
             result["expect"] = {"equals_hex": expected}
         return result
-    return {"schema": "interface-model/3", "device": {"name": "fictional demonstration"},
+    return {"schema": "interface-model/7", "device": {"name": "fictional demonstration"},
             "channel": {"type": "uart", "baudrate": 115200}, "identity": {"operation": "identify"},
             "operations": {
                 "identify": {"effect": "read", "parameters": {}, "steps": [step("ID?\n", "id", "44454d4f2d34320a")], "outputs": {}},
@@ -333,7 +333,7 @@ class ToolFaultTests(unittest.TestCase):
                     ("no model.json", None, {}, "ValueError: model_dir holds no model.json"),
                     ("a model that is no JSON object", "[]", {}, "ValueError: model.json is not a JSON object"),
                     ("an invalid model", json.dumps(invalid), {}, "ValueError: invalid model: "),
-                    ("no operation", text, {"operation": None}, "ValueError: schema 3 probe requires an explicit operation"),
+                    ("no operation", text, {"operation": None}, "ValueError: a probe requires an explicit operation"),
                     ("an operation the model does not have", text, {"operation": "erase"}, "ValueError: unknown operation"),
                     ("too many samples", text, {"n": 101}, "ValueError: sample count must be integer 1..100"),
                     ("no samples", text, {"n": 0}, "ValueError: sample count must be integer 1..100"),
@@ -701,6 +701,280 @@ class RegisterFamilyTests(unittest.TestCase):
                 prepared = call_tool("interpret_run", {"run_dir": str(root / ("run-" + front_end)),
                                                        "front_end": front_end, "inputs": {}})
                 self.assertEqual((prepared.get("ok"), prepared["_exit"]), (True, 0), prepared)
+
+
+EARLIER_TAGS = ("interface-model/3", "interface-model/4", "interface-model/5", "interface-model/6")
+
+
+def retagged_package(root, tag, marker):
+    """A package emitted from the example model, whose `driver/model.json` then names `tag` and whose manifest is
+    brought in step with those bytes, so that the tag is all that tells it from a package of today. Its Python
+    writes the file `marker` when imported or run."""
+    from interface_runtime.package import digest, package_files
+    from test_driver_contract import emit_fixture
+    package, _ = emit_fixture(root)
+    model = json.loads((package / "driver/model.json").read_text())
+    (package / "driver/model.json").write_text(json.dumps(dict(model, schema=tag)))
+    for name in ("driver/__init__.py", "driver/__main__.py", "interface_runtime/engine.py"):
+        (package / name).write_text(marking(marker))
+    manifest = json.loads((package / "manifest.json").read_text())
+    files = package_files(package)
+    manifest.update(files=files, model_sha256=files["driver/model.json"])
+    (package / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (package / "manifest.sha256").write_text(digest(package / "manifest.json") + "\n")
+    return package
+
+
+class EarlierFormatTests(unittest.TestCase):
+    """One driver format is read, `interface-model/7`. A model that names an earlier tag is refused by that name, and
+    so is a package that holds one (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B2_each_tool_refuses_a_model_of_an_earlier_tag_by_name(self):
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def transport(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a transport was opened")
+        binding = {"binding": {"port": "/dev/null"}}
+        with tempfile.TemporaryDirectory() as temp, patch("interface_runtime.evidence.open_transport", transport):
+            root = Path(temp).resolve()
+            # Neither the probe record nor the replies exist: a tool that read one would fail on that instead.
+            probe, replies = str(root / "no-such-probe.json"), str(root / "no-such-replies.json")
+            for tag in EARLIER_TAGS:
+                model = root / ("model-" + tag[-1]); model.mkdir()
+                (model / "model.json").write_text(json.dumps(dict(example_model(), schema=tag)))
+                supplied = contents(model)
+                for tool, arguments in (("model_validate", {}), ("model_qualify", {"replies": replies}),
+                                        ("interface_describe", {}),
+                                        ("interface_execute", {"operation": "measure", **binding}),
+                                        ("probe_run", {"operation": "measure", **binding}),
+                                        ("probe_diff", {"probe": probe}), ("emit_package", {"probe": probe})):
+                    with self.subTest(tag=tag, tool=tool):
+                        run = root / ("run-" + tag[-1] + "-" + tool)
+                        refused = call_tool(tool, {"run_dir": str(run), "model_dir": str(model), **arguments})
+                        self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), refused)
+                        self.assertIn(repr(tag), said(refused), refused)
+                        self.assertIn("interface-model/7", said(refused), refused)
+                        if tool in ("interface_execute", "probe_run"):
+                            self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                        # Nothing was written: no file beside the model, no record, report or package folder.
+                        self.assertEqual(contents(model), supplied)
+                        for folder in ("probe", "interpret", "emit"):
+                            self.assertFalse((run / folder).exists(), folder)
+            self.assertEqual(opened, [])
+
+    def test_02_B2_a_package_whose_model_names_an_earlier_tag_is_refused_by_name_and_nothing_of_it_runs(self):
+        from generative_driver.sdk import ManagedDriver
+        from generative_driver.toolkit import call_tool
+        opened = []
+        def transport(*arguments, **keywords):
+            opened.append(arguments)
+            raise AssertionError("a transport was opened")
+        def service(*arguments, **keywords):
+            raise AssertionError("the service was asked for a session")
+        for tag in EARLIER_TAGS:
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as temp, \
+                    patch("interface_runtime.evidence.open_transport", transport), \
+                    patch("interface_runtime.transports.open_transport", transport), \
+                    patch("generative_driver.client.call", service):
+                root = Path(temp).resolve()
+                marker = root / "package-ran"
+                package = retagged_package(root, tag, marker)
+                supplied = contents(package)
+                for tool, arguments in (("emit_check", {}), ("emit_test_live", {"binding": {"port": "/dev/null"}})):
+                    run = root / ("run-" + tool)
+                    refused = call_tool(tool, {"run_dir": str(run), "package_dir": str(package), **arguments})
+                    self.assertEqual((refused.get("ok"), refused["_exit"]), (False, 1), (tool, refused))
+                    self.assertIn(repr(tag), said(refused), (tool, refused))
+                    self.assertIn("interface-model/7", said(refused), (tool, refused))
+                    if tool == "emit_test_live":
+                        self.assertIs(refused.get("transport_open_attempted"), False, refused)
+                    # No live record was written.
+                    self.assertFalse((run / "emit").exists())
+                with self.assertRaises(ValueError) as managed:
+                    ManagedDriver.open(package, binding={"port": "/dev/null"}, home=root / "home")
+                self.assertIn(repr(tag), str(managed.exception))
+                self.assertIn("interface-model/7", str(managed.exception))
+                # No file of the package was imported or run.
+                self.assertFalse(marker.exists(), "a file of the refused package was imported or run")
+                self.assertEqual(contents(package), supplied)
+        self.assertEqual(opened, [])
+
+    def test_02_B2_the_package_check_names_the_tag_before_it_compares_any_hash(self):
+        # The model of a package emitted today is rewritten to an earlier tag and the manifest is left as it was, so
+        # the model's hash no longer matches. The check still refuses the package for its tag.
+        from interface_runtime.package import verify_package
+        from test_driver_contract import emit_fixture
+        with tempfile.TemporaryDirectory() as temp:
+            package, _ = emit_fixture(Path(temp).resolve())
+            model = json.loads((package / "driver/model.json").read_text())
+            (package / "driver/model.json").write_text(json.dumps(dict(model, schema="interface-model/5")))
+            checked = verify_package(package)
+            self.assertFalse(checked["ok"])
+            self.assertIn("'interface-model/5'", said(checked), checked)
+            self.assertIn("interface-model/7", said(checked), checked)
+            self.assertNotIn("hash", said(checked), checked)
+
+
+def prepared_workspace(root, front_end):
+    """The interpret workspace `interpret_run` prepares for `front_end`, with what the tool returned."""
+    from generative_driver.toolkit import call_tool
+    prepared = call_tool("interpret_run", {"run_dir": str(root / ("run-" + front_end)), "front_end": front_end,
+                                           "inputs": {}, "mode": "prepare"})
+    if not prepared.get("ok"):
+        raise AssertionError(prepared)
+    return Path(prepared["workspace"]), prepared
+
+
+class WorkerDocumentTests(unittest.TestCase):
+    """Workers get one model document, and every front end asks for meanings
+    (docs/adr/0010-a-package-is-data-in-one-format.md, decision 3)."""
+
+    def test_02_B8_each_front_end_gets_the_one_model_document_and_no_contract_tool(self):
+        from worker_texts import ASK, earlier_names, model_document, texts_of
+        self.assertTrue(model_document().is_file(), "the tool has no one model document")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for front_end in ("interpret-interface", "interpret-selfdescribing"):
+                with self.subTest(front_end=front_end):
+                    workspace, prepared = prepared_workspace(root, front_end)
+                    self.assertEqual((workspace / "INTERFACE_MODEL.md").read_bytes(), model_document().read_bytes())
+                    for name in ("CONTRACT.md", "contract.py"):
+                        self.assertFalse((workspace / name).exists(), name)
+                    self.assertIn(ASK, (workspace / "BRIEF.md").read_text(encoding="utf-8"))
+                    self.assertNotIn("conversion module", (workspace / "BRIEF.md").read_text(encoding="utf-8"))
+                    self.assertEqual(earlier_names({**texts_of(workspace),
+                                                    "the prompt": prepared["prompt_for_agent"]}), [])
+
+    def test_02_B8_the_model_document_describes_the_one_format_and_every_model_it_shows_validates(self):
+        import re
+        from generative_driver.toolkit import call_tool
+        from interface_runtime.engine import validate_model
+        from worker_texts import earlier_names, model_document
+        self.assertTrue(model_document().is_file(), "the tool has no one model document")
+        text = model_document().read_text(encoding="utf-8")
+        self.assertIn("interface-model/7", text)
+        self.assertEqual(earlier_names({"INTERFACE_MODEL.md": text}), [])
+        # Every field of the format, and the two codes the tool gives a meaning.
+        for field in ("description", "uncertainties", "code", "message", "evidence_refs", "unit", "value", "type",
+                      "minimum", "maximum", "enum", "minLength", "maxLength", "preconditions", "id", "observation",
+                      "operator", "expected", "unit_not_stated", "not_exercised"):
+            self.assertIn("`" + field + "`", text, field)
+        for units in ("UCUM", "`Cel`", "`%`"):
+            self.assertIn(units, text)
+        # A narrowed value and a precondition are for what the evidence fixes.
+        self.assertRegex(text, r"[Nn]arrow[^.]*only where the evidence fixes it")
+        self.assertRegex(text, r"precondition[^.]*only where the evidence shows that the device refuses")
+        blocks = []
+        for block in re.findall(r"```json\n(.*?)```", text, re.S):
+            try:
+                blocks.append(json.loads(block))
+            except ValueError:
+                continue  # A fragment of a model, or several one-line examples.
+        blocks = [block for block in blocks if isinstance(block, dict)]
+        models = [block for block in blocks if str(block.get("schema", "")).startswith("interface-model/")]
+        self.assertTrue(models, "the document shows no complete model")
+        for model in models:
+            checked = validate_model(model)
+            self.assertTrue(checked["ok"], checked["defects"])
+        # The worked model has meanings of every kind, and its predicted replies qualify it.
+        worked = json.dumps(models[-1])
+        for field in ("description", "uncertainties", "value", "preconditions", "unit_not_stated"):
+            self.assertIn('"' + field + '"', worked, field)
+        replies = [block for block in blocks if str(block.get("schema", "")).startswith("interface-replies/")]
+        self.assertTrue(replies, "the document shows no predicted replies")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            (root / "model").mkdir()
+            (root / "model/model.json").write_text(json.dumps(models[-1]))
+            (root / "replies.json").write_text(json.dumps(replies[-1]))
+            qualified = call_tool("model_qualify", {"run_dir": str(root / "run"), "model_dir": str(root / "model"),
+                                                    "replies": str(root / "replies.json")})
+            self.assertTrue(qualified.get("ok"), qualified)
+
+    def test_02_B8_no_tool_description_names_an_earlier_format_or_a_contract_file(self):
+        from generative_driver.toolkit import list_tools
+        from worker_texts import earlier_names
+        described = {tool["name"]: tool["description"] for tool in list_tools()}
+        self.assertEqual(earlier_names(described), [])
+        self.assertIn("advice", described["model_validate"])
+        self.assertIn("schema-2", described["model_validate"])
+
+
+def advised_model():
+    """The example model with one more reading: `measure` and its temperature say nothing of their meaning, and
+    `read_level` is described, with a level that has no unit."""
+    model = example_model()
+    model["operations"]["read_level"] = {
+        "effect": "read", "parameters": {"channel": {"type": "integer", "minimum": 0, "maximum": 3}},
+        "description": "Read the level of one channel.",
+        "steps": [{"op": "exchange", "tx": [{"text": "L"}, {"arg": "channel", "format": "ascii"}, {"text": "\n"}],
+                   "rx": {"mode": "until", "delimiter_hex": "0a", "max_bytes": 128}, "timeout_ms": 500,
+                   "capture": "reply"}],
+        "outputs": {"level": {"from": "reply", "kind": "ascii_number", "prefix": "L:",
+                              "description": "Level of the channel."},
+                    "label": {"from": "reply", "kind": "utf8", "description": "The whole reply."}}}
+    model["provenance"].append({"item": "operations.read_level", "source": "independent synthetic fixture"})
+    return model
+
+
+ADVICE = ["operations.identify has no description", "operations.measure has no description",
+          "operations.measure.outputs.temperature has no description",
+          "operations.read_level.parameters.channel has no description",
+          "operations.read_level.outputs.level has no unit and no unit_not_stated uncertainty"]
+
+
+class AdviceTests(unittest.TestCase):
+    """The worker's validator says what a model that validates leaves undocumented."""
+
+    def test_02_B9_model_validate_lists_each_missing_description_and_unit_as_advice(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            folder = root / "model"; folder.mkdir()
+
+            def validated(model):
+                (folder / "model.json").write_text(json.dumps(model))
+                return call_tool("model_validate", {"run_dir": str(root / "run"), "model_dir": str(folder)})
+            advised = validated(advised_model())
+            # Advice changes neither ok nor the exit status.
+            self.assertEqual((advised["ok"], advised["_exit"], advised["defects"]), (True, 0, []), advised)
+            self.assertEqual(advised.get("advice"), ADVICE)
+            # A unit, or an uncertainty that says the evidence states none, answers the advice on a number.
+            for answer in ({"unit": "%"}, {"uncertainties": [{"code": "unit_not_stated", "evidence_refs": [],
+                                                              "message": "The reply format states no unit."}]}):
+                model = advised_model()
+                model["operations"]["read_level"]["outputs"]["level"].update(answer)
+                self.assertEqual(validated(model)["advice"], ADVICE[:-1], answer)
+            # A model that does not validate gets no advice.
+            broken = advised_model()
+            broken["operations"]["measure"]["description"] = " "
+            refused = validated(broken)
+            self.assertEqual((refused["ok"], refused["_exit"], refused["advice"]), (False, 1, []), refused)
+            self.assertEqual([defect["where"] for defect in refused["defects"]], ["operations.measure.description"])
+            # The tool writes no file beside the model.
+            self.assertEqual(sorted(path.name for path in folder.iterdir()), ["model.json"])
+
+    def test_02_B9_the_workspace_validator_prints_the_advice_and_writes_it_with_the_result(self):
+        import subprocess
+        import sys
+        from package_env import package_env
+        with tempfile.TemporaryDirectory() as temp:
+            workspace, _ = prepared_workspace(Path(temp).resolve(), "interpret-interface")
+
+            def validated(model):
+                (workspace / "model.json").write_text(json.dumps(model))
+                done = subprocess.run([sys.executable, "validate.py", "."], cwd=workspace, env=package_env(),
+                                      capture_output=True, text=True, timeout=60)
+                printed = json.loads(done.stdout)
+                self.assertEqual(json.loads((workspace / "validation/result.json").read_text()), printed)
+                return done.returncode, printed
+            status, advised = validated(advised_model())
+            self.assertEqual((status, advised["ok"], advised.get("advice")), (0, True, ADVICE), advised)
+            broken = advised_model()
+            broken["operations"]["measure"]["description"] = " "
+            status, refused = validated(broken)
+            self.assertEqual((status, refused["ok"], refused["advice"]), (1, False, []), refused)
 
 
 if __name__ == "__main__":

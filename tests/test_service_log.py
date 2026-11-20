@@ -299,9 +299,11 @@ class FailureEventEntryTests(ControllerCase):
         class Device:
             def observe(self):
                 raise DeviceUnavailable('scripted provider silence')
-        refused = controller._device_call({'id': run['run_id']}, assignment, 'interface_execute', {}, Device(),
-                                          lambda: self.fail('the call was made'))
+        refused, undispatched = controller._device_call({'id': run['run_id']}, assignment, 'interface_execute', {},
+                                                        Device(), lambda: self.fail('the call was made'))
         self.assertEqual(refused['error']['code'], 'device_unavailable')
+        # The call never started: the second value says so, and no field of the result does.
+        self.assertIs(undispatched, True)
         lost = self.events(controller, run['run_id'], 'device.unavailable')
         self.assertEqual([(event['phase'], event['reason']) for event in lost],
                          [('before', 'scripted provider silence')])

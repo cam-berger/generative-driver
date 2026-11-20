@@ -716,9 +716,10 @@ class ReplaceTests(ScriptedCase):
         self.assertNotIn('kind', device.descriptor)
 
 
-    def run_with_a_failed_write(self, then=None):
+    def run_with_a_failed_write(self, then=None, device=None):
         """The result of a supplied run whose probe worker wrote to the device and got `ERR` where the model expects
-        `OK`: a write that reached the device and failed for the model. `then(worker)` runs after the write."""
+        `OK`: a write that reached the device and failed for the model. `then(worker)` runs after the write. The run
+        is on `device`, or on a new hand-written device."""
         written = gauge_model()
         written['operations']['zero'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
             _exchange('Z\n', 'ack', expect={'equals_hex': b'OK\n'.hex()})]}
@@ -731,7 +732,31 @@ class ReplaceTests(ScriptedCase):
             if then:
                 then(worker)
         return self.run_with({'acquire': acquire, 'interpret': lambda worker: worker.write('model.json', written),
-                              'probe': failing}, **self.supplied(effects=['read', 'write']), max_revisions=0)
+                              'probe': failing}, **self.supplied(device, effects=['read', 'write']), max_revisions=0)
+
+    def test_01_B11_while_a_run_is_uncertain_a_call_that_selects_a_condition_is_refused_and_a_plain_read_goes_on(self):
+        device = self.device(conditions=CATALOG)
+
+        def then(worker):
+            model = worker.task['context']['model_dir']
+            worker.selecting = worker.tool('probe_run', model_dir=model, operation='level', n=1, condition_id='low')
+            worker.reading = worker.tool('probe_run', model_dir=model, operation='level', n=1)
+        self.run_with_a_failed_write(then, device)
+        [probed] = self.workers('probe')
+        self.assertFalse(probed.failed['ok'], probed.failed)
+        # Selecting a condition would change the device's input, so it is refused like a write; a read goes on.
+        uncertain = ('Outstanding effect is uncertain; nothing that would change the device is sent until the '
+                     'operator resolves it')
+        self.assertIsInstance(probed.selecting, ValueError, probed.selecting)
+        self.assertEqual(str(probed.selecting), uncertain)
+        self.assertIs(probed.reading['ok'], True, probed.reading)
+        # The refused call is not recorded as started, and the provider was never asked for the condition.
+        probe_events = lambda kind: [event['data'] for event in self.events(kind) if event['data']['stage'] == 'probe']
+        self.assertEqual([(event['name'], event.get('condition_id')) for event in probe_events('tool.started')],
+                         [('interface_execute', None), ('probe_run', None)])
+        self.assertEqual([(event['name'], event['reason']) for event in probe_events('tool.refused')],
+                         [('probe_run', uncertain)])
+        self.assertEqual(device.sent('select_condition'), [])
 
     def test_01_B15_the_verified_replacement_resolves_the_runs_pending_effect_with_the_stages_handoff(self):
         result = self.run_with_a_failed_write()
@@ -772,6 +797,84 @@ class ReplaceTests(ScriptedCase):
         [write] = [event for event in self.events('tool.started') if event['data']['name'] == 'interface_execute']
         pending = self.controller.dispatch_record.pending(self.run['run_id'])
         self.assertEqual([effect['dispatch_id'] for effect in pending], [write['id']])
+
+
+class ProviderRefusalTests(ScriptedCase):
+    """A call the provider of a supplied device refused before it started: the configurator writes its result itself
+    and says so to the dispatch record (01-B8)."""
+
+    def test_01_B8_a_write_the_provider_refused_before_the_call_started_leaves_no_uncertain_effect(self):
+        from generative_driver import dispatch_outcome
+        written = gauge_model()
+        written['operations']['zero'] = {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+            _exchange('Z\n', 'ack', expect={'equals_hex': b'OK\n'.hex()})]}
+        written['provenance'].append({'item': 'operations.zero', 'source': 'the supplied firmware'})
+        # The configurator writes the result of such a call itself, and it alone says the call never started: the
+        # result is trusted also when no tool is trusted by its name.
+        for trusted_by_name in (True, False):
+            device = self.device('device-' + str(len(self.homes)))
+
+            def refused(worker):
+                context = worker.task['context']
+                Path(context['capabilities_output']).write_text(json.dumps(MAPPING), encoding='utf-8')
+                # The provider refuses the reading the configurator takes before the call.
+                device.refused.add('observe')
+                worker.refused = worker.tool('interface_execute', model_dir=context['model_dir'], operation='zero')
+            with self.subTest(trusted_by_name=trusted_by_name), \
+                    patch.dict(dispatch_outcome.TRUSTED_TOOLS, clear=not trusted_by_name):
+                result = self.run_with({'acquire': acquire, 'probe': refused,
+                                        'interpret': lambda worker: worker.write('model.json', written)},
+                                       **self.supplied(device, effects=['read', 'write']), max_revisions=0)
+                [probed] = self.workers('probe')
+                self.assertEqual((probed.refused['ok'], probed.refused['error']['code']),
+                                 (False, 'device_unavailable'), probed.refused)
+                self.assertNotIn(b'Z', device.lines)
+                [write] = [event['data'] for event in self.events('tool.finished')
+                           if event['data']['name'] == 'interface_execute']
+                self.assertEqual((write['effectful'], write['effects_reconciled'], write['refused_before_open']),
+                                 (True, True, True), write)
+                self.assertIs(result['uncertain_effect'], False)
+                self.assertEqual(self.controller.dispatch_record.pending(self.run['run_id']), [])
+                # The stage stops for the operator, not for safety.
+                self.assertEqual((result['status'], result['outcome_category']), ('blocked', 'operator'), result)
+                self.assertTrue(result['reason'].endswith('; nothing was dispatched'), result['reason'])
+
+    def test_01_B8_a_generated_call_the_provider_refused_before_it_started_is_finished_as_never_started(self):
+        device, finishes = self.device(), []
+
+        def reuse(worker):
+            # What the gateway tells the dispatch record when a call ends. No client call shows `undispatched` for a
+            # generated call, whose result is trusted anyway, so it is read where the record is told.
+            record = worker.controller.dispatch_record
+            finish = record.finish
+
+            def told(owner_id, dispatch_id, result, **said):
+                finishes.append((said['name'], said.get('generated', False), said.get('undispatched', False)))
+                return finish(owner_id, dispatch_id, result, **said)
+            telling = patch.object(record, 'finish', told)
+            telling.start()
+            self.addCleanup(telling.stop)
+            identity = worker.identity
+            level, status = sorted(tool['name'] for tool in worker.controller.call('mcp_tools', identity)['tools']
+                                   if not tool['name'].endswith('identify'))
+            call = lambda name: worker.controller.call('mcp_tool', {**identity, 'name': name, 'arguments': {},
+                                                                    'request_id': name})
+            worker.reused = [call(level)]
+            # From here on the provider refuses the reading the configurator takes before a call.
+            device.refused.add('observe')
+            worker.reused.append(call(status))
+        result = self.run_with({**WORKERS, 'reuse': reuse}, **self.supplied(device))
+        [reused] = self.workers('reuse')
+        ran, refused = reused.reused
+        self.assertIs(ran['ok'], True, ran)
+        self.assertEqual((refused['ok'], refused['error']['code']), (False, 'device_unavailable'), refused)
+        # Both are generated calls; only the refused one never started.
+        self.assertEqual([(generated, undispatched) for _, generated, undispatched in finishes],
+                         [(True, False), (True, True)])
+        finished = [event['data'] for event in self.events('tool.finished') if event['data']['stage'] == 'reuse']
+        self.assertEqual([(event['name'], event['refused_before_open']) for event in finished],
+                         [(finishes[0][0], False), (finishes[1][0], True)])
+        self.assertIs(result['uncertain_effect'], False)
 
 
 class VerdictTests(FullRunCase):

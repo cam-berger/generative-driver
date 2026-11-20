@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from test_device_sessions import demonstration_device
+from test_device_sessions import demonstration_device, recorded
 from test_driver_contract import emit_fixture, controlled_model
 from test_package import example_model
 from generative_driver.configurator import Controller, digest, _frozen_package, _fresh_reuse
@@ -57,7 +57,7 @@ class OwnerGeneratedTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Assigned binding differs from the supplied device'):
                 owner.call('mcp_tool',{**identity,'name':name,'arguments':{},'request_id':'no-provider'})
 
-    def test_reset_grant_and_open_failure_keep_uncertainty(self):
+    def test_01_B7_a_session_write_whose_open_failed_before_its_command_was_sent_leaves_no_uncertain_effect(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -75,6 +75,16 @@ class OwnerGeneratedTests(unittest.TestCase):
             with patch.object(owner.device_access, 'invoke_package', return_value=failure):
                 owner.call('device_execute', {'session_id': session['session_id'], 'operation':'set_level',
                     'parameters':{'level':5},'request_id':'open-failure'})
+            # The runtime says the requested command was never sent, so nothing is left to resolve.
+            self.assertFalse(owner.call('device_status', {'session_id':session['session_id']})['uncertain_effect'])
+            [finished] = recorded(owner.home, session['session_id'], 'tool.finished')
+            self.assertEqual((finished['effectful'], finished['effects_reconciled'], finished['refused_before_open']),
+                             (True, True, False), finished)
+            # A record that does not say whether the command was sent stays uncertain.
+            unsaid = {key: value for key, value in failure.items() if key != 'requested_command_dispatched'}
+            with patch.object(owner.device_access, 'invoke_package', return_value=unsaid):
+                owner.call('device_execute', {'session_id': session['session_id'], 'operation':'set_level',
+                    'parameters':{'level':5},'request_id':'unsaid'})
             self.assertTrue(owner.call('device_status', {'session_id':session['session_id']})['uncertain_effect'])
 
     def test_finish_distinguishes_a_preopen_refusal_from_live_guard_reads(self):
@@ -245,10 +255,10 @@ class OwnerGeneratedTests(unittest.TestCase):
 
 class ResetOpeningOwnershipTests(unittest.TestCase):
     @staticmethod
-    def package(root, resets):
+    def package(root, resets, model=None):
         from generative_driver.toolkit import call_tool
         from test_package import example_replay
-        model = example_model()
+        model = model or example_model()
         model['channel'] = {'type': 'uart', 'baudrate': 115200, 'resets_on_open': resets}
         source = root/'model'; source.mkdir()
         (source/'model.json').write_text(json.dumps(model))
@@ -268,72 +278,128 @@ class ResetOpeningOwnershipTests(unittest.TestCase):
             'transport_open_attempted': True, 'requested_command_dispatched': False,
             'error': {'fault': 'host', 'code': 'transport_open_failed', 'message': 'Scripted opener failed after contact'}}
 
-    def test_resetting_session_read_keeps_failed_open_uncertain_and_retains_binding(self):
+    def assigned(self, owner, root, package, effects):
+        """A fresh-reuse assignment of a stored run over the generated tools of `package`, on a serial binding nothing
+        listens at: what its worker's gateway calls carry, and the name of each operation's tool."""
+        run_dir = owner.home/'runs/run'; workspace = run_dir/'reuse'; workspace.mkdir(parents=True)
+        spec = {'goal': 'Read temperature', 'binding': {'port': str(root/'scripted-port')}, 'effects': effects}
+        prepared = owner._prepare(spec, 'reuse', run_dir, workspace,
+            [{'stage': 'emit', 'artifacts': [{'path': str(package), 'sha256': digest(package)}]}])
+        assignment = {'id': 'reuse-1', 'stage': 'reuse', 'revision': 0, 'workspace': str(workspace),
+            'inputs': {p: digest(p) for p in prepared['inputs']}, 'binding': spec['binding'],
+            'effects': effects, 'allowed_tools': prepared['allowed_tools'], 'device_mcp': prepared['device_mcp']}
+        with owner._db() as db:
+            db.execute('INSERT INTO runs(id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?)',
+                ('run', json.dumps(spec), 'running', 'reuse', time.time(), time.time()))
+            db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
+                ('reuse-1', 'run', 'reuse', 'active', json.dumps(assignment), time.time()))
+        identity = {'run_id': 'run', 'assignment_id': 'reuse-1'}
+        tools = [tool['name'] for tool in owner.call('mcp_tools', identity)['tools']]
+        return identity, {name.removeprefix('fictional_demonstration_'): name for name in tools}
+
+    def test_01_B6_a_session_read_over_a_channel_that_resets_on_open_needs_the_reset_grant_and_marks_nothing(self):
         from unittest.mock import patch
-        from generative_driver.configurator import SafetyError
         for resets in (True, False):
             with self.subTest(resets=resets), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
                 package = self.package(root, resets)
                 owner = Controller(root/'owner')
                 binding = {'port': str(root/'scripted-port')}
-                session = owner.call('device_open', {'package_dir': str(package), 'binding': binding, 'effects': ['read','reset']})
-                request = {'session_id': session['session_id'], 'operation': 'measure', 'request_id': 'opening'}
-                started_pending = []
-                def opening(*args):
-                    with owner._db() as db:
-                        started_pending.append(db.execute('SELECT COUNT(*) FROM pending_effects').fetchone()[0])
+                opening = {'package_dir': str(package), 'binding': binding}
+                opened = owner.call('device_open', {**opening, 'effects': ['read','reset']})
+                session = {'session_id': opened['session_id']}
+                request = {**session, 'operation': 'measure', 'request_id': 'opening'}
+                pending = []
+                def failing_open(*args):
+                    pending.append(owner.dispatch_record.pending(session['session_id']))
                     return self.failed_open()
-                with patch.object(owner.device_access, 'invoke_package', side_effect=opening):
+                with patch.object(owner.device_access, 'invoke_package', side_effect=failing_open):
                     self.assertFalse(owner.call('device_execute', request)['ok'])
-                    self.assertEqual(owner.call('device_status', {'session_id': session['session_id']})['uncertain_effect'], resets)
-                    self.assertEqual(started_pending, [int(resets)])
+                    # The read marked nothing, although opening its channel may have reset the device.
+                    self.assertIs(owner.call('device_status', session)['uncertain_effect'], False)
+                    # So another read goes on,
+                    self.assertFalse(owner.call('device_execute', {**request, 'request_id': 'another-opening'})['ok'])
+                    self.assertEqual(pending, [[], []])
+                    self.assertEqual([(event['name'], event['effectful'])
+                                      for event in recorded(owner.home, session['session_id'], 'tool.started')],
+                                     [('measure', False), ('measure', False)])
+                    # and the session is closed with no statement.
+                    self.assertEqual(owner.call('device_close', session)['status'], 'closed')
+                    # Opening such a channel still needs the reset grant: without it nothing starts.
+                    ungranted = owner.call('device_open', {**opening, 'effects': ['read']})['session_id']
+                    read = {'session_id': ungranted, 'operation': 'measure', 'request_id': 'ungranted'}
                     if resets:
-                        with self.assertRaisesRegex(ValueError, 'uncertain'):
-                            owner.call('device_execute', {**request, 'request_id': 'another-opening'})
-                        with self.assertRaisesRegex(ValueError, 'uncertain'):
-                            owner.call('device_close', {'session_id': session['session_id']})
-                        with self.assertRaises(SafetyError):
-                            owner.call('device_open', {'package_dir': str(package), 'binding': binding, 'effects': ['read','reset']})
-                        owner.call('device_reconcile', {'session_id': session['session_id'], 'effect_resolution': 'confirmed_safe',
-                            'observation': {'source': 'scripted fixture', 'message': 'Execution stopped; device inspected',
-                                            'prior_execution_stopped': True}})
-                    self.assertEqual(owner.call('device_close', {'session_id': session['session_id']})['status'], 'closed')
+                        with self.assertRaisesRegex(ValueError, 'requires an effect grant'):
+                            owner.call('device_execute', read)
+                    else:
+                        self.assertFalse(owner.call('device_execute', read)['ok'])
+                    self.assertEqual(len(recorded(owner.home, ungranted, 'tool.started')), int(not resets))
 
-    def test_resetting_assigned_read_marks_pending_before_open_and_blocks_another_open(self):
+    def test_01_B6_an_assigned_read_over_a_channel_that_resets_on_open_marks_nothing_and_another_read_goes_on(self):
         from unittest.mock import patch
         for resets in (True, False):
             with self.subTest(resets=resets), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()
-                package = self.package(root, resets)
                 owner = Controller(root/'owner')
-                run_dir = owner.home/'runs/run'; workspace = run_dir/'reuse'; workspace.mkdir(parents=True)
-                spec = {'goal': 'Read temperature', 'binding': {'port': str(root/'scripted-port')}, 'effects': ['read','reset']}
-                prepared = owner._prepare(spec, 'reuse', run_dir, workspace,
-                    [{'stage': 'emit', 'artifacts': [{'path': str(package), 'sha256': digest(package)}]}])
-                assignment = {'id': 'reuse-1', 'stage': 'reuse', 'revision': 0, 'workspace': str(workspace),
-                    'inputs': {p: digest(p) for p in prepared['inputs']}, 'binding': spec['binding'],
-                    'effects': spec['effects'], 'allowed_tools': prepared['allowed_tools'], 'device_mcp': prepared['device_mcp']}
-                with owner._db() as db:
-                    db.execute('INSERT INTO runs(id,spec,status,stage,created,updated) VALUES(?,?,?,?,?,?)',
-                        ('run', json.dumps(spec), 'running', 'reuse', time.time(), time.time()))
-                    db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
-                        ('reuse-1', 'run', 'reuse', 'active', json.dumps(assignment), time.time()))
-                identity = {'run_id': 'run', 'assignment_id': 'reuse-1'}
-                name = next(t['name'] for t in owner.call('mcp_tools', identity)['tools'] if t['name'].endswith('measure'))
-                request = {**identity, 'name': name, 'arguments': {}, 'request_id': 'opening'}
-                started_pending = []
-                def opening(*args):
-                    with owner._db() as db:
-                        started_pending.append(db.execute('SELECT COUNT(*) FROM pending_effects').fetchone()[0])
+                identity, tools = self.assigned(owner, root, self.package(root, resets), ['read','reset'])
+                request = {**identity, 'name': tools['measure'], 'arguments': {}, 'request_id': 'opening'}
+                pending = []
+                def failing_open(*args):
+                    pending.append(owner.dispatch_record.pending('run'))
                     return self.failed_open()
-                with patch.object(owner.device_access, 'invoke_package', side_effect=opening):
+                with patch.object(owner.device_access, 'invoke_package', side_effect=failing_open):
                     self.assertFalse(owner.call('mcp_tool', request)['ok'])
-                    self.assertEqual(owner.call('status', {'run_id': 'run'})['uncertain_effect'], resets)
-                    self.assertEqual(started_pending, [int(resets)])
-                    if resets:
-                        with self.assertRaisesRegex(ValueError, 'uncertain'):
-                            owner.call('mcp_tool', {**request, 'request_id': 'another-opening'})
-                    else:
-                        self.assertFalse(owner.call('mcp_tool', {**request, 'request_id': 'another-opening'})['ok'])
-                        self.assertEqual(started_pending, [0, 0])
+                    self.assertIs(owner.call('status', {'run_id': 'run'})['uncertain_effect'], False)
+                    self.assertFalse(owner.call('mcp_tool', {**request, 'request_id': 'another-opening'})['ok'])
+                    self.assertEqual(pending, [[], []])
+                    self.assertEqual([(event['name'], event['effectful'])
+                                      for event in recorded(owner.home, 'run', 'tool.started')],
+                                     [(tools['measure'], False), (tools['measure'], False)])
+
+    def test_01_B6_the_reply_to_an_abandoned_generated_call_says_an_effect_is_uncertain_only_for_a_pending_effect(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            # Built as the service builds it: the service answers a worker whose call raised with the abandoned reply.
+            owner = Controller(root/'owner', for_service=True)
+            self.addCleanup(owner.close)
+            identity, tools = self.assigned(owner, root, self.package(root, True, controlled_model()),
+                                            ['read', 'write', 'reset'])
+            with patch.object(owner.device_access, 'invoke_package', side_effect=RuntimeError('scripted')):
+                read = owner.call('mcp_tool', {**identity, 'name': tools['measure'], 'arguments': {},
+                                               'request_id': 'read'})
+                self.assertIs(owner.call('status', {'run_id': 'run'})['uncertain_effect'], False)
+                write = owner.call('mcp_tool', {**identity, 'name': tools['set_level'], 'arguments': {'level': 5},
+                                                'request_id': 'write'})
+            raised = ' did not finish: it raised RuntimeError: scripted'
+            # The read ran over a channel that resets on open, and still left no pending effect: its reply holds no
+            # `uncertain_effect`. The write's does.
+            self.assertEqual(read, {'ok': False, 'abandoned': 'raised', 'reason': tools['measure'] + raised})
+            self.assertEqual(write, {'ok': False, 'abandoned': 'raised', 'reason': tools['set_level'] + raised,
+                                     'uncertain_effect': True})
+            self.assertEqual([event['name'] for event in recorded(owner.home, 'run', 'tool.abandoned')],
+                             [tools['measure'], tools['set_level']])
+            self.assertEqual(recorded(owner.home, 'run', 'tool.finished'), [])
+            self.assertIs(owner.call('status', {'run_id': 'run'})['uncertain_effect'], True)
+
+    def test_01_B9_a_generated_write_that_succeeded_while_its_run_was_cancelled_leaves_no_uncertain_effect(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            owner = Controller(root/'owner')
+            identity, tools = self.assigned(owner, root, self.package(root, False, controlled_model()),
+                                            ['read', 'write', 'reset'])
+            def cancelled_meanwhile(*args):
+                # The operator cancels the run while the package's write runs; the write itself succeeds.
+                self.assertEqual(owner.call('cancel', {'run_id': 'run'})['status'], 'cancelled')
+                return {'schema': 'driver-result/1', 'operation': 'set_level', 'ok': True, 'outputs': {},
+                        'warnings': [], 'identity_verified': True, 'requested_command_dispatched': True}
+            with patch.object(owner.device_access, 'invoke_package', side_effect=cancelled_meanwhile):
+                written = owner.call('mcp_tool', {**identity, 'name': tools['set_level'], 'arguments': {'level': 5},
+                                                  'request_id': 'write'})
+            self.assertTrue(written['ok'], written)
+            [finished] = recorded(owner.home, 'run', 'tool.finished')
+            self.assertEqual((finished['effectful'], finished['ok'], finished['effects_reconciled']),
+                             (True, True, True), finished)
+            status = owner.call('status', {'run_id': 'run'})
+            self.assertEqual((status['status'], status['uncertain_effect']), ('cancelled', False), status)

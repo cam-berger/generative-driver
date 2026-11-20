@@ -674,19 +674,6 @@ def _observed_packages(named, built, given, unseen):
     return observed, not_handed_off, dropped
 
 
-def _before_contact(result):
-    """Whether a tool declared that it stopped before it contacted the device: its own result, with no execution
-    record, says no transport was opened (the runtime's interface-result/1 does the same for one execution)."""
-    return result.get('transport_open_attempted') is False and not _listed(result.get('results'))
-
-
-def _declared_refusal(result):
-    """Whether a tool declared that it refused before it contacted the device (`_before_contact`). A host fault it
-    declares there (its temporary folder, a snapshot copy it cannot read back) is no refusal: nothing reached the
-    device, but the call says nothing about its input either, so it is inconclusive."""
-    return _before_contact(result) and result.get('fault') != 'host'
-
-
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes through the runtime's check of the package
     (`interface_runtime.package`): its content digest, its manifest's digest (which the proof of a generated call
@@ -2358,7 +2345,10 @@ class Controller:
         stops the stage for the operator. The caller holds the run's operation lock (every tool call does), so one live
         call at a time is inside the window and its readings are its own. A device that offers no readings is still
         observed, since that refuses a call when its provider fails, but neither its result nor the journal holds
-        them."""
+        them.
+
+        The result comes with a second value that says whether the call never started. Only then did the configurator
+        write the result itself, and only that value says so: no field of a result does."""
         from .device_client import DeviceUnavailable, offers_readings, reading
         started, result, before, after, lost = False, None, None, None, None
         try:
@@ -2381,14 +2371,14 @@ class Controller:
             item = {'schema': 'interface-result/1', 'ok': False, 'transport_open_attempted': False, 'outputs': {},
                     'units': {}, 'transcript': [], 'error': {'fault': 'operator', 'code': 'device_unavailable',
                     'message': 'The device provider is unavailable; nothing was dispatched: ' + lost[1]}}
-            return {'ok': False, 'results': [item], 'error': item['error']} if name == 'probe_run' else item
+            return ({'ok': False, 'results': [item], 'error': item['error']} if name == 'probe_run' else item), True
         spec = json.loads(run['spec'])
         from .supplied.stages import record_call
         record_call(self.home / 'runs' / run['id'], assignment['stage'], name, arguments, result, before, after,
                     {'assignment_id': assignment['id'], 'device': spec.get('device')})
         if not offers_readings(spec.get('device')):
-            return result
-        return {**result, 'before_observation': before, **({'observation': after} if after else {})}
+            return result, False
+        return {**result, 'before_observation': before, **({'observation': after} if after else {})}, False
 
     def _check(self, spec, stage, run_dir, workspace, report, accepted, assignment):
         if spec.get('device'):
@@ -2866,13 +2856,12 @@ class Controller:
             self.log.abandoned(unfinished, run_id=run['id'], stage=assignment['stage'])
         else:
             self.log.error(error, tool=name, run_id=run['id'], stage=assignment['stage'])
-        self._event(run['id'], 'tool.abandoned', {
-            'stage': assignment['stage'], 'assignment_id': assignment['id'], 'name': name,
-            'dispatch_id': str(marker['dispatched']), 'reason': unfinished.reason,
-            **({'type': unfinished.kind, 'message': unfinished.message} if unfinished.reason == 'raised' else {}),
-            'actor': 'worker'})
+        pending = self.dispatch_record.abandon(
+            run['id'], marker['dispatched'], name=name, actor='worker', reason=unfinished.reason,
+            stage=assignment['stage'], assignment_id=assignment['id'],
+            error=(unfinished.kind, unfinished.message) if unfinished.reason == 'raised' else None)
         return {'ok': False, 'abandoned': unfinished.reason, 'reason': str(unfinished),
-                **({'uncertain_effect': True} if marker.get('effectful') else {})}
+                **({'uncertain_effect': True} if pending else {})}
 
     def _tool(self, method, params, run, expires=None):
         """The worker gateway. A refusal before dispatch is recorded so that stage's notes can name it."""
@@ -3074,8 +3063,7 @@ class Controller:
                 raise ValueError(refused)
         if effects-{'read'}-set(assignment['effects']):
             raise ValueError('Operation requires an effect grant the operator has not supplied')
-        effectful=bool(effects & {'write','actuate'})
-        if effectful and name in ('probe_run','interface_execute'):
+        if dispatch_record.marks(effects) and name in ('probe_run','interface_execute'):
             # Refused here, never marked uncertain: the runtime would refuse it before opening the device.
             _refuse_invalid_model(arguments['model_dir'])
         device = invoke = None
@@ -3097,36 +3085,22 @@ class Controller:
         # A generic run's kit tool runs in a child process within the call's limits, when the service turned that on.
         kit_tool = device is None
         limits = self._limits(run['id'], spec, run['created'], marker['expires']) if kit_tool else None
-        # The uncertain flag is persisted before dispatch. A crash or cancellation
-        # cannot turn an outstanding physical effect into an automatic retry.
-        with self._lock:
-            with self._db() as db:
-                active = db.execute('SELECT status,stage,cancelled,uncertain FROM runs WHERE id=?',(run['id'],)).fetchone()
-                # The assignment is checked again where the dispatch is marked: one whose stage was accepted, superseded
-                # or left since the call arrived dispatches nothing, so no call runs outside the stage that observes it.
-                current = db.execute('SELECT state FROM assignments WHERE id=? AND run_id=?', (assignment['id'], run['id'])).fetchone()
-                saved = db.execute('SELECT payload FROM progress WHERE run_id=?', (run['id'],)).fetchone()
-                if (active['cancelled'] or active['status'] != 'running' or not current or current['state'] != 'active'
-                        or assignment['stage'] != active['stage']
-                        or assignment.get('revision', 0) != (json.loads(saved['payload']) if saved else {}).get('revision', 0)):
-                    raise ValueError('Worker assignment became inactive before dispatch')
-                passed = limits.passed() if limits is not None else None
-                if passed:
-                    # Refused, never started: nothing is marked, so the call leaves no uncertain effect.
-                    late = "The run's budget ran out" if passed == 'budget' else "The call's deadline passed"
-                    raise ValueError(late + ' before it was dispatched; nothing was dispatched')
-                if (effectful or condition_requested) and active['uncertain']:
-                    raise ValueError('Outstanding effect is uncertain; another effectful operation is refused until operator reconciliation')
-                if effectful:
-                    db.execute('UPDATE runs SET uncertain=1 WHERE id=?', (run['id'],))
-                # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
-                dispatch_id = self._event(run['id'], 'tool.started', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'effectful':effectful,
-                    **facts, 'actor':'worker'}, db)
-                if effectful:
-                    db.execute('INSERT INTO pending_effects VALUES(?,?,?,?)',(dispatch_id,run['id'],assignment['id'],'worker'))
-        marker.update(dispatched=dispatch_id, effectful=effectful)
+        def in_time(db):
+            passed = limits.passed() if limits is not None else None
+            if passed:
+                # Refused, never started: nothing is marked, so the call leaves no uncertain effect.
+                late = "The run's budget ran out" if passed == 'budget' else "The call's deadline passed"
+                raise ValueError(late + ' before it was dispatched; nothing was dispatched')
+        # The record checks the assignment again where the dispatch is marked: one whose stage was accepted, superseded
+        # or left since the call arrived dispatches nothing, so no call runs outside the stage that observes it.
+        # The facts go on the start too: a dispatch that raises before it finishes is still known to the verdict.
+        dispatch_id = self.dispatch_record.begin(run['id'], kind='run', name=name, actor='worker', effects=effects,
+            stage=assignment['stage'], assignment_id=assignment['id'], facts=facts, condition=condition_requested,
+            before_mark=in_time)
+        marker.update(dispatched=dispatch_id)
+        undispatched = False
         if device is not None:
-            result = self._device_call(run, assignment, name, arguments, device, invoke,
+            result, undispatched = self._device_call(run, assignment, name, arguments, device, invoke,
                 condition_id=condition_id, expected_session_id=(progress.get('device') or {}).get('session_id'))
         else:
             result = self._kit_tool(call_tool, name, arguments, run_id=run['id'], stage=assignment['stage'],
@@ -3144,29 +3118,9 @@ class Controller:
                 path = Path(raw).resolve()
                 if any(path.is_relative_to(folder) for folder in kept) and path.exists():
                     observed_artifacts[str(path)] = digest(path)
-        with self._db() as db:
-            cancelled = db.execute('SELECT cancelled FROM runs WHERE id=?',(run['id'],)).fetchone()['cancelled']
-            success = result.get('_exit',0)==0 and bool(result.get('ok',result.get('available',True)))
-            # A trusted runtime preflight refusal never attempted to open the device, nor did a refusal the toolchain
-            # declared before its first device call. Empty transcripts alone cannot establish this: opening may
-            # itself reset it.
-            executions = result.get('results') if name == 'probe_run' else [result]
-            refused_before_open = ((name in ('interface_execute', 'probe_run')
-                and type(executions) is list and bool(executions)
-                and all(type(item) is dict and item.get('schema') == 'interface-result/1'
-                        and item.get('transport_open_attempted') is False for item in executions))
-                or (name in ('interface_execute', 'probe_run', 'emit_test_live') and _declared_refusal(result)))
-            # A host fault the tool declared before its first device call refused nothing, but it reached no device
-            # either, so it leaves no effect to reconcile.
-            before_contact = refused_before_open or (name in ('interface_execute', 'probe_run', 'emit_test_live')
-                                                     and _before_contact(result))
-            effects_reconciled = bool(effectful and not cancelled and (success or before_contact))
-            if effects_reconciled:
-                db.execute('DELETE FROM pending_effects WHERE dispatch_id=?',(dispatch_id,))
-                db.execute('UPDATE runs SET uncertain=EXISTS(SELECT 1 FROM pending_effects WHERE run_id=?) WHERE id=?',(run['id'],run['id']))
-            evidence_id = self._event(run['id'], 'tool.finished', {'stage':assignment['stage'],'assignment_id':assignment['id'],'name':name,'ok':success,'result':result,'artifacts':observed_artifacts,
-                'dispatch_id':str(dispatch_id),'effectful':effectful,'effects_reconciled':effects_reconciled,
-                'refused_before_open':refused_before_open,**facts,'actor':'worker'}, db)
+        self.dispatch_record.finish(run['id'], dispatch_id, result, kind='run', name=name, actor='worker',
+            undispatched=undispatched, stage=assignment['stage'], assignment_id=assignment['id'], facts=facts,
+            artifacts=observed_artifacts)
         return result
 
     def close(self, timeout=10):

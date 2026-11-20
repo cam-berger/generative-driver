@@ -1579,6 +1579,45 @@
           }
         }
       }
+    },
+    {
+      "name": "acquire_stm32_flash",
+      "description": "Stage 1. Read the flash of an STM32 through the operator's ST-LINK debug probe with the command-line program of STM32CubeProgrammer, and keep it as the image for interpretation. It only reads: nothing is written or erased, and a read-protected chip is not read. Without the reset grant the tool neither resets nor halts the chip; with it the chip is reset to connect and again after the read. The read starts at 0x08000000 and takes the flash size the program reports, or size_kb. The configurator supplies the program, the probe and the reset permission.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "run_dir",
+          "program"
+        ],
+        "properties": {
+          "run_dir": {
+            "type": "string",
+            "description": "Absolute directory for this run's outputs and evidence."
+          },
+          "program": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The command of STM32_Programmer_CLI: its absolute path, then the arguments that stand before the tool's own."
+          },
+          "probe_serial_number": {
+            "type": "string",
+            "description": "The serial number of the ST-LINK probe, 1 to 64 letters and digits. Omit when one probe is attached."
+          },
+          "allow_reset": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether the operator granted a reset: the chip is then reset to connect and again after the read."
+          },
+          "size_kb": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 16384,
+            "description": "Kilobytes to read from 0x08000000. Omit to read the flash size the program reports."
+          }
+        }
+      }
     }
   ]
 }

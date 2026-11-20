@@ -60,6 +60,65 @@ def configure(executor, command, model=None, provider=None, home=None, reasoning
     return {"configured": executor, "configuration": entry, "path": str(path)}
 
 
+# The programs an operator configures for a tool to start, by the name `configure-program` takes: STM32CubeProgrammer's
+# command-line program, `STM32_Programmer_CLI` (Feature 01 of the stm32-acquire Run,
+# docs/features/stm32-acquire/01-stm32-flash-read.md).
+STM32_PROGRAMMER = 'stm32-programmer'
+PROGRAMS = (STM32_PROGRAMMER,)
+
+
+def _command_fault(command):
+    """Why `command` is not a program's command, as the message of a `ValueError`, or None when it is one: a list of
+    nonempty strings whose first is an absolute path and no batch file. A tool starts the command as an argument
+    list, never through a shell, and only a shell starts a batch file."""
+    if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
+        return 'The command of a program is a nonempty list of strings: ' + repr(command)[:80]
+    if not Path(command[0]).is_absolute():
+        return 'The command of a program must be an absolute path: ' + command[0]
+    if command[0].lower().endswith(('.bat', '.cmd')):
+        return 'The command of a program cannot be a batch file, which only a shell starts: ' + command[0]
+    for number, part in enumerate(command[1:], 1):
+        if not part:
+            return 'An argument of a program cannot be empty: argument ' + str(number)
+    return None
+
+
+def configure_program(program, command, home=None):
+    """What was saved: the `command` of `program` in the home's configuration, as `programs[program]`, beside the
+    executors, which stay as they were. A command `_command_fault` faults, or a program that is not one of
+    `PROGRAMS`, raises `ValueError` and saves nothing. Nothing is started, and the file the command names is not
+    looked for: `doctor` and a start say whether it is there."""
+    if program not in PROGRAMS:
+        raise ValueError('Unknown program: ' + str(program))
+    fault = _command_fault(command)
+    if fault:
+        raise ValueError(fault)
+    root = home_path(home)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / 'config.json'
+    config = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+    entry = {'command': command}
+    config.setdefault('programs', {})[program] = entry
+    descriptor, temporary = tempfile.mkstemp(prefix='config-', suffix='.json', dir=root)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(config, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return {'configured': program, 'configuration': entry, 'path': str(path)}
+
+
+def program_command(home, program):
+    """The command the operator configured for `program` in the configuration of `home`, or None when a tool could
+    start none: no configuration, one that cannot be read, no entry for the program, or a command `_command_fault`
+    faults. It never raises, since `doctor` asks it too."""
+    command = _json_field(home_path(home) / 'config.json', 'programs', program, 'command')
+    return None if _command_fault(command) else command
+
+
 # What a generated plugin holds besides its build. The skill folder is a module name so that a test can point the
 # generator at a copy with other text; nothing else changes it.
 _SKILLS = Path(__file__).parent / 'resources/client/skills'
@@ -282,6 +341,15 @@ def _codex(home):
             'source': 'configuration', 'model': selection.get('model'), 'provider': selection.get('provider')}
 
 
+def _stm32_programmer(home):
+    """The `dependencies.stm32_programmer` entry: whether the operator configured the program's command, the path it
+    names, and whether a file is there. The program is never started."""
+    command = program_command(home, STM32_PROGRAMMER)
+    return {'configured': command is not None, 'path': command[0] if command else None,
+            'available': command is not None and Path(command[0]).is_file(), 'source': 'configuration',
+            'required_for': 'reading STM32 firmware through an ST-LINK probe'}
+
+
 # Optional packages by distribution name: the install extra that provides each, and what needs it.
 _EXTRAS = {'pyserial': ('hardware', 'UART devices and listing serial ports'),
            'pyusb': ('hardware', 'USB devices'),
@@ -375,7 +443,8 @@ def doctor(home=None):
     dependencies = {"codex": _codex(home),
                     **{name: {"available": bool(shutil.which(name)), "path": shutil.which(name),
                               "required_for": purpose, "source": "PATH"}
-                       for name, purpose in purposes.items()}}
+                       for name, purpose in purposes.items()},
+                    "stm32_programmer": _stm32_programmer(home)}
     try:
         from serial.tools import list_ports
         ports = list_ports.comports()

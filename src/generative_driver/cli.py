@@ -3,7 +3,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from .setup import configure, doctor, integration_assets
+from .setup import PROGRAMS, configure, configure_program, doctor, integration_assets
 
 
 def main(argv=None):
@@ -20,6 +20,10 @@ def main(argv=None):
     config.add_argument("--model")
     config.add_argument("--provider")
     config.add_argument("--reasoning-effort", help="Codex model reasoning setting")
+    program = commands.add_parser("configure-program", help="Save the command of a program a tool starts")
+    program.add_argument("--program", choices=list(PROGRAMS), required=True)
+    program.add_argument("--command", dest="executable", metavar="PATH", required=True)
+    program.add_argument("--argument", action="append", default=[], metavar="ARG")
     setup = commands.add_parser("setup", help="Generate a Codex plugin using this installation")
     setup.add_argument("--host", choices=["codex"], required=True)
     setup.add_argument("--output", required=True)
@@ -68,6 +72,13 @@ def main(argv=None):
     if args.command == "configure":
         print(json.dumps(configure(args.executor, [args.executable, *args.argument],
                                    args.model, args.provider, args.home, args.reasoning_effort), indent=2))
+        return 0
+    if args.command == "configure-program":
+        try:
+            saved = configure_program(args.program, [args.executable, *args.argument], args.home)
+        except ValueError as refused:
+            program.error(str(refused))
+        print(json.dumps(saved, indent=2))
         return 0
     if args.command == "setup":
         print(json.dumps(integration_assets(args.host, args.output, home=args.home), indent=2))

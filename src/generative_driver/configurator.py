@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from .setup import SUPPORTED_EXECUTORS, resolve_executor
 from .agents import StageRequest, execute
-from . import run_status, service_log, tool_process
+from . import debug_probe, run_status, service_log, tool_process
 from .service_log import LOG_NAME, ServiceLog
 # Other modules take `digest`, `IntegrityError` and `equivalence_label` from the configurator, so it keeps these names.
 from .integrity import IntegrityError, digest
@@ -1435,6 +1435,7 @@ class Controller:
                 with self._db() as db:
                     if not finalizing:
                         self._claim_binding(spec.get('binding'),run_id,db)
+                        self._claim_probe(spec, run_id, db)
                         # A supplied device is leased again under the binding the run's durable record holds now.
                         self._claim_binding((progress.get('device') or {}).get('binding') if spec.get('device') else None,
                                             run_id, db)
@@ -1501,6 +1502,9 @@ class Controller:
             raise ValueError('A supplied run needs a device, a firmware and a mission together; this start lacks '
                              + ', '.join(lacking))
         supplied = not lacking
+        refused = debug_probe.refusal(params.get('binding'), supplied, self.home)
+        if refused:
+            raise ValueError(refused)
         _client_record(params)
         # On a supplied run a given `executor_config` is the whole configuration: its client settled it, and what
         # the operator configured since is not laid under it.
@@ -1512,6 +1516,7 @@ class Controller:
         # The spec keeps the request as it came beside what the service settled from it.
         spec = {**params, 'executor': executor, 'executor_config': config, 'budget_seconds': budget, 'effects': effects,
                 '_submitted_intent': params}
+        debug_probe.settle(spec, self.home)
         validate_scoped_approval(spec)
         device = _supplied_device(spec) if supplied else None
         encoded = _json(spec)
@@ -1534,6 +1539,7 @@ class Controller:
                     config = spec['executor_config'] = _copy_candidate(config, self.home / 'runs' / run_id)
                     encoded = _json(spec)
                 self._claim_binding(spec.get('binding'),run_id,db)
+                self._claim_probe(spec, run_id, db)
                 if device:
                     self._claim_binding(device['binding'],run_id,db)
                 now = time.time()
@@ -1653,6 +1659,7 @@ class Controller:
                 began = time.time()
                 with self._db() as db:
                     self._claim_binding(assignment.get('binding'),run_id,db)
+                    self._claim_probe(spec, run_id, db)
                     db.execute('INSERT INTO assignments VALUES(?,?,?,?,?,?)',
                                (attempt, run_id, stage, 'active', _json(assignment), began))
                     self._event(run_id, 'stage.assigned', assignment, db)
@@ -1951,6 +1958,12 @@ class Controller:
     def _claim_binding(self, binding, run_id, db):
         return self.device_access.claim_binding(binding, run_id, db)
 
+    def _claim_probe(self, spec, run_id, db):
+        """Claim the lease of the debug probe for a run whose record `spec` declares one. It is claimed wherever the
+        binding's lease is, and is released with the run's other leases."""
+        if debug_probe.KEY in spec:
+            self.device_access.claim_probe(run_id, db)
+
     @staticmethod
     def _verify_inputs(inputs):
         for path, expected in inputs.items():
@@ -2201,6 +2214,9 @@ class Controller:
             context['serial'] = ('Listen first with acquire_serial_listen. If it reports unsolicited output the device '
                                  'resets on open, and every later connection needs the operator reset grant. '
                                  'Granted effects: ' + ', '.join(spec.get('effects', [])) + '.')
+        probe_declared = stage == 'acquire' and debug_probe.KEY in spec
+        if probe_declared:
+            context[debug_probe.KEY] = debug_probe.CONTEXT
         if spec.get('_operator_observations'):
             context['operator_observations'] = spec['_operator_observations']
         if missing:
@@ -2209,7 +2225,8 @@ class Controller:
         if prior:
             context['prior_notes'] = prior
         prepared = {'objective': GROUND_OBJECTIVE + spec['goal'] if stage == 'ground' else spec['goal'], 'inputs': inputs,
-                'allowed_tools': STAGE_TOOLS[stage], 'context': context,
+                'allowed_tools': [*STAGE_TOOLS[stage], debug_probe.TOOL] if probe_declared else STAGE_TOOLS[stage],
+                'context': context,
                 **({'input_notes': missing} if missing else {}),
                 **({'undocumented': undocumented} if undocumented else {})}
         return self._generated_reuse(prepared) if stage == 'reuse' else prepared
@@ -3017,6 +3034,8 @@ class Controller:
                 owned += ('address', 'serial_number')
             if contract['name'] == DOCUMENT_IMPORT:
                 owned += ('inputs_dir',)
+            if contract['name'] == debug_probe.TOOL:
+                owned += debug_probe.ARGUMENTS
             for bound in owned:
                 schema.get('properties', {}).pop(bound, None)
                 if bound in schema.get('required', []):
@@ -3038,6 +3057,8 @@ class Controller:
             raise ValueError('USB device selection is configurator-owned: a worker names a transport, never a device')
         if name == DOCUMENT_IMPORT and 'inputs_dir' in arguments:
             raise ValueError('The inputs folder is configurator-owned: a worker names a file in it, never a folder')
+        if name == debug_probe.TOOL and set(debug_probe.ARGUMENTS) & arguments.keys():
+            raise ValueError(debug_probe.ARGUMENTS_OWNED)
         workspace = Path(assignment['workspace'])
         from .toolkit import _PATH_ARGUMENTS
         for key in _PATH_ARGUMENTS & arguments.keys():
@@ -3124,6 +3145,8 @@ class Controller:
         arguments['run_dir'] = str(records or workspace / 'tools')
         if name == DOCUMENT_IMPORT:
             arguments['inputs_dir'] = str(workspace / 'inputs')
+        if name == debug_probe.TOOL:
+            arguments.update(debug_probe.arguments(spec, assignment['effects']))
         if name == 'acquire_classify' and isinstance(binding.get('url'), str) and binding['url'].lower().startswith('ftdi://'):
             # The operator's bridge is the only bus a worker's acquisition walks, as the bound port is the only serial
             # endpoint: a worker's own bus_url is refused above.

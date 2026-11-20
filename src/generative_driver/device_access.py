@@ -53,8 +53,18 @@ class DeviceAccess:
     def claim_binding(self, binding, owner_id, db):
         if not binding:
             return
-        from .configurator import binding_identity, _json, SafetyError
+        from .configurator import binding_identity, _json
         identity = hashlib.sha256(_json(binding_identity(binding)).encode()).hexdigest()
+        self._claim(identity, owner_id, db, 'Device binding is already owned by another run or session')
+
+    def claim_probe(self, owner_id, db):
+        """Claim the one lease that the runs which declare a debug probe share."""
+        from .debug_probe import LEASE, TAKEN
+        self._claim(LEASE, owner_id, db, TAKEN)
+
+    def _claim(self, identity, owner_id, db, refusal):
+        """Give `owner_id` the lease `identity`, or raise `refusal` while another owner that is still on holds it."""
+        from .configurator import SafetyError
         prior = db.execute('SELECT run_id FROM bindings WHERE identity=?', (identity,)).fetchone()
         if prior and prior['run_id'] != owner_id:
             key = prior['run_id']
@@ -63,7 +73,7 @@ class DeviceAccess:
                 row = db.execute('SELECT status,uncertain FROM device_sessions WHERE id=?', (key,)).fetchone()
             if row and (row['status'] in ('queued', 'running', 'open') or row['uncertain']
                         or key in self.owner._workers or key in self.owner._inflight):
-                raise SafetyError('Device binding is already owned by another run or session')
+                raise SafetyError(refusal)
         db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)', (identity, owner_id))
 
     @staticmethod

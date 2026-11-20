@@ -15,14 +15,14 @@
 | Supplementary document | A datasheet, protocol specification or operator-supplied file acquired beside the firmware. Interpreters read it as evidence of meanings, units and framing; where it disagrees with the firmware or the device, the firmware or the device wins. |
 | Device-first interpretation | Interpretation in a generic run with no single firmware image: the interpret worker writes the model from the device's replies to operations it declares read-only, and hands it on as usual. |
 | Equivalence | One final verdict: the configurator's own, with basis `self-evidence`, or the one posted through the client interface for a run on a supplied device, with basis `evaluator`. Completion alone does not mean success. |
-| Interface model / binding | Byte operations, decoding and effects / operator-selected host connection. |
-| Driver contract | Authoritative public operations, meanings, value schemas, units, scoped caveats and preconditions. |
-| Declarative protocol | Wire exchanges and decoders implementing the public contract through a versioned shared runtime. |
+| Interface model / binding | The driver document a worker writes for one controller: for each operation its meaning, effect, wire steps and decoding / operator-selected host connection. |
+| Driver contract | The public part of an interface model: operations, meanings, value schemas, units, scoped caveats and preconditions. A view, not a file of its own. |
+| Declarative protocol | The wire part of an interface model: exchanges and decoders, executed by the installed runtime. |
 | Precondition | Driver-declared requirement checked from fresh read observations before the requested command. |
 | Effect grant | Permission for a driver call to write, actuate or reset; reads need none. The operator grants a run's effects; a call needing an ungranted effect is refused before any device I/O. |
 | Application MCP layer | Separately authored tools composing public managed-driver operations through the supported SDK. |
 | Semantic uncertainty | Missing or weakly supported operation or field meaning; retained as a scoped warning. |
-| Package | Contract, protocol, executable model projection, generated MCP catalog, runtime, reference, evidence and integrity manifest. |
+| Package | What a run emits for a device: its interface models (one for each controller), the MCP tools rendered from them with an entry for an MCP client, documentation, evidence and an integrity manifest. Data only; the installed tool runs it. |
 | Ground / fresh reuse | Test meanings against the device / new agent uses only package and objective. Reuse is the final stage. |
 | Instrument observation | Device-state readings visible to workers, never grades. |
 | Public mission | Required task meanings, inputs, output units and the objective for fresh reuse. |

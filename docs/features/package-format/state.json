@@ -20,19 +20,7 @@
     },
     {
       "id": "03",
-      "slug": "serve",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "04",
-      "slug": "data-package",
-      "status": "pending",
-      "base": null
-    },
-    {
-      "id": "05",
-      "slug": "documents",
+      "slug": "package",
       "status": "pending",
       "base": null
     }

@@ -2,15 +2,15 @@
   "goal": "One record of a dispatch and one reading of its outcome: the rule for an uncertain effect is written once, and it follows the owner's five decisions of 2026-11-19",
   "slug": "dispatch-outcome",
   "branch": "mdk/dispatch-outcome",
-  "stage": "spec",
+  "stage": "build",
   "awaiting": null,
   "current": "01",
   "features": [
     {
       "id": "01",
       "slug": "dispatch-outcome",
-      "status": "pending",
-      "base": null
+      "status": "building",
+      "base": "a09ae346d285c7c675a8e5772dd6477a8a92d935"
     }
   ],
   "escalation": null

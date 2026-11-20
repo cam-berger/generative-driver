@@ -52,3 +52,4 @@
 - 03: The two wheel tests are skipped unless `GD_TEST_WHEEL` is set, and two tests are skipped because `pypdf` is not installed.
 - 03: Not shown on Windows. Everything ran on macOS, with no hosted job. Unshown there: that `serve` closes its session on closed standard input, the launch of the child, and the signal test, which is skipped on Windows.
 - 03: No model run was started. Nothing here shows how a model worker does in fresh reuse with the generated tools alone, or what one worker document does to results. How the benchmark runs a frozen driver now that a package holds no code is for the benchmark to show.
+- 03: A wheel built from the committed tree was checked by hand, after the Feature's commit. It ships `generative_driver/serve.py`, `interface_runtime/child.py` and `generative_driver/_toolchain/readme.py`, holds none of the deleted package template or package runner, and both wheel tests pass on it.

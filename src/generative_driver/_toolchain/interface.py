@@ -57,6 +57,15 @@ def load(model_dir):
     return read_json_hashed(model_path, 1048576)
 
 
+def unknown_format(model):
+    """Why the kit refuses `model` for its format, naming the schema found, or None when the installed runtime knows the
+    schema. A tool asks this before it reads any other file: a model is data the installed runtime executes, so a
+    format the runtime does not know is refused and nothing of its directory is loaded
+    (docs/adr/0010-a-package-is-data-in-one-format.md)."""
+    found = model.get('schema') if type(model) is dict else None
+    return None if found in SCHEMAS else 'model format is not one this kit knows: ' + repr(found)[:120]
+
+
 @core.tool('interface_describe')
 def interface_describe(model_dir, **_):
     model, sha = load(model_dir)
@@ -119,9 +128,9 @@ def interface_execute(model_dir, operation, parameters=None, binding=None, allow
 
 def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=None, allow_effects=None, replay=None):
     """Run one operation of a model `n` times and record the evidence. Every refusal before the transport opens (a
-    model.json that is missing, unreadable or not strict bounded JSON, an invalid model, a missing or unknown operation,
-    a sample count outside 1..100, an evidence bound the samples exceed, a replay fixture) is returned with
-    transport_open_attempted false and exit 1, and writes no record."""
+    model.json that is missing, unreadable or not strict bounded JSON, a format the runtime does not know, an invalid
+    model, a missing or unknown operation, a sample count outside 1..100, an evidence bound the samples exceed, a replay
+    fixture) is returned with transport_open_attempted false and exit 1, and writes no record."""
     grants = [] if allow_effects is None else allow_effects
     try:
         if not (path(model_dir)/'model.json').is_file():
@@ -130,6 +139,8 @@ def probe_run(run_dir, model_dir, n=1, operation=None, parameters=None, binding=
     except (OSError, ValueError, TypeError, LookupError, RecursionError) as exc:
         return before_contact(f'{type(exc).__name__}: {exc}')
     try:
+        if unknown_format(model):
+            raise ValueError(unknown_format(model))
         if operation is None:
             raise ValueError('schema 3 probe requires an explicit operation name')
         if type(n) is not int or not 1 <= n <= 100:
@@ -200,8 +211,11 @@ def _failure_defects(evidence):
 
 def probe_diff(model_dir, probe):
     """Replay consistency for a successful probe; for a failed one, the failure itself as defects. Exit 4 when
-    every failure is an operator or host fault, since that probe says nothing about the model."""
+    every failure is an operator or host fault, since that probe says nothing about the model. A model of a format the
+    runtime does not know is refused as a defect (exit 1) before the probe is read."""
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'_exit':1}
     evidence = read_json(path(probe))
     checked = check_probe(model, evidence, sha)
     if checked['ok']:
@@ -252,7 +266,11 @@ def coverage_reference(model, evidence):
 
 
 def emit_package(run_dir, model_dir, probe, name=None, version='1.0.0', **_):
+    """Build the package of a model and the probe record it wrote, in a new folder of the run's emit directory. A model
+    of a format the runtime does not know is refused before the probe is read, and no folder is made."""
     model, sha = load(model_dir)
+    if unknown_format(model):
+        return {'ok':False,'defects':[{'where':'schema','what':unknown_format(model)}],'_exit':1}
     evidence = read_json(path(probe))
     checked = check_probe(model, evidence, sha)
     if not checked['ok']:
@@ -470,16 +488,6 @@ def _check_snapshot(pkg, model, sha, manifest, expected_manifest_sha256):
     return {'ok':ok,'defects':[] if ok else [{'where':'package replay','what':'standalone replay differs'}],
             'evidence_kind':'replay','source_evidence_kind':evidence['evidence_kind'],
             'manifest_pin_verified':expected_manifest_sha256 is not None,'_exit':0 if ok else 1}
-
-
-def is_interface_package(package_dir):
-    try:
-        manifest = read_json(path(package_dir)/'manifest.json', 1048576)
-    except (OSError, ValueError):
-        return False
-    # A format this kit does not know is still an interface package, so its check can refuse it by name.
-    return (type(manifest) is dict and type(manifest.get('schema')) is str
-            and manifest['schema'].startswith('interface-package/'))
 
 
 def _live_call(operation, command):

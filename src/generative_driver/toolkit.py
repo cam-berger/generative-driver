@@ -19,8 +19,8 @@ _MODULE_TOOLS = {
     "documents": ("acquire_document",),
     "bench": ("bus_prepare",),
     "firmware": ("firmware_prepare", "firmware_collect", "firmware_validate"),
-    "interpret": ("interpret_run", "interpret_collect", "model_validate", "model_provenance_audit"),
-    "probe": ("probe_run", "probe_diff", "probe_observe"),
+    "interpret": ("interpret_run", "interpret_collect", "model_validate"),
+    "probe": ("probe_run", "probe_diff"),
     "emit": ("emit_package", "emit_check", "emit_test_live"),
     "interface": ("interface_describe", "interface_execute", "model_qualify"),
     "usage": ("usage_record", "usage_summary"),
@@ -30,7 +30,7 @@ _MODULE_TOOLS = {
 _DISPATCH = {name: module for module, names in _MODULE_TOOLS.items() for name in names}
 _PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "probe_json", "package_dir", "image",
                    "workspace", "workspace_root", "ghidra_path", "java_home", "export_dir", "script_path",
-                   "wiring", "transcript", "replies", "bus", "replay"}
+                   "transcript", "replies", "replay"}
 # Path arguments of one tool only: any other tool ignores an argument of that name, as it always did.
 _TOOL_PATH_ARGUMENTS = {"acquire_document": {"inputs_dir"}}
 

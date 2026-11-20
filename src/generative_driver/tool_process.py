@@ -1,11 +1,11 @@
 """A kit tool run in a child process of the service, with a deadline. A kit tool is a tool `toolkit.call_tool` runs,
 as against an operation of an emitted package.
 
-A tool that runs inside the service has no deadline and holds its run while it runs, and some tools execute code a
-worker wrote: a register model's conversion module. The service therefore runs a generic run's kit tools here, in a
-process of their own. It stops that process, with every process the tool started, when the call's limits pass, and the
-process can loop, crash or exit without taking the service with it. Only the service turns this on, when it builds its
-controller (`Controller(home, for_service=True)`)."""
+A tool that runs inside the service has no deadline and holds its run while it runs, and a tool can wait on a device
+or on an analyzer it starts. The service therefore runs a generic run's kit tools here, in a process of their own. It
+stops that process, with every process the tool started, when the call's limits pass, and the process can loop, crash
+or exit without taking the service with it. Only the service turns this on, when it builds its controller
+(`Controller(home, for_service=True)`)."""
 import json
 import os
 import shutil
@@ -180,7 +180,7 @@ def main():
     try:
         from .toolkit import call_tool
         outcome = json.dumps({'result': call_tool(request['name'], request['arguments'])})
-    except BaseException as error:  # An exit a worker's conversion module asks for is named too.
+    except BaseException as error:  # An exit that code the tool loads asks for is named too.
         service_log.caught(error, tool=request['name'])
         outcome = json.dumps({'raised': {'type': type(error).__name__, 'message': str(error)}})
     ready = exchange / 'result.json.part'

@@ -94,25 +94,48 @@ class ServiceCallTests(unittest.TestCase):
         self.assertEqual(status['status'], 'cancelled', status)
 
 
-def blocking_model(directory, pids, *, writes=False):
-    """A register model (`interface-model/1`) in `directory` whose conversion module, once a tool loads it, starts a
-    child process of its own, records both process ids in the file `pids` and never returns. With `writes` the model
-    writes a register, so running it on a device is an effect."""
+# The bus every model of these tests is bound to. No test opens an adapter: a tool process loads `ADAPTER_LIBRARY`.
+BUS = {'url': 'ftdi://ftdi:232h/1'}
+
+# In place of `pyftdi.i2c`, which the runtime loads when it opens an I2C channel on an `ftdi://` binding. Opening the
+# bus does what `plan.json` beside the package says: with `pids` it starts a child process of its own and records both
+# process ids in that file; then it ends the process (`exit`), raises (`raise`) or never returns (`wait`).
+ADAPTER_LIBRARY = ('import json, os, subprocess, sys, time\n'
+                   'from pathlib import Path\n'
+                   '\n'
+                   '\n'
+                   'class I2cController:\n'
+                   '    def configure(self, url, **options):\n'
+                   '        plan = json.loads(Path(__file__).resolve().parents[1].joinpath("plan.json").read_text())\n'
+                   '        if plan["pids"]:\n'
+                   '            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])\n'
+                   '            with open(plan["pids"] + ".part", "w") as out:\n'
+                   '                out.write(str(os.getpid()) + " " + str(child.pid))\n'
+                   '            os.replace(plan["pids"] + ".part", plan["pids"])\n'
+                   '        if plan["then"] == "exit":\n'
+                   '            os._exit(7)\n'
+                   '        if plan["then"] == "raise":\n'
+                   '            raise SystemExit("the adapter library gave up")\n'
+                   '        while True:\n'
+                   '            time.sleep(0.05)\n')
+
+
+def bus_model(directory):
+    """An interface model in `directory` with an I2C channel, whose `identify` reads and whose `configure` writes, so
+    running `configure` on a device is an effect. A tool that runs either on `BUS` loads `pyftdi` to open the bus; the
+    model is data, and no file of its directory runs."""
+    def exchange(sent, **more):
+        return {'op': 'exchange', 'tx': [{'hex': sent}], 'rx': {'mode': 'exact', 'length': 1}, 'timeout_ms': 1000,
+                'capture': 'reply', **more}
     directory.mkdir(parents=True)
-    steps = [{'op': 'reg_write', 'reg': '0x01', 'bytes': ['0x00']}] if writes else []
     (directory / 'model.json').write_text(json.dumps({
-        'schema': 'interface-model/1', 'channel': {'type': 'i2c', 'address_7bit': '0x40'},
-        'identity': {'expect': ['0x12']}, 'conversion': {'outputs': {'value': {}}},
-        'operations': {'init': steps, 'identify': [{'op': 'reg_read', 'reg': '0x00', 'len': 1}],
-                       'measure': [{'op': 'reg_read', 'reg': '0x02', 'len': 2}]}}), encoding='utf-8')
-    (directory / 'convert.py').write_text(
-        'import os, subprocess, sys, time\n'
-        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])\n'
-        'with open(' + repr(str(pids) + '.part') + ', "w") as out:\n'
-        '    out.write(str(os.getpid()) + " " + str(child.pid))\n'
-        'os.replace(' + repr(str(pids) + '.part') + ', ' + repr(str(pids)) + ')\n'
-        'while True:\n'
-        '    time.sleep(0.05)\n', encoding='utf-8')
+        'schema': 'interface-model/3', 'device': {'name': 'fictional bus device'},
+        'channel': {'type': 'i2c', 'address_7bit': 0x40, 'speed_hz': 100000}, 'identity': {'operation': 'identify'},
+        'operations': {'identify': {'effect': 'read', 'parameters': {}, 'outputs': {},
+                                    'steps': [exchange('00', expect={'equals_hex': '12'})]},
+                       'configure': {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [exchange('01')]}},
+        'provenance': [{'item': 'operations.' + name, 'source': 'scripted fixture'}
+                       for name in ('identify', 'configure')]}), encoding='utf-8')
     return directory
 
 
@@ -185,6 +208,21 @@ class ChildProcessCase(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        # Every tool process this test starts finds the stand-in for pyftdi ahead of an installed one.
+        self.library = self.root / 'adapter-library'
+        (self.library / 'pyftdi').mkdir(parents=True)
+        (self.library / 'pyftdi' / '__init__.py').write_text('', encoding='utf-8')
+        (self.library / 'pyftdi' / 'i2c.py').write_text(ADAPTER_LIBRARY, encoding='utf-8')
+        found = os.pathsep.join(filter(None, [str(self.library), os.environ.get('PYTHONPATH')]))
+        path = patch.dict(os.environ, {'PYTHONPATH': found})
+        path.start()
+        self.addCleanup(path.stop)
+
+    def plan(self, then, pids=None):
+        """What the adapter library does when the next tool process opens the bus (`ADAPTER_LIBRARY`)."""
+        part = self.library / 'plan.json.part'
+        part.write_text(json.dumps({'then': then, 'pids': str(pids) if pids else None}), encoding='utf-8')
+        os.replace(part, self.library / 'plan.json')
 
     def controller(self, **options):
         from generative_driver.configurator import Controller
@@ -192,10 +230,11 @@ class ChildProcessCase(unittest.TestCase):
         self.addCleanup(controller.close)
         return controller
 
-    def assigned(self, controller, tools=('model_validate', 'probe_run'), **start):
-        """A running generic run whose acquire worker idles and may call `tools`, and that worker's assignment."""
+    def assigned(self, controller, tools=('model_validate', 'interface_execute', 'probe_run'), **start):
+        """A running generic run bound to `BUS` whose acquire worker idles and may call `tools`, and that worker's
+        assignment."""
         with patch.dict('generative_driver.configurator.STAGE_TOOLS', {'acquire': list(tools)}):
-            run = controller.call('start', {'goal': 'A run whose worker idles',
+            run = controller.call('start', {'goal': 'A run whose worker idles', 'binding': BUS,
                                             'executor_config': {'command': IDLE_WORKER}, **start})
             until = time.monotonic() + 30
             while True:
@@ -223,17 +262,22 @@ class ChildProcessCase(unittest.TestCase):
             self.assertLess(time.monotonic(), until, status)
             time.sleep(.02)
 
-    def blocked_call(self, controller, run, assignment, name='model_validate', **arguments):
-        """Start a gateway call of a tool that loads a blocking model, in a thread: (the dict its reply or its error
-        goes to, the thread, the ids of the tool's process and of the child that process started), once both run."""
+    def blocked_call(self, controller, run, assignment, name='interface_execute', **arguments):
+        """Start a gateway call of a tool that opens the bus of a model, where the adapter library never returns, in a
+        thread: (the dict its reply or its error goes to, the thread, the ids of the tool's process and of the child
+        that process started), once both run. `probe_run` runs the model's write, so its call is an effect; any other
+        tool runs the model's read."""
         pids = self.root / (name + '-' + str(time.monotonic_ns()) + '.pids')
-        model = blocking_model(Path(assignment['workspace']) / pids.stem, pids, writes=name == 'probe_run')
+        model = bus_model(Path(assignment['workspace']) / pids.stem)
+        self.plan('wait', pids)
+        operation = 'configure' if name == 'probe_run' else 'identify'
         ended = {}
 
         def call():
             try:
-                ended['reply'] = controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': name,
-                                                          'arguments': {'model_dir': str(model), **arguments}})
+                ended['reply'] = controller.call('tool', {
+                    **run, 'assignment_id': assignment['id'], 'name': name,
+                    'arguments': {'model_dir': str(model), 'operation': operation, **arguments}})
             except Exception as error:
                 ended['error'] = error
         thread = threading.Thread(target=call, daemon=True)
@@ -318,23 +362,25 @@ class DeadlineTests(ChildProcessCase):
     def test_04_B7_a_call_whose_deadline_passed_while_it_waited_is_refused_without_being_started(self):
         from generative_driver import tool_process
         controller = self.controller()
-        run, assignment = self.assigned(controller, effects=['read', 'write'], binding={'url': 'ftdi://ftdi:232h/1'})
+        run, assignment = self.assigned(controller, effects=['read', 'write'])
         with patch.object(tool_process, 'LIMIT_SECONDS', 3):
             # The first call holds the run for its 3 seconds.
             first, holding, pids = self.blocked_call(controller, run, assignment)
             with patch.object(tool_process, 'LIMIT_SECONDS', 0.5):
                 # The second arrives with half a second, waits behind the first and would write to the device.
                 pids_file = self.root / 'second.pids'
-                model = blocking_model(Path(assignment['workspace']) / 'second', pids_file, writes=True)
+                model = bus_model(Path(assignment['workspace']) / 'second')
+                self.plan('wait', pids_file)
                 with self.assertRaisesRegex(ValueError, 'deadline passed before it was dispatched; nothing was '
                                                         'dispatched') as refused:
                     controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'probe_run',
-                                             'arguments': {'model_dir': str(model)}})
+                                             'arguments': {'model_dir': str(model), 'operation': 'configure'}})
             holding.join(20)
         self.assertEqual(first['reply']['abandoned'], 'timeout', first)
         self.assertTrue(self.gone(pids))
         # Refused, never started: one dispatch only, the refusal on record and no effect left uncertain.
-        self.assertEqual([event['name'] for event in self.events(controller, run, 'tool.started')], ['model_validate'])
+        self.assertEqual([event['name'] for event in self.events(controller, run, 'tool.started')],
+                         ['interface_execute'])
         self.assertEqual([(event['name'], event['reason']) for event in self.events(controller, run, 'tool.refused')],
                          [('probe_run', str(refused.exception))])
         self.assertFalse(pids_file.exists())
@@ -351,10 +397,10 @@ class AbandonedTests(ChildProcessCase):
         self.assertTrue(cancelled['stopping'], cancelled)
         thread.join(20)
         self.assertEqual(ended['reply'], {'ok': False, 'abandoned': 'cancelled', 'reason':
-                                          'model_validate did not finish: the configurator stopped it because the run '
-                                          'was cancelled'})
+                                          'interface_execute did not finish: the configurator stopped it because the '
+                                          'run was cancelled'})
         self.assertEqual(self.events(controller, run, 'tool.abandoned'), [
-            {'stage': 'acquire', 'assignment_id': assignment['id'], 'name': 'model_validate',
+            {'stage': 'acquire', 'assignment_id': assignment['id'], 'name': 'interface_execute',
              'dispatch_id': self.dispatch_ids(controller, run)[0], 'reason': 'cancelled', 'actor': 'worker'}])
         self.assertEqual(self.events(controller, run, 'tool.finished'), [])
         self.assertTrue(self.gone(pids))
@@ -362,7 +408,7 @@ class AbandonedTests(ChildProcessCase):
         status = self.ended(controller, run)
         self.assertEqual((status['status'], status['uncertain_effect']), ('cancelled', False), status)
         # The stop has its line in the service's log.
-        written = entry(controller.home, 'run=' + run['run_id'], 'tool=model_validate')
+        written = entry(controller.home, 'run=' + run['run_id'], 'tool=interface_execute')
         self.assertEqual(len(written.strip().splitlines()), 1, written)
         self.assertIn('stage=acquire', written)
         self.assertIn('reason=cancelled', written)
@@ -370,9 +416,9 @@ class AbandonedTests(ChildProcessCase):
     def test_04_B8_an_effect_a_stopped_call_might_have_had_stays_uncertain_until_the_operator_confirms_it(self):
         from generative_driver import tool_process
         controller = self.controller()
-        run, assignment = self.assigned(controller, effects=['read', 'write'], binding={'url': 'ftdi://ftdi:232h/1'})
+        run, assignment = self.assigned(controller, effects=['read', 'write'])
         with patch.object(tool_process, 'LIMIT_SECONDS', 1.5):
-            # The model writes a register, so the call might have written by the time it is stopped.
+            # The operation writes to the device, so the call might have written by the time it is stopped.
             ended, thread, pids = self.blocked_call(controller, run, assignment, 'probe_run')
             thread.join(20)
         self.assertEqual(ended['reply'], {'ok': False, 'abandoned': 'timeout', 'uncertain_effect': True, 'reason':
@@ -385,10 +431,11 @@ class AbandonedTests(ChildProcessCase):
         # Nothing completed the call later, and no second effect is dispatched while the first is uncertain.
         self.assertEqual(self.events(controller, run, 'tool.finished'), [])
         self.assertTrue(controller.call('status', run)['uncertain_effect'])
-        second = blocking_model(Path(assignment['workspace']) / 'second', self.root / 'second.pids', writes=True)
+        second = bus_model(Path(assignment['workspace']) / 'second')
+        self.plan('wait', self.root / 'second.pids')
         with self.assertRaisesRegex(ValueError, 'Outstanding effect is uncertain'):
             controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'probe_run',
-                                     'arguments': {'model_dir': str(second)}})
+                                     'arguments': {'model_dir': str(second), 'operation': 'configure'}})
         self.assertFalse((self.root / 'second.pids').exists())
         controller.call('cancel', run)
         self.assertTrue(self.ended(controller, run)['uncertain_effect'])
@@ -402,18 +449,18 @@ class AbandonedTests(ChildProcessCase):
         controller = self.controller()
         run, assignment = self.assigned(controller)
         work = Path(assignment['workspace'])
-        for label, ending, kind, message, said in (
-                ('exits', 'import os\nos._exit(7)\n', 'ToolProcessExit', 'exit status 7',
+        for label, then, kind, message, said in (
+                ('exits', 'exit', 'ToolProcessExit', 'exit status 7',
                  'its process ended without a result (exit status 7)'),
-                ('raises', 'raise SystemExit("the conversion module gave up")\n', 'SystemExit',
-                 'the conversion module gave up', 'it raised SystemExit: the conversion module gave up')):
+                ('raises', 'raise', 'SystemExit',
+                 'the adapter library gave up', 'it raised SystemExit: the adapter library gave up')):
             with self.subTest(label=label):
-                model = blocking_model(work / label, self.root / (label + '.pids'))
-                (model / 'convert.py').write_text(ending, encoding='utf-8')
-                reply = controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'model_validate',
-                                                 'arguments': {'model_dir': str(model)}})
+                model = bus_model(work / label)
+                self.plan(then)
+                reply = controller.call('tool', {**run, 'assignment_id': assignment['id'], 'name': 'interface_execute',
+                                                 'arguments': {'model_dir': str(model), 'operation': 'identify'}})
                 self.assertEqual(reply, {'ok': False, 'abandoned': 'raised',
-                                         'reason': 'model_validate did not finish: ' + said})
+                                         'reason': 'interface_execute did not finish: ' + said})
                 abandoned = self.events(controller, run, 'tool.abandoned')[-1]
                 self.assertEqual((abandoned['reason'], abandoned['type'], abandoned['message']),
                                  ('raised', kind, message))
@@ -422,10 +469,10 @@ class AbandonedTests(ChildProcessCase):
         # What the tool's process let through has its traceback in the service's log, with the run, stage and tool.
         raised = [written for written in entries(controller.home)
                   if all(needle in written.splitlines()[0] for needle in
-                         ('run=' + run['run_id'], 'stage=acquire', 'tool=model_validate', 'SystemExit'))]
+                         ('run=' + run['run_id'], 'stage=acquire', 'tool=interface_execute', 'SystemExit'))]
         traced = [written for written in raised if 'Traceback (most recent call last):' in written]
         self.assertEqual(len(traced), 1, raised)
-        self.assertIn('raise SystemExit("the conversion module gave up")', traced[0])
+        self.assertIn('raise SystemExit("the adapter library gave up")', traced[0])
         # The run is still the service's to run: the same worker's next call is answered.
         self.assertEqual(controller.call('status', run)['status'], 'running')
         controller.call('cancel', run)
@@ -440,14 +487,15 @@ class AbandonedTests(ChildProcessCase):
         # A configurator a test builds: it runs tools inline, and what a tool raises reaches the test, as it always did.
         controller = Controller(self.root / 'inline-home')
         self.addCleanup(controller.close)
-        run, assignment = self.assigned(controller, effects=['read', 'write'], binding={'url': 'ftdi://ftdi:232h/1'})
+        run, assignment = self.assigned(controller, effects=['read', 'write'])
         request = {**run, 'assignment_id': assignment['id']}
-        model = blocking_model(Path(assignment['workspace']) / 'model', self.root / 'unused.pids', writes=True)
+        model = bus_model(Path(assignment['workspace']) / 'model')
         with patch('generative_driver.toolkit.call_tool', self.raising):
             with self.assertRaisesRegex(RuntimeError, 'scripted tool failure'):
                 controller.call('tool', {**request, 'name': 'model_validate', 'arguments': {}})
             with self.assertRaisesRegex(RuntimeError, 'scripted tool failure'):
-                controller.call('tool', {**request, 'name': 'probe_run', 'arguments': {'model_dir': str(model)}})
+                controller.call('tool', {**request, 'name': 'probe_run',
+                                         'arguments': {'model_dir': str(model), 'operation': 'configure'}})
         started = self.dispatch_ids(controller, run)
         self.assertEqual(self.events(controller, run, 'tool.abandoned'), [
             {'stage': 'acquire', 'assignment_id': assignment['id'], 'name': name, 'dispatch_id': dispatch,
@@ -543,8 +591,8 @@ class CheckTests(unittest.TestCase):
     where a firmware stand-in must be imported."""
 
     # Launched in place of Codex with a model folder and a stage name: acquire is the scripted worker's, interpret
-    # writes the register model found in the folder, the named stage and every later one wait to be stopped, and a
-    # stage between them ends at once.
+    # writes the model found in the folder, the named stage and every later one wait to be stopped, and a stage
+    # between them ends at once.
     MODELLING = ('import io, json, shutil, sys, time\n'
                  'from pathlib import Path\n'
                  'sys.path.insert(0, ' + repr(PACKAGE_ROOT) + ')\n'
@@ -560,8 +608,7 @@ class CheckTests(unittest.TestCase):
                  '    main(sys.argv[3:])\n'
                  'elif stage == "interpret":\n'
                  '    workspace = Path(sys.argv[sys.argv.index("-C") + 1])\n'
-                 '    for name in ("model.json", "convert.py"):\n'
-                 '        shutil.copyfile(Path(sys.argv[1]) / name, workspace / name)\n'
+                 '    shutil.copyfile(Path(sys.argv[1]) / "model.json", workspace / "model.json")\n'
                  'elif stages.index(stage) >= stages.index(sys.argv[2]):\n'
                  '    time.sleep(120)\n')
     # Launched in place of Codex with a file name: every stage ends at once but emit, which waits for the file and
@@ -620,53 +667,59 @@ class CheckTests(unittest.TestCase):
                      if event['kind'] == 'stage.accepted' and event['data']['stage'] == stage)['notes']['inline']
         return {check['name']: check for check in notes['configurator']['checks']}, notes['outcome']['kind']
 
-    def interpreted(self, convert, waits_in):
-        """Run a generic run in which the worker writes a register model whose conversion module is `convert`, up to
-        the stage its workers wait in: (the run's events, the service's `call`, the run)."""
-        model = blocking_model(self.root / 'written', self.root / 'unused.pids')
-        (model / 'convert.py').write_text(convert, encoding='utf-8')
+    def no_time_for(self, tool):
+        """Give a check of the service's that runs `tool` no time at all, until the test ends; every other tool keeps
+        its limit."""
+        from generative_driver import tool_process
+        from generative_driver.configurator import Controller
+        real = Controller._check_tool
+
+        def check_tool(controller, call_tool, run_id, stage, name, arguments):
+            if name != tool:
+                return real(controller, call_tool, run_id, stage, name, arguments)
+            with patch.object(tool_process, 'LIMIT_SECONDS', 0):
+                return real(controller, call_tool, run_id, stage, name, arguments)
+        checking = patch.object(Controller, '_check_tool', check_tool)
+        checking.start()
+        self.addCleanup(checking.stop)
+
+    def interpreted(self, waits_in):
+        """Run a generic run in which the worker writes an interface model, up to the stage its workers wait in: (the
+        run's events, the service's `call`, the run)."""
+        model = bus_model(self.root / 'written')
         firmware = self.root / 'firmware.bin'
         firmware.write_bytes(b'a firmware stand-in, not a firmware image\n')
-        self.shorten(4)
         call = serve(self, self.home)
         command = [sys.executable, '-c', self.MODELLING, str(model), waits_in]
-        run = call('start', {'goal': 'A run whose interpreted model has a bad conversion module',
+        run = call('start', {'goal': 'A run whose interpreted model the configurator cannot validate in time',
                              'inputs': {'firmware.bin': str(firmware)}, 'budget_seconds': 300,
                              'executor_config': {'command': command}})
         self.addCleanup(call, 'cancel', run)
         return self.follow(call, run, lambda events: self.assigned(events, waits_in)), call, run
 
-    def test_04_B9_a_conversion_module_that_loops_costs_a_failed_check_and_the_run_carries_on(self):
-        events, call, run = self.interpreted('while True:\n    pass\n', waits_in='probe')
+    def test_04_B9_a_model_check_that_did_not_finish_costs_a_failed_check_and_the_run_carries_on(self):
+        # No check of the configurator runs code a worker wrote, so a check can no longer loop or end its process
+        # through it. What a check that did not finish costs is shown with a limit that has already passed.
+        self.no_time_for('model_validate')
+        events, call, run = self.interpreted(waits_in='ground')
+        stopped = 'model_validate did not finish: the configurator stopped it when its limit of 0 seconds passed'
         checks, outcome = self.checks(events, 'interpret')
         self.assertEqual((checks['executable_model_contract']['passed'], checks['executable_model_contract']['reason']),
-                         (False, 'model_validate did not finish: the configurator stopped it when its limit of 4 '
-                                 'seconds passed'))
-        # A failed check is a note: the stage advanced and the run went on to probe, with no host stop.
+                         (False, stopped))
+        # A failed check is a note: the stage advanced and the run went on, with no host stop.
+        self.assertEqual(outcome, 'advance')
+        # The probe stage validates the model it was assigned, and says that validation did not run.
+        checks, outcome = self.checks(events, 'probe')
+        validated = checks['executable_model_contract']
+        self.assertEqual((validated['passed'], [model['reason'] for model in validated['models']]),
+                         (False, ['Validation did not run: ' + stopped]))
         self.assertEqual(outcome, 'advance')
         status = call('status', run)
-        self.assertEqual((status['status'], status['stage'], status['reason']), ('running', 'probe', None), status)
+        self.assertEqual((status['status'], status['stage'], status['reason']), ('running', 'ground', None), status)
         self.assertIn('executable_model_contract', status['stage_notes'][1]['failed_checks'])
         # The check that was stopped has its line in the service's log.
         written = entry(self.home, 'run=' + run['run_id'], 'stage=interpret', 'tool=model_validate')
         self.assertIn('reason=timeout', written)
-
-    def test_04_B9_a_conversion_module_that_exits_the_process_costs_a_failed_check_not_the_service(self):
-        events, call, run = self.interpreted('import os\nos._exit(7)\n', waits_in='ground')
-        exited = 'model_validate did not finish: its process ended without a result (exit status 7)'
-        checks, outcome = self.checks(events, 'interpret')
-        self.assertEqual((checks['executable_model_contract']['passed'], checks['executable_model_contract']['reason']),
-                         (False, exited))
-        self.assertEqual(outcome, 'advance')
-        # The probe stage validates the model it was assigned, with the same module: a failed check there too.
-        checks, outcome = self.checks(events, 'probe')
-        validated = checks['executable_model_contract']
-        self.assertEqual((validated['passed'], [model['reason'] for model in validated['models']]),
-                         (False, ['Validation did not run: ' + exited]))
-        self.assertEqual(outcome, 'advance')
-        # The service, which runs in this very process, is still here and answers.
-        status = call('status', run)
-        self.assertEqual((status['status'], status['stage'], status['reason']), ('running', 'ground', None), status)
 
     def test_04_B9_an_emit_check_that_was_stopped_rejects_the_package_and_is_no_host_stop(self):
         call = serve(self, self.home)

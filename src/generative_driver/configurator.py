@@ -38,11 +38,12 @@ STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec',
                 'acquire_classify','acquire_document'],
-    'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','model_provenance_audit','ghidra_run','image_map_check'],
-    # Probe and ground workers get no model_validate: the register validator writes beside the model it checks, which
-    # would alter an assigned input. The configurator validates each assigned model on its own copy and notes it.
+    'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','ghidra_run',
+                  'image_map_check'],
+    # Probe and ground workers get no model_validate: the configurator validates each assigned model itself, on a copy
+    # of the bytes it has just hashed, and notes the result.
     'probe': ['model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],
-    'ground': ['probe_run','interface_execute','probe_diff','probe_observe'],
+    'ground': ['probe_run','interface_execute','probe_diff'],
     'emit': ['emit_package','emit_check'],
     'reuse': ['interface_describe','interface_execute','emit_check','emit_test_live'],
 }
@@ -55,8 +56,7 @@ DOCUMENT_IMPORT = 'acquire_document'
 GROUND_OBJECTIVE = ('Test the meanings the interpreted model gives the device: units, scaling and the effects of its '
                     'operations. Run the model on the device with probe_run and interface_execute through the '
                     'configurator-owned connection, compare the outputs with the probe records and with operator '
-                    'observations where given (probe_observe checks a decoded capture), and report what the device '
-                    'did that the model did not predict. Goal: ')
+                    'observations where given, and report what the device did that the model did not predict. Goal: ')
 
 
 # Fresh reuse's package tool on a supplied device; an emulated device's result carries its instrument reading.
@@ -288,9 +288,6 @@ def operation_effects(name, arguments, model=None):
             model_path=Path(arguments['package_dir'])/'driver/model.json'
         model=_model_json(model_path)
     operations=model.get('operations',{})
-    if model.get('schema')=='interface-model/1':
-        steps=[step for group in operations.values() for step in group]+model.get('state',[])
-        return {'write'} if any(step.get('op') in ('reg_write','raw_write') for step in steps) else {'read'}
     names=arguments.get('operations') if name=='emit_test_live' else [arguments.get('operation')]
     if names is None:
         names=list(operations)
@@ -308,30 +305,42 @@ def _copy_model(source, target):
             raise ValueError('model_dir holds a symlink, which the configurator does not copy; nothing was dispatched')
 
 
+def _refuse_unknown_format(model):
+    """Refuse a device call whose model has a schema the installed runtime does not know, naming the schema found.
+
+    A model is data the runtime executes (docs/adr/0010-a-package-is-data-in-one-format.md). The gateway asks this
+    before it classifies the call by the model's effects, so a model of another format is refused whatever the run
+    grants: the tool never starts, and nothing is marked uncertain.
+    """
+    from interface_runtime.engine import SCHEMAS
+    found = model.get('schema') if isinstance(model, dict) else None
+    if not isinstance(found, str) or found not in SCHEMAS:
+        raise ValueError('The model format is not one the runtime knows, so it would refuse it before opening the '
+                         'device; nothing was dispatched: ' + repr(found)[:120])
+
+
 def _refuse_invalid_model(model_dir):
     """Refuse unreadable, structurally invalid or contradictory candidates before managed dispatch.
 
     Use the runtime's strict bounded reader, then candidate response checks. The gateway
     does this before marking a write uncertain, so a refusal leaves no effect to reconcile.
-    Raw bounded execution remains separate from candidate admission. Register models have
-    no runtime validation: their probe runs them on the bus.
+    Raw bounded execution remains separate from candidate admission.
     """
-    from interface_runtime.engine import SCHEMAS, validate_model
+    from interface_runtime.engine import validate_model
     try:
         model = _model_json(Path(model_dir) / 'model.json')
     except (OSError, ValueError, RecursionError) as error:
         raise ValueError('The runtime cannot load model.json, so it would refuse it before opening the device; nothing '
                          'was dispatched: ' + type(error).__name__ + ': ' + str(error)) from None
-    if isinstance(model, dict) and model.get('schema') in SCHEMAS:
-        checked = validate_model(model)
-        if not checked['ok']:
-            raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
-                             'nothing was dispatched: ' + str(checked['defects']))
-        from interface_runtime.qualify import validate_candidate
-        candidate = validate_candidate(model)
-        if not candidate['ok']:
-            raise ValueError('The response contract fails validation before managed device dispatch; '
-                             'nothing was dispatched: ' + str(candidate['defects']))
+    checked = validate_model(model)
+    if not checked['ok']:
+        raise ValueError('The model fails validation, so the runtime would refuse it before opening the device; '
+                         'nothing was dispatched: ' + str(checked['defects']))
+    from interface_runtime.qualify import validate_candidate
+    candidate = validate_candidate(model)
+    if not candidate['ok']:
+        raise ValueError('The response contract fails validation before managed device dispatch; '
+                         'nothing was dispatched: ' + str(candidate['defects']))
 
 
 class SafetyError(ValueError):
@@ -373,7 +382,7 @@ def _outcome(stage, result, checked, *, uncertain, repairs, max_repairs):
     return Outcome('advance', 'Repair budget exhausted; continuing with best revision' if diff else None)
 
 
-EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'bus', 'replay', 'package_dir')
+EVIDENCE_ARGUMENTS = ('model_dir', 'probe', 'probe_json', 'replay', 'package_dir')
 
 
 def _argument_digests(arguments):
@@ -417,12 +426,11 @@ def _replaced(value, replacements):
 
 def _answered(event):
     """Whether a probe_run's record holds what the device did on the connection the configurator supplied: a live run
-    that succeeded, a register probe that read an unexpected identity, or a failure the runtime attributes to the
-    model after the transport opened."""
+    that succeeded, or a failure the runtime attributes to the model after the transport opened."""
     result = _result_of(event)
     if event.get('name') != 'probe_run' or event.get('connected') is not True or result.get('evidence_kind', 'live') != 'live':
         return False
-    if event.get('ok') is True or ('fault' not in result and result.get('_exit') == 2):
+    if event.get('ok') is True:
         return True
     failed = [r for r in _listed(result.get('results')) if r.get('ok') is False]
     return result.get('fault') == 'model' and bool(failed) and all(r.get('transport_open_attempted') is True for r in failed)
@@ -432,7 +440,7 @@ def _probe_records(events):
     """The probe records one assignment's runs leave to hand on, from the configurator's own record of its tools.
 
     For each record path only the last probe_run that wrote it counts, against the hash the configurator recorded
-    when that run returned: a register probe always writes probe.json, so a later run replaces the earlier record.
+    when that run returned: a run that writes a path an earlier run wrote replaces the earlier record.
     That record is kept when the run answered on the owned connection, whatever model it ran; the handoff's notes
     bind each record to the digest of the model that wrote it (`_record_writers`). Returns ({path: (sha256, event)},
     dispatch ids of the runs whose record a later run replaced)."""
@@ -469,17 +477,15 @@ def _device_diff(events, assignment, contracts=None, writers=None):
     assigned model and the tool results it observed on the device connection it supplied.
 
     - a `model_contract` entry: the configurator's own validation of an assigned model (`contracts` maps the input's
-      path to its model_validate result) found defects. For an interface model the runtime refuses such a model before
-      any transport opens; a register model's validation also covers what its probe does not check (a safety entry,
-      provenance, the conversion). Either way the entry is the configurator's finding about the model, never that the
-      device did anything.
+      path to its model_validate result) found defects. The runtime refuses such a model before any transport opens,
+      so the entry is the configurator's finding about the model, never that the device did anything.
     - a probe_run or interface_execute failure of the assigned model that the runtime attributes to the model after
       the transport opened;
     - probe_diff defects over a probe record that such a run of the assigned model wrote, or that an earlier stage
       handed on when the assigned model wrote it (`writers` maps a record's digest to the digests of the models that
       wrote it, as the earlier stage's notes bound them).
-    Replays, records and captures the worker supplied, other models and their records, and operator and host faults
-    are not the model contradicted. Records are named by content, and only records that are handed on: an input of
+    Replays and records the worker supplied, other models and their records, and operator and host faults are not
+    the model contradicted. Records are named by content, and only records that are handed on: an input of
     this assignment, or a record this stage hands on (a record a later run replaced is not named). Never a worker
     claim, never truth."""
     from interface_runtime.faults import classify_failure
@@ -525,13 +531,10 @@ def _device_diff(events, assignment, contracts=None, writers=None):
             failed = [r for r in _listed(result.get('results') if name == 'probe_run' else [result]) if r.get('ok') is False]
             model = (result.get('fault') == 'model' if name == 'probe_run' else
                      result.get('schema') == 'interface-result/1' and classify_failure(result) == 'model')
-            # Register probes predate fault labels: exit 2 is an unexpected identity, exit 3 no acknowledgement.
-            legacy = name == 'probe_run' and 'fault' not in result and result.get('_exit') in (2, 3)
-            if (model and opened(failed)) or legacy:
+            if model and opened(failed):
                 error = result.get('error') if isinstance(result.get('error'), dict) else {'message': result.get('error')}
-                what = result.get('error_message') or error.get('message') or (
-                    'device identity ' + repr(result.get('identity')) + ' is not one the model expects' if result.get('identity_ok') is False else None)
-                entry = {'code': result.get('error_code') or error.get('code'), 'what': what,
+                entry = {'code': result.get('error_code') or error.get('code'),
+                         'what': result.get('error_message') or error.get('message'),
                          'probe': cite(record_of(event)) if name == 'probe_run' else None, 'failed': failed}
         if entry is not None:
             entry = {key: value for key, value in entry.items() if value not in (None, [])}
@@ -607,7 +610,6 @@ FINAL = ':final'
 # replay passes from whatever exchanges the package bundles; it replays device exchanges only when the package's probe
 # evidence was recorded live from the device, not from a replay the worker supplied.
 REPLAYED, SUPPLIED = 'replay of the recorded device exchanges', 'replay of supplied exchanges, not recorded from the device'
-SEEDED = 'seeded package-versus-model check'
 UNCERTAIN_AFTER_VERDICT = 'Outstanding effect is uncertain after the final verdict; operator reconciliation is required'
 UNCERTAIN_AWAITING = ('Outstanding effect is uncertain after fresh reuse; reconcile it, then resume, and the frozen driver '
                       'awaits its grade')
@@ -633,7 +635,7 @@ def _emit_check_failure(result):
         return "the package carries a runtime other than this kit's"
     if result.get('replay_status') not in (None, 'passed'):
         return 'replay ' + str(result['replay_status'])
-    return 'seeded check failed' if 'seeds_run' in result else 'emit_check reported failure'
+    return 'emit_check reported failure'
 
 
 def _emit_builds(events):
@@ -716,9 +718,8 @@ def _live_outcome(event):
       refused it (no execution passed and none that failed attempted to open the transport), or the tool declared
       that it refused before its first device call (transport_open_attempted false and no execution record: an
       argument, binding, grant, snapshot or integrity refusal);
-    - 'failed': the model it ran failed on the device. The runtime attributes a failure to the model after the
-      transport opened, or a register package's own live suite reported failing checks. The verdict counts it as the
-      driver's only when the operation ran the frozen bytes;
+    - 'failed': the model it ran failed on the device: the runtime attributes a failure to the model after the
+      transport opened. The verdict counts it as the driver's only when the operation ran the frozen bytes;
     - 'inconclusive': anything else that did not succeed, such as an operator, host or transport fault (exit 4), a
       host fault the tool declared before its first device call, or a toolchain error the tool did not declare as a
       refusal, which may have come after the device was contacted (labelled a host fault only when it names one,
@@ -747,10 +748,6 @@ def _live_outcome(event):
         code = first.get('error_code') or error.get('code') or (named if named != 'toolchain error' else None)
         return 'inconclusive', str((fault(first) if failed else result.get('fault')) or 'unclassified') + ' fault' + (
             ' (' + str(code) + ')' if code else '')
-    if isinstance(result.get('output'), list):
-        # A register package's live suite ran on the device; failing checks are the driver's.
-        return ('failed', None) if isinstance(result.get('failed'), int) and result['failed'] > 0 else (
-            'inconclusive', 'live suite exited with an error')
     # The tool raised without declaring a refusal: say whether that names a host failure, never guess one.
     return 'inconclusive', ('host fault' if _host_fault(result) else 'undeclared toolchain error') + (
         ' (' + _toolchain_fault(result) + ')')
@@ -768,8 +765,7 @@ def _frozen_package(package, strict=False):
     running either is no evidence of function. A step is compared by what reaches the device: its op and tx, and for
     a USB control transfer its setup and its rx, whose length the transfer requests. What a step accepts back (its
     receive mode or bound on a stream, expect and match), its capture name and timeout ask the device nothing. The
-    model is read as the runtime reads it. A register (schema 1) model has no named operations: its effects and
-    functions are None.
+    model is read as the runtime reads it.
 
     A part that is absent or does not parse is None. So is one the host cannot read, unless `strict`: the final verdict
     reads a package whose digest it has just verified, so a host failure there says nothing about the driver and
@@ -788,7 +784,7 @@ def _frozen_package(package, strict=False):
     identity = model.get('identity') if isinstance(model, dict) else None
     identity = identity.get('operation') if isinstance(identity, dict) else None
     operations = model.get('operations') if isinstance(model, dict) else None
-    named = isinstance(operations, dict) and model.get('schema') != 'interface-model/1'
+    named = isinstance(operations, dict)
     effects = ({name: op.get('effect', 'actuate') if isinstance(op, dict) else None for name, op in operations.items()}
                if named else None)
     def requests(op):
@@ -913,8 +909,6 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
         result = _result_of(event)
         if generated(event):
             return result.get('operation') in (package['functions'] or ())
-        if isinstance(result.get('output'), list):
-            return True  # a register package's live suite reads its identity, then measures
         executions = _listed(result.get('results'))
         other = lambda name: name in (package['functions'] or ())
         if any(other(r.get('operation')) and r.get('transport_open_attempted') is not False for r in executions):
@@ -975,9 +969,9 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
       one ran the frozen package with emit_test_live (the bytes the configurator hashed before dispatch, executed as
       a snapshot of the frozen manifest) and a function of it beyond its identity operation, on the connection the
       configurator supplied.
-    - **Not equivalent:** no single package passed emit_check replay of device exchanges (a seeded package-versus-model
-      check, or a replay of exchanges the worker supplied, is not one), the driver failed on the device, or fresh reuse
-      never ran a function of the package beyond its identity with emit_test_live.
+    - **Not equivalent:** no single package passed emit_check replay of device exchanges (a replay of exchanges the
+      worker supplied is not one), the driver failed on the device, or fresh reuse never ran a function of the package
+      beyond its identity with emit_test_live.
     - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
       a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
       operator's grants permit no function of the package beyond its identity (an effect or the reset its channel
@@ -1003,9 +997,8 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     passed = frozen is not None and check_of(emit).get('passed') is True
     verified = check_of(emit).get('verified_by')
     kind = verified[0] if isinstance(verified, list) and len(verified) == 1 and isinstance(verified[0], str) else None
-    # Ruling 7 counts only a replay of the recorded device exchanges. A seeded package-versus-model check compares the
-    # package with its own model, not with the device, a replay of supplied exchanges reached no device, and a check
-    # that recorded neither establishes no replay.
+    # Ruling 7 counts only a replay of the recorded device exchanges: a replay of supplied exchanges reached no device,
+    # and a check that recorded neither establishes no replay.
     replayed = passed and kind == REPLAYED
     replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
               'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
@@ -2004,8 +1997,7 @@ class Controller:
                 record = json.loads(Path(path).read_text(encoding='utf-8'))
             except (OSError, ValueError):
                 return False
-            # An interface probe record says ok; a register probe's record says whether the identity answered.
-            return isinstance(record, dict) and (record.get('ok') is True or record.get('identity_ok') is True)
+            return isinstance(record, dict) and record.get('ok') is True
         written = []  # (record path, digests of the models that wrote it), newest first
         for handoff in reversed(accepted):
             if handoff['stage'] in ('probe', 'ground'):
@@ -2616,14 +2608,12 @@ class Controller:
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
                                        + str(result.get('error')))
-                replayed=result.get('replay_status')=='passed' or result.get('seeds_run',0)>0
+                replayed=result.get('replay_status')=='passed'
                 if result.get('ok') and result.get('_exit',0)==0 and result.get('runtime_current') and replayed:
                     selected.append(str(package))
-                    # An interface package replays the exchanges it bundles, which are device exchanges only when
-                    # its probe evidence was recorded live; a register package is checked against its model on seeded
-                    # register files and replays no device exchange.
-                    verified.append(SEEDED if result.get('replay_status') != 'passed' else
-                                    REPLAYED if result.get('source_evidence_kind') == 'live' else SUPPLIED)
+                    # A package replays the exchanges it bundles, which are device exchanges only when its probe
+                    # evidence was recorded live.
+                    verified.append(REPLAYED if result.get('source_evidence_kind') == 'live' else SUPPLIED)
                 else:
                     why = _emit_check_failure(result)
                     rejected.append({'package': package.name, 'reason': why})
@@ -2683,9 +2673,9 @@ class Controller:
                 return False
         observed = [event for event in mine if event.get('ok')]
         checks, selected, dropped = [], [], []
-        # The configurator validates each assigned model itself, on a copy in its own run directory because a
-        # validator may write beside the model: a model that fails validation goes back to interpret whether or not
-        # the worker ran it. (For an interface model the runtime refuses such a model before opening the device.)
+        # The configurator validates each assigned model itself, on a copy in its own run directory, so that it
+        # validates the bytes it has just hashed: a model that fails validation goes back to interpret whether or not
+        # the worker ran it. (The runtime refuses such a model before opening the device.)
         contracts = {}
         for raw, expected in (assignment.get('inputs') or {}).items():
             if not (Path(raw) / 'model.json').is_file():
@@ -2750,12 +2740,6 @@ class Controller:
                            **({'other_model_runs':others} if others else {}), **replaced,
                            **({} if evidence or executions else {'reason':'No observed successful device test of the assigned '
                                                                          'model through the owned connection'})})
-            captures = [e for e in mine if e['name'] == 'probe_observe' and type(e.get('result',{}).get('refuted')) is int]
-            if captures:
-                refuted = [line for e in captures for line in e['result'].get('lines') or [] if isinstance(line, str) and line.startswith('refuted')]
-                checks.append({'name':'supplied_capture_observations','passed':not refuted,'dispatch_ids':[e['dispatch_id'] for e in captures],
-                               'basis':'A decoded capture supplied by the worker, not a device observation by the configurator; '
-                                       'kept as a note, never a repair trigger', **({'refuted':refuted} if refuted else {})})
         return {'artifacts': selected, 'checks': checks, 'dropped': dropped, 'records': records, 'device_diff': diff}
 
     def _accept(self, run_id, assignment, checked, run_dir, workspace, progress, notes=None, *, revise=None, recovery=None):
@@ -3108,6 +3092,10 @@ class Controller:
         # A USB identity can also identify a serial adapter, but an explicit descriptor request never opens its port.
         serial_tool = name in ('acquire_serial_listen','acquire_flash') or (name == 'acquire_classify' and serial_binding and not selfdescribing)
         model_tool = name in ('probe_run','interface_execute','emit_test_live') and not arguments.get('replay')
+        if classified or (model_tool and arguments.get('model_dir') is not None):
+            # Before anything is read from the model: its channel, its effects or the grants they need.
+            _refuse_unknown_format(classified[0] if classified
+                                   else _model_json(Path(arguments['model_dir']) / 'model.json'))
         if name in ('acquire_serial_listen','acquire_flash') and not serial_binding:
             raise ValueError('No operator-owned serial binding for this stage')
         if serial_binding and (serial_tool or model_tool):

@@ -754,7 +754,7 @@ def acquire_register_sweep(run_dir, address, bus_url=None, speed_hz=100000,
     """Read every register of one address repeatedly and report what is constant and what moves.
 
     Read-only, and opt-in: on some parts a read has a side effect. This is the only description a class-4
-    device gives, so it is the black-box front-end's input.
+    device gives.
     """
     import time
     if not isinstance(bus_url, str) or not bus_url.startswith("ftdi://"):
@@ -823,8 +823,7 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                       "event": r.get("_event")})
         if r.get("available"):
             is_elf = r["interpret_input"].endswith(".elf")
-            return {"device_class": 1,
-                    "front_end": "interpret-firmware" if is_elf else "interpret-firmware-binary",
+            return {"device_class": 1, **({} if is_elf else {"front_end": "interpret-firmware-binary"}),
                     "artifact": r["artifact"], "rungs": rungs,
                     "inputs_for_interpret": {"elf": r["artifact"]} if is_elf else {"image.bin": r["interpret_input"]},
                     "available": True, "artifacts": r["artifacts"], "interpret_input": r["interpret_input"]}
@@ -846,7 +845,7 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                       "result": ("obtained rev %s" % r.get("revision")) if r.get("available") else r.get("reason"),
                       "event": r.get("_event")})
         if r.get("available"):
-            return {"available": True, "device_class": 2, "front_end": "interpret-datasheet", "artifact": r["artifact"],
+            return {"available": True, "device_class": 2, "artifact": r["artifact"],
                     "rungs": rungs, "artifacts": [r["artifact"], r["pages_dir"]],
                     "inputs_for_interpret": {"datasheet.pdf": r["artifact"], "pages": r["pages_dir"]}}
         if port is not None and transports is None:
@@ -891,5 +890,5 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
     if allow_register_sweep:
         sw = acquire_register_sweep(run_dir=run_dir, address=scan["acks"][0], bus_url=bus_url)
         inputs["sweep"] = sw.get("sweep")
-    return {"available": True, "device_class": 4, "front_end": "interpret-blackbox", "artifact": scan["scan"],
+    return {"available": True, "device_class": 4, "artifact": scan["scan"],
             "rungs": rungs, "inputs_for_interpret": inputs, "artifacts": [p for p in inputs.values() if p]}

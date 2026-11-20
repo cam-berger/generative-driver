@@ -9,28 +9,22 @@ isolation. The agent writes the model for host collection and validation.
 import collections, gzip, hashlib, json, os, re, shlex, shutil, tempfile
 from pathlib import Path
 
-from . import core, runner
+from . import core
 
 SKILLS = os.path.join(core.BENCH, "toolchain", "skills")
 REPOSITORY = os.path.dirname(core.BENCH)
-STDLIB_OK = set(
-    "math struct sys json time collections itertools functools dataclasses typing decimal fractions "
-    "array binascii statistics enum abc copy re os".split())
 
-# Front ends that write an executable interface model get the shared runtime as their kit; the others write
-# a schema-1 register model checked by the register validator.
-EXECUTABLE = {"interpret-interface", "interpret-selfdescribing"}
-FRONT_ENDS = EXECUTABLE | {"interpret-datasheet", "interpret-firmware", "interpret-blackbox"}
-# Schema document per executable front end, newest first; the workspace copy keeps the neutral name.
+# Schema document per front end, newest first; the workspace copy keeps the neutral name. Every front end writes an
+# executable interface model and gets the shared runtime as its kit.
 # interpret-interface stays on schema 5: its brief names schemas 4 and 5 and nothing newer.
 MODEL_DOCS = {"interpret-interface": ("INTERFACE_MODEL_V5.md", "INTERFACE_MODEL_V4.md", "INTERFACE_MODEL_V3.md"),
               "interpret-selfdescribing": ("INTERFACE_MODEL_V6.md",)}
+FRONT_ENDS = set(MODEL_DOCS)
 # Personal agent directories may contain caller files, instructions and other sessions' transcripts.
 SCRATCH_TREES = tuple(str(Path.home() / name) for name in (".claude", ".codex"))
 RESERVED = {"BRIEF.md", "INTERFACE_MODEL.md", "INPUT_HASHES.json", "validate.py", "qualify.py",
-            "image_map_check.py", "WIRING.md", "defects.json", "_toolkit"}
-# defects.json is the control file the retry loop writes and the schema-1 validator rewrites; a change to it
-# is reported, never counted as tampering.
+            "image_map_check.py", "defects.json", "_toolkit"}
+# defects.json is the control file the retry loop writes; a change to it is reported, never counted as tampering.
 CONTROL = {"defects.json"}
 SEAL_SCHEMA = "interpret-input-seal/1"
 SEAL_KINDS = {
@@ -65,8 +59,7 @@ def _output_present(workspace):
         model = json.loads(Path(workspace, "model.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(model, dict) and (model.get("schema") in _engine()[0].SCHEMAS or
-        (model.get("schema") == "interface-model/1" and Path(workspace, "convert.py").is_file()))
+    return isinstance(model, dict) and model.get("schema") in _engine()[0].SCHEMAS
 
 
 def _attempt_no(attempt):
@@ -168,13 +161,11 @@ def _actions(events):
 
 
 @core.tool("model_validate")
-def model_validate(model_dir, random_files=20, seed=0, **_):
-    """Structural check of an interface model. No ground truth and no device knowledge: the model is asked
-    only to be well formed, to declare its evidence, and for its conversion to survive bytes the model
-    itself says the device can return."""
-    import random
+def model_validate(model_dir, **_):
+    """Structural check of a model. No ground truth and no device knowledge: an interface model is asked only to be
+    well formed and to declare its evidence, and nothing is written beside it. Experimental schema-2 evidence goes to
+    `firmware_validate`; any other schema is a defect that names it."""
     md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
-    d = []
     mp = os.path.join(md, "model.json")
     if not os.path.exists(mp):
         return {"ok": False, "defects": [{"where": "model.json", "what": "missing"}], "_exit": 1}
@@ -192,94 +183,8 @@ def model_validate(model_dir, random_files=20, seed=0, **_):
     if model.get("schema") == "interface-model/2-experimental":
         from .firmware import firmware_validate
         return firmware_validate(run_dir=_.get("run_dir", "scratch"), model_dir=md)
-    if model.get("schema") != "interface-model/1":
-        return {"ok": False, "defects": [{"where": "schema", "what":
-            f"unsupported schema {model.get('schema')!r}; select a supported model validator"}], "_exit": 1}
-    ch = model.get("channel") or {}
-    if ch.get("type") not in ("i2c", "spi"):
-        d.append({"where": "channel.type", "what": f"schema 1 has no channel type {ch.get('type')!r}"})
-    if ch.get("type") == "i2c":
-        try:
-            runner.hx(ch.get("address_7bit"))
-        except Exception:
-            d.append({"where": "channel.address_7bit", "what": "not a number"})
-    elif ch.get("type") == "spi":
-        fr = ch.get("framing") or {}
-        if not fr:
-            d.append({"where": "channel.framing", "what": "an spi channel must say how a register access "
-                                                          "becomes bytes on the wire"})
-        else:
-            for k in ("read_prefix", "write_prefix", "address_mask"):
-                if k not in fr:
-                    d.append({"where": f"channel.framing.{k}", "what": "missing"})
-    ops = model.get("operations") or {}
-    if not ops.get("measure"):
-        d.append({"where": "operations.measure", "what": "empty: the model reads nothing"})
-    ident = model.get("identity") or {}
-    if not ident.get("expect"):
-        d.append({"where": "identity.expect", "what": "empty: nothing would confirm the part"})
-    if not (model.get("conversion") or {}).get("outputs"):
-        d.append({"where": "conversion.outputs", "what": "no outputs declared"})
-    for key in ("init", "identify", "measure"):
-        if ops.get(key) and not any(key in str(p.get("item", "")) for p in model.get("provenance", [])):
-            d.append({"where": f"provenance[{key}]", "what": "no provenance entry mentions this operation"})
-    if "safety" not in model:
-        d.append({"where": "safety", "what": "missing"})
-    cp = os.path.join(md, (model.get("conversion") or {}).get("module", "convert.py"))
-    if not os.path.exists(cp):
-        d.append({"where": "convert.py", "what": "missing"})
-        return {"ok": False, "defects": d, "_exit": 1}
-    src = Path(cp).read_text(encoding="utf-8")
-    for line in src.splitlines():
-        s = line.strip()
-        if s.startswith(("import ", "from ")):
-            mod = s.split()[1].split(".")[0]
-            if mod not in STDLIB_OK:
-                d.append({"where": "convert.py", "what": f"imports {mod!r}, which is not the standard library"})
-    try:
-        model, convert = runner.load_model(md)
-    except Exception as e:
-        d.append({"where": "convert.py", "what": f"will not import: {type(e).__name__}: {e}"})
-        return {"ok": False, "defects": d, "_exit": 1}
-    declared = set((model.get("conversion") or {}).get("outputs", {}).keys())
-    raised, produced = [], set()
-    rng = random.Random(seed)
-    trials = [bytes(256)] + [runner.random_register_file(model, rng) for _ in range(int(random_files))]
-    for i, regs in enumerate(trials):
-        m_exec, addr = runner.for_register_file(model)
-        be = runner.RegisterFileBackend(regs, {addr})
-        try:
-            out = runner.run_model(m_exec, convert, be, n=1, period_override=0)
-            produced |= set(out["samples"][0]["values"].keys())
-        except Exception as e:
-            raised.append(f"{'all-zero' if i == 0 else f'random#{i}'}: {type(e).__name__}: {e}")
-    if raised:
-        d.append({"where": "convert.py", "what": "raises on bytes the device can return",
-                  "evidence": raised[:4]})
-    if produced and produced != declared:
-        d.append({"where": "conversion.outputs",
-                  "what": f"declared {sorted(declared)} but convert returned {sorted(produced)}"})
-    dp = os.path.join(md, "defects.json")
-    if d:
-        with open(dp, "w", encoding="utf-8") as stream:
-            json.dump(d, stream, indent=1)
-    elif os.path.exists(dp):
-        os.remove(dp)
-    return {"ok": not d, "defects": d, "checks_run": 8 + len(trials),
-            "_exit": 0 if not d else 1, "_files": {core.label(mp): core.sha256(mp),
-                                                   core.label(cp): core.sha256(cp)}}
-
-
-@core.tool("model_provenance_audit")
-def model_provenance_audit(model_dir, artifact, kind="datasheet", **_):
-    """Reported, not a gate: does every citation point at something that is actually in the artifact?"""
-    md = model_dir if os.path.isabs(model_dir) else os.path.join(core.BENCH, model_dir)
-    art = artifact if os.path.isabs(artifact) else os.path.join(core.BENCH, artifact)
-    if kind != "datasheet":
-        return {"supported": False, "reason": f"no provenance backend for {kind!r} yet", "_exit": 0}
-    rc, out, err = core.sh([core.VENV_PY, os.path.join(core.BENCH, "tools", "provenance_audit.py"), md, art])
-    tail = [l for l in out.splitlines() if l.strip()][-3:]
-    return {"supported": True, "report": tail, "raw_exit": rc}
+    return {"ok": False, "defects": [{"where": "schema", "what":
+        f"unsupported schema {model.get('schema')!r}; select a supported model validator"}], "_exit": 1}
 
 
 def _refusal(front_end, mode):
@@ -333,13 +238,12 @@ def _prompt(ws, mode):
 
 
 @core.tool("interpret_run")
-def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=None,
+def interpret_run(run_dir, front_end, inputs, attempt=1, defects=None,
                   budget_min=120, model=None, mode="agent", workspace_root=None, **_):
     """Seal a workspace, run the front-end's skill in it as its own agent, and return the model it wrote.
 
-    `front_end` is interpret-interface or interpret-selfdescribing, which write an executable interface model
-    and get the shared runtime with validate.py and qualify.py, or interpret-datasheet, interpret-firmware or
-    interpret-blackbox, which write a schema-1 register model. `inputs` maps a relative name in the workspace
+    `front_end` is interpret-interface or interpret-selfdescribing. Each writes an executable interface model
+    and gets the shared runtime with validate.py and qualify.py. `inputs` maps a relative name in the workspace
     to a path under the resources folder (a directory is copied whole). On a retry, pass `defects` and they are written into
     the workspace as defects.json for the agent to work from.
 
@@ -381,8 +285,8 @@ def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=No
     skill = Path(SKILLS, str(front_end), "SKILL.md")
     if not refused and not skill.is_file():
         refused = f"no skill {front_end!r}"
-    model_doc = "INTERFACE_MODEL.md"
-    if not refused and front_end in EXECUTABLE:
+    model_doc = None
+    if not refused:
         model_doc = next((n for n in MODEL_DOCS[front_end] if Path(core.BENCH, "docs", n).is_file()), None)
         refused = None if model_doc else f"schema document docs/{MODEL_DOCS[front_end][0]} is missing"
     sources = {}
@@ -396,8 +300,6 @@ def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=No
     ws.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(skill, ws / "BRIEF.md")
     shutil.copyfile(Path(core.BENCH, "docs", model_doc), ws / "INTERFACE_MODEL.md")
-    if wiring:
-        shutil.copyfile(wiring if os.path.isabs(wiring) else os.path.join(core.BENCH, wiring), ws / "WIRING.md")
     for name, s in sources.items():
         dst = ws / name
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -408,32 +310,14 @@ def interpret_run(run_dir, front_end, inputs, wiring=None, attempt=1, defects=No
     if defects:
         (ws / "defects.json").write_text(json.dumps(defects, indent=1), encoding="utf-8")
     toolchain = Path(core.BENCH, "toolchain")
-    if front_end in EXECUTABLE:
-        shutil.copyfile(toolchain / "template/interface_validate.py", ws / "validate.py")
-        shutil.copyfile(toolchain / "template/interface_qualify.py", ws / "qualify.py")
-        checker = Path(core.BENCH, "tools/workspace/image_map_check.py")
-        if "image.bin" in sources and checker.is_file():  # standard-library mapping checker for a raw image
-            shutil.copyfile(checker, ws / "image_map_check.py")
-        from .interface import RUNTIME
-        shutil.copytree(RUNTIME, ws / "_toolkit/interface_runtime",
-            dirs_exist_ok=True, ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"))
-    else:
-        validator = toolchain / "template/register_validate.py"
-        shutil.copyfile(validator, ws / "validate.py")
-        # A register candidate may validate in an isolated Python process using
-        # only its sealed kit, without reaching back into the host installation.
-        package = ws / "_toolkit/generative_driver"
-        private = package / "_toolchain"
-        private.mkdir(parents=True, exist_ok=True)
-        (package / "__init__.py").write_text("", encoding="utf-8")
-        for name in ("__init__", "core", "runner", "interpret", "interface", "firmware"):
-            shutil.copyfile(Path(__file__).parent / (name + ".py"), private / (name + ".py"))
-        helpers = package / "resources/tools"
-        helpers.mkdir(parents=True)
-        shutil.copyfile(Path(core.BENCH, "tools/model_exec.py"), helpers / "model_exec.py")
-        from .interface import RUNTIME
-        shutil.copytree(RUNTIME, ws / "_toolkit/interface_runtime",
-            ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"))
+    shutil.copyfile(toolchain / "template/interface_validate.py", ws / "validate.py")
+    shutil.copyfile(toolchain / "template/interface_qualify.py", ws / "qualify.py")
+    checker = Path(core.BENCH, "tools/workspace/image_map_check.py")
+    if "image.bin" in sources and checker.is_file():  # standard-library mapping checker for a raw image
+        shutil.copyfile(checker, ws / "image_map_check.py")
+    from .interface import RUNTIME
+    shutil.copytree(RUNTIME, ws / "_toolkit/interface_runtime",
+        dirs_exist_ok=True, ignore=shutil.ignore_patterns("tests", "__pycache__", "*.pyc"))
     sealed = _tree(ws)
     (ws / "INPUT_HASHES.json").write_text(json.dumps(sealed, indent=1), encoding="utf-8")
     prompt = _prompt(ws, mode)

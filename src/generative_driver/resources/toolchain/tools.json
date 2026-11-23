@@ -192,7 +192,7 @@
     },
     {
       "name": "interpret_collect",
-      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation of the interface model\nand a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\nExperimental schema-2 evidence uses firmware_collect.\n",
+      "description": "Collect a model after interpret_run(mode='prepare'): verify the workspace against the host seal and the\nseal against `expected_seal_sha256` (the seal_sha256 prepare returned; without it, the earliest prepare\nevent, refused when none), freeze the outputs into the run, and report validation of the interface model\nand a host re-run of qualification beside ok. `seal_kind` is 'instruction' or\n'enforced'; `transcript` (the agent's JSONL, or .jsonl.gz) is audited for access outside the workspace.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -704,7 +704,7 @@
     },
     {
       "name": "model_validate",
-      "description": "Validate an interface model's executable transactions and its meanings, or experimental schema-2 evidence.\nReturns defects, among them a schema it has no validator for; structural command validation does not prove\nsemantics or authorize physical action. Beside the result of an interface model comes `advice`: each\noperation, parameter and output without a description, and each number with neither a unit nor a\nunit_not_stated uncertainty. Advice changes neither ok nor the exit status, and it is empty for a model that\ndoes not validate.\n",
+      "description": "Validate an interface model's executable transactions and its meanings.\nReturns defects, among them a schema it has no validator for; structural command validation does not prove\nsemantics or authorize physical action. Beside the result of an interface model comes `advice`: each\noperation, parameter and output without a description, and each number with neither a unit nor a\nunit_not_stated uncertainty. Advice changes neither ok nor the exit status, and it is empty for a model that\ndoes not validate.\n",
       "inputSchema": {
         "properties": {
           "run_dir": {
@@ -1305,106 +1305,6 @@
         ],
         "type": "object",
         "title": "acquire_firmware_artifactArguments"
-      }
-    },
-    {
-      "name": "firmware_collect",
-      "description": "Verify all sealed binary inputs and structurally validate/freeze output with local evidence.\nDoes not assert semantic truth or enforce an OS sandbox.\n",
-      "inputSchema": {
-        "properties": {
-          "run_dir": {
-            "type": "string",
-            "description": "Absolute directory for this run's outputs and evidence."
-          },
-          "attempt": {
-            "default": 1,
-            "title": "Attempt",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "run_dir"
-        ],
-        "type": "object",
-        "title": "firmware_collectArguments"
-      }
-    },
-    {
-      "name": "firmware_prepare",
-      "description": "Prepare a fresh neutral binary-only handoff. Spawn a no-history agent with returned prompt.\nNo device identity or user objective is supplied; isolation is by instruction, not an OS sandbox.\n",
-      "inputSchema": {
-        "properties": {
-          "run_dir": {
-            "type": "string",
-            "description": "Absolute directory for this run's outputs and evidence."
-          },
-          "artifact": {
-            "title": "Artifact",
-            "type": "string"
-          },
-          "expected_sha256": {
-            "title": "Expected Sha256",
-            "type": "string"
-          },
-          "attempt": {
-            "default": 1,
-            "title": "Attempt",
-            "type": "integer"
-          },
-          "ghidra_path": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Ghidra Path"
-          },
-          "java_home": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Java Home"
-          }
-        },
-        "required": [
-          "run_dir",
-          "artifact",
-          "expected_sha256"
-        ],
-        "type": "object",
-        "title": "firmware_prepareArguments"
-      }
-    },
-    {
-      "name": "firmware_validate",
-      "description": "Validate experimental command-model structure and local evidence references without hardware.",
-      "inputSchema": {
-        "properties": {
-          "run_dir": {
-            "type": "string",
-            "description": "Absolute directory for this run's outputs and evidence."
-          },
-          "model_dir": {
-            "title": "Model Dir",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_dir",
-          "model_dir"
-        ],
-        "type": "object",
-        "title": "firmware_validateArguments"
       }
     },
     {

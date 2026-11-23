@@ -16,6 +16,10 @@ EARLIER = re.compile(r'interface-model/[3-6]|[Ss]chemas?[ -][3-6]\b|contract\.js
 GONE = re.compile(r"REFERENCE\.md|package reference|python -m driver|package's (?:own )?command line|package_execute"
                   r'|runtime_current|mcp-tools\.json|protocol\.json|manifest\.sha256|driver/model\.json'
                   r'|driver/__main__')
+# The interpretation path that wrote a static description and no driver: its skill, its three tools and its format
+# (docs/features/static-path-removal/01-static-path-removal.md, Behaviour 01-B6).
+STATIC = re.compile(r'interpret-firmware-binary|firmware_(?:prepare|collect|validate)|interface-model/2\b'
+                    r'|[Ss]chema[ -]2\b')
 # What BRIEF.md of each front end asks of the worker's model.
 ASK = ('In `model.json`, write a `description` of each operation, parameter and output, the `unit` of each number, and '
        'an uncertainty where the evidence leaves a meaning open.')

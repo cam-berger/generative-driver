@@ -52,3 +52,14 @@ Comments and docstrings under `src/` that name the removed path are corrected wi
 - No new tool, no new format, and no code in `src/` that exists only for a test.
 
 ## Deviations
+
+- `tool_stage` in `_toolchain/core.py` loses its `'firmware': 'interpret'` entry, with no test, since `call_tool` now refuses every `firmware_` name before an event is written. - Code that exists only for the older path goes, and no remaining tool starts with `firmware_`.
+- `test_02_B8_no_tool_description_names_an_earlier_format_or_a_contract_file` in `tests/test_package.py` loses its assertion of the word `schema-2` in the description of `model_validate`. - It asserted the sentence this Feature deletes; the Spec's list of tests to update missed it.
+- `tests/worker_texts.py` gains the pattern `STATIC` for the names of 01-B6, with word boundaries so that `JSON Schema 2020-12` is no hit. - Test-only, used through `texts_of` as the seam says.
+- The documents part of 01-B6 is checked by the seven names added to `GONE` of `tests/test_guides.py`, under the existing test `test_03_B16_guides_name_nothing_a_package_no_longer_holds_and_no_earlier_format`. - The seam names `GONE` for the documents; the resources and descriptions have their own 01-B6 test.
+- The STM32, classify and ESP parts of 01-B3 are covered by the updated assertions of existing tests whose names carry IDs of earlier Runs or none. - The Spec lists exactly these updates.
+- The first 01-B5 test calls `ghidra_run` with `prescripts=["SeedCortexM.java"]`, and the second also checks that `ghidra_run.py` is in the same folder. - This matches how the kit analysis calls `ghidra_run`.
+- `SKILL` in `_toolchain/ghidra.py` is renamed `SCRIPTS`, and `IMPL_PATH` is built from it. - The default script folder follows the move, and nothing else read `ghidra.SKILL`.
+- The kit analysis's cache key holds the scripts' resource paths, so a run whose analysis was made before this change makes it again when resumed after it. - It follows from the move and from the required docstring edit of `ghidra_run.py`, which changes that file's hash anyway.
+- The docstring of `model_validate` now says that a model of any other format is one defect at `schema` naming that format and the one it reads. - The Spec deletes the schema-2 sentence, and the new text matches the code.
+- A comment in `test_01_B6_classification_names_no_front_end_for_an_elf_image_a_datasheet_or_a_bus_scan` is reworded, and the unused `import shutil` leaves `tests/test_toolkit.py`. - Housekeeping that follows from the deleted test.

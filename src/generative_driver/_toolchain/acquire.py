@@ -62,7 +62,7 @@ def acquire_firmware_artifact(run_dir, source_path, origin, expected_sha256,
     provenance_path = os.path.abspath(provenance)
     return {"available": True, "rung": "firmware_artifact", "artifact": artifact,
             "provenance": provenance_path, "sha256": digest, "size": len(data),
-            "front_end": "interpret-firmware-binary", "next_tool": "firmware_prepare",
+            "front_end": "interpret-interface", "next_tool": "interpret_run",
             "inputs_for_interpret": {"image.bin": artifact},
             "_files": {artifact: digest, provenance_path: core.sha256(provenance)}}
 
@@ -323,7 +323,7 @@ def acquire_stm32_flash(run_dir, program, probe_serial_number=None, allow_reset=
             stream.write('\n')
         made = {'available': True, 'rung': 'flash', 'chip': chip, 'artifact': image, 'interpret_input': image,
                 'artifacts': [image, *texts, provenance], 'provenance': provenance, 'sha256': digest, 'size': size,
-                'connection': connection, 'readout_protection': protection, 'front_end': 'interpret-firmware-binary',
+                'connection': connection, 'readout_protection': protection, 'front_end': 'interpret-interface',
                 'inputs_for_interpret': {'image.bin': image},
                 **({'returned_to_application': True} if allow_reset else {}),
                 '_files': {image: digest, **texts, provenance: core.sha256(provenance)}}
@@ -987,7 +987,7 @@ def acquire_classify(run_dir, bus_url=None, port=None, part_hint=None,
                       "event": r.get("_event")})
         if r.get("available"):
             is_elf = r["interpret_input"].endswith(".elf")
-            return {"device_class": 1, **({} if is_elf else {"front_end": "interpret-firmware-binary"}),
+            return {"device_class": 1, **({} if is_elf else {"front_end": "interpret-interface"}),
                     "artifact": r["artifact"], "rungs": rungs,
                     "inputs_for_interpret": {"elf": r["artifact"]} if is_elf else {"image.bin": r["interpret_input"]},
                     "available": True, "artifacts": r["artifacts"], "interpret_input": r["interpret_input"]}

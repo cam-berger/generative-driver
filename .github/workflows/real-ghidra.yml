@@ -12,7 +12,7 @@ on:
       - src/generative_driver/_toolchain/core.py
       - src/generative_driver/_toolchain/ghidra.py
       - src/generative_driver/resources/tools/workspace/ghidra_run.py
-      - src/generative_driver/resources/toolchain/skills/interpret-firmware-binary/*.java
+      - src/generative_driver/resources/tools/workspace/*.java
       - tests/native_ghidra.py
       - tests/native_ghidra_exports.py
   workflow_dispatch:

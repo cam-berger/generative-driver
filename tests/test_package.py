@@ -765,7 +765,6 @@ class WorkerDocumentTests(unittest.TestCase):
         described = {tool["name"]: tool["description"] for tool in list_tools()}
         self.assertEqual(earlier_names(described), [])
         self.assertIn("advice", described["model_validate"])
-        self.assertIn("schema-2", described["model_validate"])
 
 
 def advised_model():

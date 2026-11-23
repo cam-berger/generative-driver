@@ -159,11 +159,35 @@ class GhidraExportVerificationTests(unittest.TestCase):
             "--workspace", str(root / "analysis"), "--image", str(root / "image.bin"), "--base-address", "08000000",
             "--processor", "ARM:LE:32:Cortex", "--ghidra-path", str(root / "ghidra"), "--java-home", str(root / "jdk"),
             "--export-dir", str(root / "exports"),
-            "--script-path", str(resources_root() / "toolchain/skills/interpret-firmware-binary"),
+            "--script-path", str(resources_root() / "tools/workspace"),
             "--navigation-max-bytes", "4096"], capture_output=True, text=True, timeout=60)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertEqual(exporter_arguments(root), [str(root / "exports"), "4096"])
         self.assertEqual(json.loads(completed.stdout)["exports"]["navigation"]["max_bytes"], 4096)
+
+    def test_01_B5_ghidra_run_without_a_script_path_gives_the_analyzer_the_workspace_helpers_folder(self):
+        from generative_driver.toolkit import resources_root
+        # As the kit analysis calls it for a raw Cortex-M image: the pre-script named, no script folder.
+        result, root = self.analyze(export(), prescripts=["SeedCortexM.java"])
+        self.assertTrue(result["ok"], result.get("reasons"))
+        argv = json.loads((root / "argv.json").read_text(encoding="utf-8"))
+        self.assertEqual(Path(argv[argv.index("-scriptPath") + 1]), resources_root() / "tools" / "workspace")
+        self.assertEqual(argv[argv.index("-preScript") + 1], "SeedCortexM.java")
+
+    def test_01_B5_the_two_scripts_are_beside_the_helper_and_the_skills_are_the_three_a_run_uses(self):
+        from generative_driver.analysis import firmware_analysis_inputs
+        from generative_driver.toolkit import resources_root
+        helpers = resources_root() / "tools" / "workspace"
+        skills = resources_root() / "toolchain" / "skills"
+        self.assertEqual(sorted(path.name for path in skills.iterdir() if not path.name.startswith(".")),
+                         ["find-datasheet", "interpret-interface", "interpret-selfdescribing"])
+        with tempfile.TemporaryDirectory() as temp:
+            named = firmware_analysis_inputs(Path(temp) / "context", {})
+        self.assertEqual(Path(named["ghidra_run.py"]), helpers / "ghidra_run.py")
+        for script in ("ExportDecomp.java", "SeedCortexM.java"):
+            with self.subTest(script=script):
+                self.assertEqual(Path(named[script]), helpers / script)
+                self.assertTrue((helpers / script).is_file())
 
 
 if __name__ == "__main__":

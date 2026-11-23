@@ -234,4 +234,4 @@ Repository
 [design]: ../design.md
 [tools]: ../../src/generative_driver/configurator.py
 [skill-if]: ../../src/generative_driver/resources/toolchain/skills/interpret-interface/SKILL.md
-[skill-bin]: ../../src/generative_driver/resources/toolchain/skills/interpret-firmware-binary/SKILL.md
+[skill-bin]: https://github.com/cam-berger/generative-driver/blob/0f8a4e4c7dd93615f7f02320aac4a1dbe9753b5d/src/generative_driver/resources/toolchain/skills/interpret-firmware-binary/SKILL.md

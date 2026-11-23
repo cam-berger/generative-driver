@@ -2,7 +2,6 @@
 import unittest
 import hashlib
 import json
-import shutil
 import tempfile
 import os
 import subprocess
@@ -293,7 +292,7 @@ print(json.dumps({'_exit': 0}))
                 self.assertTrue(result["interpret_input"].endswith("interpret-input.bin"))
                 self.assertNotIn("elf", result["inputs_for_interpret"])
                 self.assertEqual(result["inputs_for_interpret"], {"image.bin": result["interpret_input"]})
-                self.assertEqual(result["front_end"], "interpret-firmware-binary")
+                self.assertEqual(result["front_end"], "interpret-interface")
 
     def test_classify_forwards_the_grant_and_reports_the_interpret_input(self):
         from unittest.mock import patch
@@ -366,8 +365,8 @@ print(json.dumps({'_exit': 0}))
         self.assertEqual(scanned["artifacts"], [scanned["artifact"]])
         self.assertEqual([(rung["name"], rung["tried"]) for rung in scanned["rungs"]],
                          [("flash", False), ("datasheet", True), ("selfdescription", True), ("blackbox", True)])
-        # A raw image is schema 2's input, which stays: it still names the front end that reads it.
-        self.assertEqual(raw["front_end"], "interpret-firmware-binary")
+        # A raw image names the front end a run gives it.
+        self.assertEqual(raw["front_end"], "interpret-interface")
         self.assertEqual(set(raw), fields | {"interpret_input", "front_end"}, raw)
 
     def test_bus_discovery_never_selects_a_default_adapter(self):
@@ -481,44 +480,6 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             summary = call_tool("usage_summary", {"run_dir": run})
             self.assertEqual(summary["_exit"], 0, summary)
             self.assertEqual(summary["tokens"]["total_tokens"], 13)
-
-    def test_firmware_import_prepares_neutral_inputs_and_freezes_evidence(self):
-        from generative_driver.toolkit import call_tool
-
-        with tempfile.TemporaryDirectory(prefix="toolkit input ") as temp:
-            root = Path(temp).resolve()
-            run = root / "private objective"
-            source = root / "vendor-release.bin"
-            source.write_bytes(bytes(range(64)))
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            def call(name, **arguments):
-                result = call_tool(name, {"run_dir": str(run), **arguments})
-                self.assertEqual(result.get("_exit", 0), 0, result)
-                return result
-            acquired = call("acquire_firmware_artifact", source_path=str(source),
-                            origin="provided_binary", expected_sha256=digest)
-            prepared = call("firmware_prepare", artifact=acquired["artifact"], expected_sha256=digest)
-            workspace = Path(prepared["workspace"])
-            self.addCleanup(shutil.rmtree, workspace, True)
-            self.assertFalse(workspace.is_relative_to(root))
-            self.assertEqual((workspace / "image.bin").read_bytes(), bytes(range(64)))
-            self.assertNotIn("vendor-release", prepared["prompt_for_agent"])
-            (workspace / "exports").mkdir()
-            (workspace / "exports/handler.txt").write_text("00000010: accepts 51; emits 52\n")
-            (workspace / "model.json").write_text(json.dumps({
-                "schema": "interface-model/2-experimental", "device": {"identity": "unknown"},
-                "channel": {"type": "unknown"}, "operations": [{"id": "status", "effect_class": "read_only",
-                    "request": {"bytes_hex": "51"}, "response_interpretation": {"meaning": "status byte"},
-                    "evidence": [{"file_offset": "0x10", "export": "exports/handler.txt"}]}],
-                "limits": {}, "safety": {}, "provenance": {"source": "image.bin"},
-                "uncertainties": ["Physical meaning is unproved."]}))
-            (workspace / "NOTES.md").write_text("Synthetic fixture, no live observations.\n")
-            (workspace / "PROBES.json").write_text("[]")
-            collected = call("firmware_collect")
-            self.assertTrue(collected["ok"], collected)
-            self.assertEqual((Path(collected["first_pass"]) / "exports/handler.txt").read_text(),
-                             "00000010: accepts 51; emits 52\n")
-            self.assertFalse(call_tool("firmware_collect", {"run_dir": str(run)})["ok"])
 
     def test_serial_listen_records_capture_without_transmitting(self):
         import sys, types
@@ -636,6 +597,91 @@ print(json.dumps(call_tool('usage_record',json.loads(sys.argv[1]))))
             checked = call_tool("model_validate", {"run_dir": str(root / "run"), "model_dir": str(model),
                                                    "random_files": 3, "seed": 7})
             self.assertEqual((checked.get("ok"), checked["_exit"]), (True, 0), checked)
+
+    def test_01_B1_the_tool_list_holds_no_tool_of_the_static_path_and_each_is_an_unknown_tool(self):
+        from generative_driver.toolkit import call_tool, list_tools
+        from package_env import package_env
+        static = ("firmware_prepare", "firmware_collect", "firmware_validate")
+        command = subprocess.run([sys.executable, "-m", "generative_driver", "tools"], capture_output=True, text=True,
+                                 env={**os.environ, **package_env()}, timeout=60)
+        self.assertEqual(command.returncode, 0, command.stderr)
+        for source, listed in (("list_tools()", list_tools()), ("generative-driver tools", json.loads(command.stdout))):
+            with self.subTest(source=source):
+                self.assertEqual({tool["name"] for tool in listed} & set(static), set())
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            for name in static:
+                with self.subTest(tool=name):
+                    refused = call_tool(name, {"run_dir": str(root / "run"), "model_dir": str(root / "model")})
+                    self.assertEqual(refused, {"ok": False, "_exit": 1, "error": "Unknown tool: " + name})
+            self.assertFalse((root / "run").exists())
+
+    def test_01_B2_model_validate_refuses_a_static_description_by_its_format_and_writes_nothing_beside_it(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            model = root / "model"
+            (model / "exports").mkdir(parents=True)
+            # A static description that the validator of its format accepted: evidence at a file offset of an export.
+            (model / "exports/handler.txt").write_text("00000010: accepts 51; emits 52\n", encoding="utf-8")
+            (model / "model.json").write_text(json.dumps({
+                "schema": "interface-model/2-experimental", "device": {"identity": "unknown"},
+                "channel": {"type": "unknown"}, "operations": [{"id": "status", "effect_class": "read_only",
+                    "request": {"bytes_hex": "51"}, "response_interpretation": {"meaning": "status byte"},
+                    "evidence": [{"file_offset": "0x10", "export": "exports/handler.txt"}]}],
+                "limits": {}, "safety": {}, "provenance": {"source": "image.bin"},
+                "uncertainties": ["Physical meaning is unproved."]}), encoding="utf-8")
+            supplied = {path.relative_to(model).as_posix(): path.read_bytes()
+                        for path in sorted(model.rglob("*")) if path.is_file()}
+            refused = call_tool("model_validate", {"run_dir": str(root / "run"), "model_dir": str(model)})
+            self.assertEqual((refused.get("ok"), refused["_exit"], refused.get("advice")), (False, 1, []), refused)
+            [defect] = refused["defects"]
+            self.assertEqual(defect["where"], "schema", refused)
+            self.assertIn("interface-model/2-experimental", defect["what"])
+            self.assertIn("interface-model/7", defect["what"])
+            self.assertEqual({path.relative_to(model).as_posix(): path.read_bytes()
+                              for path in sorted(model.rglob("*")) if path.is_file()}, supplied)
+
+    def test_01_B3_an_imported_image_names_interpret_interface_and_interpret_run_prepares_it(self):
+        from generative_driver.toolkit import call_tool
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            run = root / "run"
+            source = root / "provided.bin"
+            source.write_bytes(bytes(range(64)))
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            acquired = call_tool("acquire_firmware_artifact", {"run_dir": str(run), "source_path": str(source),
+                                                               "origin": "provided_binary", "expected_sha256": digest})
+            bundle = run / "acquire" / "firmware_artifact"
+            self.assertEqual(acquired, {
+                "available": True, "rung": "firmware_artifact", "artifact": str(bundle / "image.bin"),
+                "provenance": str(bundle / "provenance.json"), "sha256": digest, "size": 64,
+                "front_end": "interpret-interface", "next_tool": "interpret_run",
+                "inputs_for_interpret": {"image.bin": str(bundle / "image.bin")}, "_event": 1, "_exit": 0})
+            prepared = call_tool("interpret_run", {"run_dir": str(run), "front_end": acquired["front_end"],
+                                                   "inputs": acquired["inputs_for_interpret"]})
+            self.assertEqual((prepared.get("ok"), prepared["_exit"]), (True, 0), prepared)
+            self.assertEqual((Path(prepared["workspace"]) / "image.bin").read_bytes(), bytes(range(64)))
+
+    def test_01_B4_no_stage_names_a_tool_the_tool_list_does_not_hold(self):
+        from generative_driver.configurator import STAGE_TOOLS
+        from generative_driver.toolkit import list_tools
+        listed = {tool["name"] for tool in list_tools()}
+        unlisted = {stage: [name for name in tools if name not in listed] for stage, tools in STAGE_TOOLS.items()}
+        self.assertEqual(unlisted, {stage: [] for stage in STAGE_TOOLS})
+        self.assertEqual(STAGE_TOOLS["interpret"], ["model_validate", "ghidra_run", "image_map_check"])
+
+    def test_01_B6_no_text_of_the_installed_resources_and_no_tool_description_names_the_static_path(self):
+        from generative_driver.toolkit import list_tools, resources_root
+        from worker_texts import STATIC, texts_of
+        texts = texts_of(resources_root())
+        self.assertTrue({"toolchain/tools.json", "docs/INTERFACE_MODEL.md", "tools/workspace/ghidra_run.py",
+                         "tools/workspace/ExportDecomp.java"} <= set(texts), sorted(texts)[:20])
+        texts.update({"description of " + tool["name"]: tool["description"] for tool in list_tools()})
+        # A text is read as one line, so words that a line break divides are found.
+        named = sorted((name, words) for name, text in texts.items()
+                       for words in STATIC.findall(" ".join(text.split())))
+        self.assertEqual(named, [])
 
 
 if __name__ == "__main__":

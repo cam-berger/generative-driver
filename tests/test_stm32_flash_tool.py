@@ -527,7 +527,7 @@ class EvidenceTests(FlashToolCase):
             'available': True, 'rung': 'flash', 'chip': DEVICE_NAME, 'artifact': str(self.image),
             'interpret_input': str(self.image), 'artifacts': four, 'provenance': str(record), 'sha256': digest,
             'size': 65536, 'connection': 'hotplug', 'readout_protection': 'level 0',
-            'front_end': 'interpret-firmware-binary', 'inputs_for_interpret': {'image.bin': str(self.image)},
+            'front_end': 'interpret-interface', 'inputs_for_interpret': {'image.bin': str(self.image)},
             '_event': event['seq'], '_exit': 0})
 
     def test_01_B14_stm32_the_record_says_what_was_granted_and_what_the_program_did_not_say(self):

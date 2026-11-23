@@ -45,7 +45,7 @@ Measured on the local installation, 2026-11-20: `-loader BinaryLoader` and no `-
 raw image as "Raw Binary" with exit 0; `ghidra.app.util.opinion.BinaryLoader`, `Binary Loader` and
 `Raw Binary` each end in exit 1 with `Invalid loader name specified` on stderr before any import.
 
-The exporter (ExportDecomp.java in the interpret-firmware-binary skill) writes functions.tsv with the
+The exporter (ExportDecomp.java, beside this file) writes functions.tsv with the
 header address/name/decompilation_complete, one function_<address>.c per function, and disassembly.txt.
 It also writes the static navigation tables in NAVIGATION_TABLES (references, strings, switch cases), each
 bounded in bytes, and navigation.json, which records each table's bound, rows written, rows found and

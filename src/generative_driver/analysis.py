@@ -22,6 +22,6 @@ def firmware_analysis_inputs(directory, options):
                 'SeedCortexM.java --script-path <absolute-workspace> to the supplied ghidra_run.py command. '
                 'Keep the reasoning and native logs in this workspace.'}}, indent=1), encoding='utf-8')
     return {'ghidra_run.py': str(resources / 'tools/workspace/ghidra_run.py'),
-            'ExportDecomp.java': str(resources / 'toolchain/skills/interpret-firmware-binary/ExportDecomp.java'),
-            'SeedCortexM.java': str(resources / 'toolchain/skills/interpret-firmware-binary/SeedCortexM.java'),
+            'ExportDecomp.java': str(resources / 'tools/workspace/ExportDecomp.java'),
+            'SeedCortexM.java': str(resources / 'tools/workspace/SeedCortexM.java'),
             'ANALYSIS_TOOLS.json': str(config)}

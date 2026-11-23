@@ -2,9 +2,9 @@
   "goal": "Remove the old static-only firmware path, so that nothing in the tool names or offers a route that cannot end in interface-model/7",
   "slug": "static-path-removal",
   "branch": "mdk/static-path-removal",
-  "stage": "breakdown",
+  "stage": "spec",
   "awaiting": null,
-  "current": null,
+  "current": "01",
   "features": [
     {
       "id": "01",

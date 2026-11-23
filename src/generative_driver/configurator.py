@@ -38,8 +38,7 @@ STAGE_INPUTS = {'probe': (('interpret', 'interpreted model'),),
 STAGE_TOOLS = {
     'acquire': ['acquire_serial_listen','acquire_firmware_artifact','acquire_datasheet','acquire_protocol_spec',
                 'acquire_classify','acquire_document'],
-    'interpret': ['firmware_prepare','firmware_collect','firmware_validate','model_validate','ghidra_run',
-                  'image_map_check'],
+    'interpret': ['model_validate','ghidra_run','image_map_check'],
     # Probe and ground workers get no model_validate: the configurator validates each assigned model itself, on a copy
     # of the bytes it has just hashed, and notes the result.
     'probe': ['model_qualify','probe_run','probe_diff','interface_describe','interface_execute'],

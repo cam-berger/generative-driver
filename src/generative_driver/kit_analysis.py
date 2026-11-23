@@ -30,8 +30,7 @@ ELF_LANGUAGES = {(40, 32, '<'): 'ARM:LE:32:v8', (40, 32, '>'): 'ARM:BE:32:v8',
                  (183, 64, '<'): 'AARCH64:LE:64:v8A', (183, 64, '>'): 'AARCH64:BE:64:v8A',
                  (94, 32, '<'): 'Xtensa:LE:32:default', (94, 32, '>'): 'Xtensa:BE:32:default'}
 CORTEX_M = 'ARM:LE:32:Cortex'
-_SCRIPTS = ('tools/workspace/ghidra_run.py', 'toolchain/skills/interpret-firmware-binary/ExportDecomp.java',
-            'toolchain/skills/interpret-firmware-binary/SeedCortexM.java')
+_SCRIPTS = ('tools/workspace/ghidra_run.py', 'tools/workspace/ExportDecomp.java', 'tools/workspace/SeedCortexM.java')
 
 
 def prepare(run_dir, image, options, *, stop, event, context):

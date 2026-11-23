@@ -1,0 +1,23 @@
+{
+  "approvals": [
+    {
+      "kind": "breakdown",
+      "feature": null,
+      "sha256": "75d1f8d1cf9f79ca53f84a8ad515ea19b101c62e3df6cdf67733d486b6cd6029",
+      "at": "2026-11-23T16:58:48+00:00"
+    },
+    {
+      "kind": "spec",
+      "feature": "01",
+      "sha256": "b810c93fc3d1c04f80e52b7033b005efefea82490a3e6385b0acdafeb86adc2b",
+      "at": "2026-11-23T17:11:35+00:00"
+    }
+  ],
+  "done": [
+    {
+      "feature": "01",
+      "sha256": "a1efeb636e007a46b9604262c310ccd70544e112e0de4e4e429cf1b9cb7a77e9",
+      "at": "2026-11-23T17:34:18+00:00"
+    }
+  ]
+}

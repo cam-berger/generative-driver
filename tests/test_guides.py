@@ -28,7 +28,9 @@ CURRENT_DOCUMENTS = ('README.md', 'CONTEXT.md', 'docs/setup.md', 'docs/support.m
                      'docs/dashboard.md', 'docs/extending-drivers-and-mcp.md', 'docs/client-interface.md')
 GONE = ('python -m driver', 'REFERENCE.md', 'mcp-tools.json', 'contract.json', 'protocol.json', 'manifest.sha256',
         'interface-package/1', 'interface-package/2', 'interface-model/3', 'interface-model/4', 'interface-model/5',
-        'interface-model/6', 'runtime_current', 'package_execute', 'device_mcp --package', 'register model', 'Model 1')
+        'interface-model/6', 'runtime_current', 'package_execute', 'device_mcp --package', 'register model', 'Model 1',
+        'interpret-firmware-binary', 'firmware_prepare', 'firmware_collect', 'firmware_validate', 'interface-model/2',
+        'schema 2', 'schema-2')
 # The ways a guide writes the command: its installed name, or the module, each also behind `uv run`.
 COMMAND = re.compile(r'(?:uv run )?(?:generative-driver|(?:\S*[\\/])?python[\d.]*(?:\.exe)? -m generative_driver'
                      r'(?:\.cli)?)(?=\s|$)')

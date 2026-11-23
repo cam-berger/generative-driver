@@ -187,7 +187,7 @@ class NativeGhidraTests(unittest.TestCase):
             root = Path(temp).resolve()
             scripts = root / "scripts"
             scripts.mkdir()
-            shutil.copy(resources_root() / "toolchain/skills/interpret-firmware-binary/ExportDecomp.java", scripts)
+            shutil.copy(resources_root() / "tools/workspace/ExportDecomp.java", scripts)
             (scripts / "HoldAnalyzer.java").write_text(HOLD_SCRIPT, encoding="utf-8")
             completed, result = self.ghidra_run("timeout", root, script_path=str(scripts),
                                                 prescripts=["HoldAnalyzer.java"], timeout_s=HOLD_TIMEOUT_S)

@@ -18,7 +18,6 @@ _MODULE_TOOLS = {
                 "acquire_bus_scan", "acquire_register_sweep", "acquire_stm32_flash"),
     "documents": ("acquire_document",),
     "bench": ("bus_prepare",),
-    "firmware": ("firmware_prepare", "firmware_collect", "firmware_validate"),
     "interpret": ("interpret_run", "interpret_collect", "model_validate"),
     "probe": ("probe_run", "probe_diff"),
     "emit": ("emit_package", "emit_check", "emit_test_live"),
@@ -28,7 +27,7 @@ _MODULE_TOOLS = {
     "ghidra": ("ghidra_run",),
 }
 _DISPATCH = {name: module for module, names in _MODULE_TOOLS.items() for name in names}
-_PATH_ARGUMENTS = {"run_dir", "source_path", "artifact", "model_dir", "probe", "probe_json", "package_dir", "image",
+_PATH_ARGUMENTS = {"run_dir", "source_path", "model_dir", "probe", "probe_json", "package_dir", "image",
                    "workspace", "workspace_root", "ghidra_path", "java_home", "export_dir", "script_path",
                    "transcript", "replies", "replay"}
 # Path arguments of one tool only: any other tool ignores an argument of that name, as it always did.

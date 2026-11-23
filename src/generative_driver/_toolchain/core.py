@@ -114,7 +114,7 @@ def tool_stage(name):
     """Host-owned tool labels; inference attribution is recorded separately."""
     prefix = name.split('_', 1)[0]
     return {'acquire': 'acquire', 'interpret': 'interpret', 'model': 'interpret',
-            'firmware': 'interpret', 'image': 'interpret', 'ghidra': 'interpret', 'probe': 'probe', 'emit': 'emit',
+            'image': 'interpret', 'ghidra': 'interpret', 'probe': 'probe', 'emit': 'emit',
             'bus': 'setup', 'hardware': 'hardware', 'interface': 'probe',
             'usage': 'accounting'}.get(prefix, 'unattributed')
 

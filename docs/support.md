@@ -12,7 +12,6 @@ The core targets native macOS and Windows 11+. Development uses Apple silicon ma
 | FTDI | Explicit I2C scan/register sweep and I2C/SPI execution via PyFtdi/libusb |
 | UART / TCP | pyserial with identity binding and `reset` grant for reset-on-open / Python standard library |
 | Interface model | One format, `interface-model/7`: executable operations and typed decoding; framing and features depend on the transport |
-| `interface-model/2-experimental` | Experimental firmware command evidence; static validation only |
 | Package | Five files of data in one format, `interface-package/3`, and no code; the installed tool runs it, and `generative-driver serve` serves it over MCP. An earlier format is refused by name. |
 | Ground / reuse | Test meanings against the device, then fresh package-only use. One final verdict: the configurator's self-evidence, or one posted after a run on a supplied device. |
 

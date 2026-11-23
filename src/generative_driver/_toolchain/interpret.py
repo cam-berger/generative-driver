@@ -161,8 +161,8 @@ def _actions(events):
 @core.tool("model_validate")
 def model_validate(model_dir, **_):
     """Structural check of a model. No ground truth and no device knowledge: an interface model is asked only to be
-    well formed and to declare its evidence, and nothing is written beside it. Experimental schema-2 evidence goes to
-    `firmware_validate`; any other schema is a defect that names it.
+    well formed and to declare its evidence, and nothing is written beside it. A model of any other format is one
+    defect at `schema` that names that format and the one it reads.
 
     Beside the result of an interface model comes `advice`: what a model that validates leaves undocumented. It
     changes neither `ok` nor the exit status, and it is empty for a model that does not validate."""
@@ -185,9 +185,6 @@ def model_validate(model_dir, **_):
     if not isinstance(model, dict):
         return {"ok": False, "defects": [{"where":"model.json", "what":"model must be an object"}], "advice": [],
                 "_exit":1}
-    if model.get("schema") == "interface-model/2-experimental":
-        from .firmware import firmware_validate
-        return firmware_validate(run_dir=_.get("run_dir", "scratch"), model_dir=md)
     return {"ok": False, "defects": [{"where": "schema", "what": refusal}], "advice": [], "_exit": 1}
 
 

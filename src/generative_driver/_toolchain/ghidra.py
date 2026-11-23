@@ -19,8 +19,8 @@ import os
 
 from . import core
 
-SKILL = os.path.join(core.BENCH, "toolchain", "skills", "interpret-firmware-binary")
-IMPL_PATH = os.path.join(core.BENCH, "tools", "workspace", "ghidra_run.py")
+SCRIPTS = os.path.join(core.BENCH, "tools", "workspace")
+IMPL_PATH = os.path.join(SCRIPTS, "ghidra_run.py")
 
 
 def _load_impl():
@@ -40,12 +40,13 @@ def ghidra_run(run_dir, workspace, image, base_address, processor, ghidra_path, 
                loader="BinaryLoader", prescripts=None, script_path=None, timeout_s=1800, noanalysis=False,
                navigation_max_bytes=None):
     """Import one raw image into a workspace-local Ghidra project, analyse it, export with
-    ExportDecomp.java, and verify the exports. `script_path` None means the interpret-firmware-binary
-    skill directory, which holds the exporter. `navigation_max_bytes` replaces the exporter's byte bound
-    for each navigation table. Exit 0 only for the full verdict; 1 otherwise, with the reasons listed."""
+    ExportDecomp.java, and verify the exports. `script_path` None means resources/tools/workspace, which
+    holds the exporter and SeedCortexM.java beside the helper. `navigation_max_bytes` replaces the
+    exporter's byte bound for each navigation table. Exit 0 only for the full verdict; 1 otherwise, with
+    the reasons listed."""
     out = impl.run(workspace=workspace, image=image, base_address=base_address, processor=processor,
                    ghidra_path=ghidra_path, java_home=java_home, export_dir=export_dir, loader=loader,
-                   prescripts=prescripts, script_path=script_path or SKILL, timeout_s=timeout_s,
+                   prescripts=prescripts, script_path=script_path or SCRIPTS, timeout_s=timeout_s,
                    noanalysis=noanalysis, navigation_max_bytes=navigation_max_bytes)
     files = {}
     exports = out.get("exports") or {}

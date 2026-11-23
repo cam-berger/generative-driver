@@ -1,0 +1,4 @@
+- 01: No run reads `STAGE_TOOLS['interpret']`. The interpret branch of the configurator returns its own `allowed_tools`: `device_first.TOOLS` (`configurator.py:2051`) or `[]` (`:2065`). `STAGE_TOOLS[stage]` is read only for the other stages (`:2122`).
+- 01: `GONE` in `tests/test_guides.py` is a case-sensitive substring check, so `'schema 2'` would match a lowercase "schema 2020-12". `docs/extending-drivers-and-mcp.md:127` writes "JSON Schema 2020-12" and passes only because of its capital S.
+- 01: `tests/test_package_engine.py:105` still uses `interface-model/2-experimental` as one more schema the runtime refuses.
+- 01: `tests/native_ghidra.py` changed but is not in the test command; here it was only compiled. The Real Ghidra workflow runs it on macOS and Windows for a pull request that touches its path filter.

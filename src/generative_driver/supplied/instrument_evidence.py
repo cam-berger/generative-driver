@@ -9,7 +9,7 @@ import math
 from pathlib import Path
 
 from ..integrity import IntegrityError, digest
-from .capabilities import bind_task
+from .capabilities import _parameter_value, validate_capabilities
 
 
 def _number(value):
@@ -17,6 +17,45 @@ def _number(value):
         return type(value) in (int, float) and math.isfinite(value)
     except OverflowError:
         return False
+
+
+def _match_event(mapping, task, model, event):
+    """Match `event` to `task` through `mapping` and `model`: mapped operation, declared constants and valid values for
+    input-mapped parameters. Returns {'operation', 'parameters'} or None."""
+    if mapping.get('schema') != 'capabilities/2' or task not in mapping.get('tasks', {}):
+        return None
+    spec = mapping['tasks'][task]
+    try:
+        if not validate_capabilities({'schema': mapping['schema'], 'tasks': {task: spec}}, model)['ok']:
+            return None
+        operation = spec['operation']
+        if event.get('operation') != operation:
+            return None
+        actual = event.get('parameters')
+        parameters = model['operations'][operation]['parameters']
+        if type(actual) is not dict or set(actual) != set(parameters):
+            return None
+        for name, expected in spec['constants'].items():
+            value = actual[name]
+            if type(value) is bool or type(expected) is bool:
+                if value is not expected:
+                    return None
+            elif value != expected:
+                return None
+        for input_spec in spec['inputs'].values():
+            target = input_spec['parameter']
+            param = parameters[target]
+            value = actual[target]
+            if param.get('type') == 'bytes':
+                if (type(value) is not str or len(value) % 2
+                        or not param['min_length'] <= len(value) // 2 <= param['max_length']):
+                    return None
+                bytes.fromhex(value)
+            else:
+                _parameter_value(value, param)
+        return {'operation': operation, 'parameters': dict(actual)}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def discrepancies(mission, assignment, events):
@@ -86,11 +125,8 @@ def discrepancies(mission, assignment, events):
             continue
         sample = samples[-1]
         for task, contract in tasks.items():
-            try:
-                bound = bind_task(mapping, task, {}, model)
-            except (ValueError, KeyError, TypeError, AttributeError):
-                continue  # An unsupported or malformed mapping alone is not a device contradiction.
-            if bound != {'operation': event.get('operation'), 'parameters': event.get('parameters')}:
+            bound = _match_event(mapping, task, model, event)
+            if bound is None:
                 continue
             evidence = {'source': 'instrument_comparison', 'dispatch_id': event.get('dispatch_id'),
                 'task': task, 'operation': bound['operation'], 'parameters': bound['parameters'],

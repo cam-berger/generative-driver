@@ -7,10 +7,11 @@ descriptor is `device-descriptor/2`, in the tool's own terms."""
 import contextlib
 import json
 import re
-import threading
+import time
 from multiprocessing import AuthenticationError
-from multiprocessing.connection import Client
 from pathlib import Path
+
+from ._ipc import TimedConnection, open_connection
 
 DESCRIPTOR = 'device-descriptor/2'
 # The parts a descriptor may have. The tool knows no other, so any other is a fault.
@@ -18,7 +19,7 @@ PARTS = ('schema', 'control', 'session_id', 'binding', 'firmware_sha256', 'instr
 
 
 class DeviceUnavailable(RuntimeError):
-    """The device provider could not be reached, or refused the request: nothing reached the device through it."""
+    """The device provider could not be reached, timed out, or refused the request."""
 
 
 def reading(observed):
@@ -80,33 +81,25 @@ class DeviceClient:
     def __init__(self, endpoint_file, timeout=60):
         self.endpoint_file, self.timeout = Path(endpoint_file), timeout
 
-    def _exchange(self, method, params, limit):
+    def _exchange(self, method, params, deadline):
         endpoint = json.loads(self.endpoint_file.read_text(encoding='utf-8'))
-        with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
-            conn.send_bytes(json.dumps({'method': method, 'params': params}, allow_nan=False).encode('utf-8'))
-            if not conn.poll(limit):
+        family = endpoint['family']
+        with open_connection(endpoint['address'], family, bytes.fromhex(endpoint['authkey']), deadline) as conn:
+            if time.monotonic() >= deadline:
                 raise TimeoutError('no answer before the deadline')
-            return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+            timed = TimedConnection(conn, deadline, family=family)
+            timed.send_bytes(json.dumps({'method': method, 'params': params}, allow_nan=False).encode('utf-8'))
+            return json.loads(timed.recv_bytes(4 * 1024 * 1024))
 
     def _call(self, method, timeout=None, **params):
-        """One request under one deadline: connecting, the authkey handshake, the request and the reply. A provider
-        stuck on another request accepts no connection meanwhile, and its caller still gets DeviceUnavailable in time;
-        the abandoned attempt ends on a daemon thread when the provider answers or goes away."""
-        limit, outcome = timeout or self.timeout, {}
-        def exchange():
-            try:
-                outcome['reply'] = self._exchange(method, params, limit)
-            except BaseException as error:
-                outcome['error'] = error
-        attempt = threading.Thread(target=exchange, name='device-' + method, daemon=True)
-        attempt.start()
-        attempt.join(limit)
-        error = TimeoutError('no answer before the deadline') if attempt.is_alive() else outcome.get('error')
-        if isinstance(error, (OSError, EOFError, ValueError, KeyError, TypeError, AuthenticationError)):
+        """One request under one deadline: connecting, the authkey handshake, the request and the reply. A call whose
+        deadline has already passed is never sent later."""
+        limit = timeout if timeout is not None else self.timeout
+        deadline = time.monotonic() + limit
+        try:
+            reply = self._exchange(method, params, deadline)
+        except (OSError, EOFError, ValueError, KeyError, TypeError, AuthenticationError) as error:
             raise DeviceUnavailable('Device provider unavailable: ' + type(error).__name__ + ': ' + str(error)) from None
-        if error is not None:
-            raise error
-        reply = outcome['reply']
         if not isinstance(reply, dict) or reply.get('ok') is not True:
             reason = reply.get('reason') if isinstance(reply, dict) else None
             raise DeviceUnavailable('Device provider refused ' + method + ': ' + str(reason))
@@ -125,8 +118,15 @@ class DeviceClient:
 
     @contextlib.contextmanager
     def window(self):
-        """The device runs only inside this window; it is paused again when the call inside it returns or raises."""
-        self._call('set_running', running=True)
+        """The device runs only inside this window; it is paused again when the call inside it returns or raises.
+        If opening the window fails (for example, a lost reply after the provider started running), a best-effort
+        pause is sent before raising so the device is not left running."""
+        try:
+            self._call('set_running', running=True)
+        except DeviceUnavailable:
+            with contextlib.suppress(DeviceUnavailable):
+                self._call('set_running', timeout=min(self.timeout, 5), running=False)
+            raise
         try:
             yield
         finally:

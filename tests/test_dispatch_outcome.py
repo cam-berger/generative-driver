@@ -111,6 +111,12 @@ class OutcomeReadingTest(unittest.TestCase):
              ((False, True, False),)),
             ('the requested operation only waited', 'interface_execute',
              executed(interface_result(ok=False, steps=delays)), {}, True, ((False, True, False),)),
+            ('the requested step failed before the transport call', 'interface_execute',
+             executed({**interface_result(ok=False), 'transcript': [
+                 {'operation': 'identify', 'step': 0, 'op': 'exchange', 'tx_hex': '', 'rx_hex': '', 'status': 'completed',
+                  'dispatched': True},
+                 {'operation': 'set_level', 'step': 0, 'op': 'exchange', 'tx_hex': 'aa', 'rx_hex': '', 'status': 'attempted',
+                  'dispatched': False}]}), {}, True, ((False, True, False),)),
             ('preflight refused before the open', 'interface_execute',
              executed(interface_result(ok=False, steps=(), opened=False, identity=False, fault='operator',
                                        code='effect')), {}, True, ((False, False, False),)),
@@ -271,7 +277,7 @@ class OutcomeReadingTest(unittest.TestCase):
     def test_01_B3_host_fault(self):
         rows = (('OSError: [Errno 28] No space left on device', True), ('PermissionError: denied', True),
                 ('FileNotFoundError: no temporary directory', True), ('ModuleNotFoundError: no module', True),
-                ('MemoryError: ', True), ('TimeoutExpired: Command timed out after 260 seconds', True),
+                ('MemoryError: ', False), ('TimeoutExpired: Command timed out after 260 seconds', True),
                 ('subprocess.TimeoutExpired: late', True), ('[Errno 20] Not a directory', True),
                 ('ValueError: duplicate JSON key: name', False), ('KeyError: files', False),
                 ('AttributeError: list has no attribute get', False),

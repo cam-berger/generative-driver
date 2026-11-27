@@ -1449,11 +1449,11 @@ class DeviceRepairTests(unittest.TestCase):
                 controller.close()
 
 
-def thermometer_package(root, name='package', operations=None, channel=None):
-    """The package the toolkit emits for the scripted thermometer, with replayed evidence of its identity, at
-    `root`/`name`. Unless `operations` names others, the model has the identity operation and one read. Each operation
-    it names sends its own name to the device unless it names its steps. `channel` gives the model a channel. Call it
-    where `toolkit.call_tool` is the real one."""
+def thermometer_package(root, name='package', operations=None, channel=None, probed=None):
+    """The package the toolkit emits for the scripted thermometer, with replayed evidence of `probed` (defaulting to
+    `read_temperature` when present, else `identify`), at `root`/`name`. Unless `operations` names others, the model
+    has the identity operation and one read. Each operation it names sends its own name to the device unless it names
+    its steps. `channel` gives the model a channel. Call it where `toolkit.call_tool` is the real one."""
     from generative_driver.toolkit import call_tool
     model = thermometer_model()
     rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
@@ -1467,14 +1467,24 @@ def thermometer_package(root, name='package', operations=None, channel=None):
                                for operation in operations]
     if channel is not None:
         model['channel'] = channel
+    if probed is None:
+        probed = 'read_temperature' if 'read_temperature' in model['operations'] else 'identify'
+    transactions = [{'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]
+    if probed == 'read_temperature':
+        transactions.append({'tx_hex': b'T\n'.hex(), 'rx_hex': b'21.5\n'.hex(), 'rx': rx, 'timeout_ms': 1000})
+    elif probed != 'identify':
+        transactions.append({'tx_hex': (probed + '\n').encode().hex(), 'rx_hex': b'OK\n'.hex(),
+                             'rx': rx, 'timeout_ms': 1000})
     source = Path(root) / (name + '-source')
     (source / 'model').mkdir(parents=True)
     (source / 'model' / 'model.json').write_text(json.dumps(model))
-    (source / 'replay.json').write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
-        {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+    (source / 'replay.json').write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': transactions}))
     grants = ['reset'] if model['channel'].get('resets_on_open') else []
+    effect = model['operations'][probed].get('effect', 'actuate')
+    if effect != 'read' and effect not in grants:
+        grants.append(effect)
     probe = call_tool('probe_run', {'run_dir': str(source / 'run'), 'model_dir': str(source / 'model'), 'n': 1,
-                                    'operation': 'identify', 'replay': str(source / 'replay.json'),
+                                    'operation': probed, 'replay': str(source / 'replay.json'),
                                     'allow_effects': grants})
     assert probe.get('ok'), probe
     emitted = call_tool('emit_package', {'run_dir': str(source / 'run'), 'model_dir': str(source / 'model'),
@@ -1531,7 +1541,7 @@ class FinalVerdictTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def finishing(self, controller, *, replay='passed', live=True, calls=None, attempts=None, operations=None,
-                  channel=None, listen=None):
+                  channel=None, listen=None, probed=None):
         """Acquire to ground are scripted. Emit and reuse use the real preparation and checks with a scripted
         emit_package and emit_check: the emit worker builds a package with emit_package through the gateway, and the
         reuse worker calls the generated tool of the package's read once through the gateway. What the child process
@@ -1561,8 +1571,17 @@ class FinalVerdictTests(unittest.TestCase):
         reused = []
         # The package is emitted before the toolkit is scripted; the scripted emit_package hands out its bytes.
         built = tempfile.TemporaryDirectory()
-        emitted = thermometer_package(built.name, operations=operations, channel=channel)
+        emitted = thermometer_package(built.name, operations=operations, channel=channel, probed=probed)
+        emitted_model = emitted / 'drivers' / 'scripted_thermometer.json'
+        emitted_probe = emitted / 'evidence' / 'scripted_thermometer.probe.json'
+        emitted_probe_data = json.loads(emitted_probe.read_text(encoding='utf-8'))
         def fake_call_tool(name, arguments):
+            if name == 'probe_run':
+                target = Path(arguments['run_dir']) / 'probe' / 'interface-1.json'
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(emitted_probe, target)
+                return {'ok': True, '_exit': 0, 'probe': str(target), 'evidence_kind': 'live',
+                        'results': emitted_probe_data['results']}
             if name == 'emit_package':
                 package = Path(shutil.copytree(emitted, Path(arguments['run_dir']) / 'package'))
                 return {'ok': True, '_exit': 0, 'package_dir': str(package), 'manifest_sha256': digest(package / 'manifest.json')}
@@ -1577,7 +1596,8 @@ class FinalVerdictTests(unittest.TestCase):
                 passed = replay in ('passed', 'supplied')
                 return {'ok': passed, '_exit': 0 if passed else 1, 'integrity_ok': True,
                         'replay_status': 'passed' if passed else replay,
-                        'source_evidence_kind': 'replay' if replay == 'supplied' else 'live'}
+                        'source_evidence_kind': 'replay' if replay == 'supplied' else 'live',
+                        'evidence_sha256': digest(emitted_probe)}
             raise AssertionError('Unexpected tool ' + name)
         def invoke_package(package, pin, operation, parameters, binding, effects):
             result = next(results)
@@ -1587,6 +1607,8 @@ class FinalVerdictTests(unittest.TestCase):
         def prepare(original, spec, stage, run_dir, workspace, accepted):
             if stage == 'acquire' and listen is not None:
                 return {'inputs': [], 'allowed_tools': ['acquire_serial_listen']}
+            if stage == 'probe' and replay == 'passed':
+                return {'inputs': [], 'allowed_tools': ['probe_run']}
             return original(spec, stage, run_dir, workspace, accepted) if stage in ('emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage in ('emit', 'reuse'):
@@ -1599,6 +1621,12 @@ class FinalVerdictTests(unittest.TestCase):
                                              'arguments': {'seconds': 0} if listen == 'bad-arguments' else {}})
                 except (RuntimeError, OSError):
                     pass
+            if request.stage == 'probe' and replay == 'passed':
+                workspace = Path(request.workspace)
+                model_dir = workspace / 'model'; model_dir.mkdir(exist_ok=True)
+                shutil.copyfile(emitted_model, model_dir / 'model.json')
+                controller.call('tool', {**gateway_identity(request), 'name': 'probe_run', 'arguments': {
+                    'model_dir': str(model_dir), 'operation': emitted_probe_data['operation']}})
             if request.stage == 'emit':
                 workspace = Path(request.workspace)
                 controller.call('tool', {**gateway_identity(request), 'name': 'emit_package', 'arguments': {
@@ -1651,13 +1679,14 @@ class FinalVerdictTests(unittest.TestCase):
                 equivalence = result['equivalence']
                 self.assertEqual((equivalence['equivalent'], equivalence['basis'], equivalence['diff']), (True, 'self-evidence', []))
                 checks = {c['id']: c for c in equivalence['checks']}
-                self.assertEqual(list(checks), ['emitted_package_replay', 'fresh_reuse_live_operations'])
+                self.assertEqual(list(checks), ['emitted_package_replay'])
                 self.assertTrue(all(c['passed'] for c in checks.values()))
                 self.assertEqual(checks['emitted_package_replay']['package'], {'name': Path(package['path']).name, 'sha256': package['sha256']})
                 self.assertTrue(checks['emitted_package_replay']['basis'].startswith('emit_check replay of the recorded device exchanges'),
                                 checks['emitted_package_replay'])
+                self.assertTrue(equivalence['mission']['passed'], equivalence['mission'])
                 self.assertEqual([(o['name'], o['ok'], o['outcome'], o['emitted_package'])
-                                  for o in checks['fresh_reuse_live_operations']['operations']],
+                                  for o in equivalence['mission']['operations']],
                                  [(self.READ, True, 'succeeded', True)])
                 # Recorded once under the run's final id, apart from evaluator verdicts; the run needs no further stage.
                 [(verdict_id, payload)] = final_verdicts(controller, run)
@@ -1690,13 +1719,13 @@ class FinalVerdictTests(unittest.TestCase):
                                                'emit_check without a replay of the recorded device exchanges'})
 
     def test_03_B6_a_driver_that_failed_on_the_device_or_an_unreplayed_package_completes_not_equivalent(self):
-        from generative_driver.configurator import Controller, _has_terminal_final_failure
-        for name, options, first in (('failed live operation', {'live': False}, 'fresh_reuse_live_operations'),
-                                     ('model fault after an inconclusive call',
-                                      {'calls': [('read_temperature', self.HOST_FAULT),
-                                                 ('read_temperature', self.MODEL_FAILURE)]},
-                                      'fresh_reuse_live_operations'),
-                                     ('replay failed', {'replay': 'failed'}, 'emitted_package_replay')):
+        from generative_driver.configurator import Controller, REPLAY_IDENTITY_ONLY, _has_terminal_final_failure
+        for name, options, equivalent in (
+                ('failed live operation', {'live': False}, True),
+                ('model fault after an inconclusive call',
+                 {'calls': [('read_temperature', self.HOST_FAULT), ('read_temperature', self.MODEL_FAILURE)]}, True),
+                ('replay of identity alone', {'probed': 'identify'}, False),
+                ('replay failed', {'replay': 'failed'}, False)):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
@@ -1704,11 +1733,10 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
-                    self.assertTrue(result['reason'].startswith('Final verdict: not equivalent: '), result['reason'])
                     equivalence = result['equivalence']
-                    self.assertEqual((equivalence['equivalent'], equivalence['basis']), (False, 'self-evidence'))
-                    self.assertEqual(equivalence['diff'][0]['id'], first)
-                    self.assertEqual({d['id'] for d in equivalence['diff']}, {c['id'] for c in equivalence['checks'] if not c['passed']})
+                    self.assertEqual((equivalence['equivalent'], equivalence['basis']), (equivalent, 'self-evidence'))
+                    self.assertEqual({d['id'] for d in equivalence['diff']},
+                                     {c['id'] for c in equivalence['checks'] if not c['passed']})
                     if name == 'replay failed':
                         # A driver was emitted and failed emit_check: emit hands off no package, drops it with the
                         # reason in its notes, and reuse is skipped.
@@ -1720,10 +1748,17 @@ class FinalVerdictTests(unittest.TestCase):
                         self.assertEqual(next(c for c in emit['checks'] if c['name'] == 'package_integrity_and_replay')['candidates'], 1)
                         [drop] = emit['notes']['inline']['configurator']['dropped_artifacts']
                         self.assertEqual((Path(drop['path']).name, drop['reason']), ('package', 'emit_check did not pass: replay failed'))
+                    elif name == 'replay of identity alone':
+                        self.assertEqual(equivalence['diff'],
+                                         [{'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+                        self.assertTrue(equivalence['mission']['passed'])
                     else:
+                        # Decision D2: fresh reuse failures are reported in mission without failing the driver verdict.
+                        self.assertEqual(result['reason'], 'Final verdict: equivalent')
+                        self.assertIs(equivalence['mission']['passed'], False, equivalence['mission'])
                         failed = [e['data']['dispatch_id'] for e in controller.call('events', run)['events']
                                   if e['kind'] == 'tool.finished' and e['data']['name'] == self.READ][-1]
-                        self.assertEqual(equivalence['diff'][0]['reason'],
+                        self.assertEqual(equivalence['mission']['diff'][0]['reason'],
                                          self.READ + ' failed on the device (dispatch ' + failed + ')')
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
                     # A verdict of not equivalent is a completed run, never a terminal failure to resume around.
@@ -1735,12 +1770,11 @@ class FinalVerdictTests(unittest.TestCase):
                     controller.close()
 
     def operations(self, result):
-        check = next(c for c in result['equivalence']['checks'] if c['id'] == 'fresh_reuse_live_operations')
-        return [(o['name'], o['outcome']) for o in check['operations']]
+        return [(o['name'], o['outcome']) for o in result['equivalence']['mission']['operations']]
 
     def test_03_B6_a_generated_call_refused_before_the_device_was_contacted_is_not_a_live_operation(self):
         from generative_driver.configurator import Controller
-        for name, calls, equivalent, outcomes in (
+        for name, calls, mission_passed, outcomes in (
                 ('a refusal before the device, then a function of the frozen package passes',
                  [('read_temperature', self.REFUSAL), ('read_temperature', self.PASSED)], True,
                  ['refused', 'succeeded']),
@@ -1753,11 +1787,12 @@ class FinalVerdictTests(unittest.TestCase):
                     with self.finishing(controller, calls=calls):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
-                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
+                    self.assertEqual(result['equivalence']['mission']['passed'], mission_passed, result['equivalence'])
                     self.assertEqual([outcome for _, outcome in self.operations(result)], outcomes)
-                    reasons = [d['reason'] for d in result['equivalence']['diff']]
+                    reasons = [d['reason'] for d in result['equivalence']['mission']['diff']]
                     self.assertFalse(any('failed on the device' in reason for reason in reasons), reasons)
-                    if equivalent:
+                    if mission_passed:
                         self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
                     else:
                         self.assertEqual(reasons, [self.NEVER_RAN + ' (2 calls refused before the device was contacted)'])
@@ -1765,7 +1800,7 @@ class FinalVerdictTests(unittest.TestCase):
                     finished = [e['data'] for e in controller.call('events', run)['events']
                                 if e['kind'] == 'tool.finished' and e['data']['stage'] == 'reuse']
                     self.assertEqual([e['refused_before_open'] for e in finished],
-                                     [True, False] if equivalent else [True, True])
+                                     [True, False] if mission_passed else [True, True])
                 finally:
                     controller.close()
 
@@ -1813,7 +1848,7 @@ class FinalVerdictTests(unittest.TestCase):
         from generative_driver.dispatch_outcome import read
         for error, host in (('OSError: [Errno 28] No space left on device', True), ('PermissionError: denied', True),
                             ('FileNotFoundError: no temporary directory', True), ('ModuleNotFoundError: no module', True),
-                            ('MemoryError: ', True), ('TimeoutExpired: Command timed out after 260 seconds', True),
+                            ('MemoryError: ', False), ('TimeoutExpired: Command timed out after 260 seconds', True),
                             ('[Errno 20] Not a directory', True),
                             ('ValueError: duplicate JSON key: name', False), ('KeyError: files', False),
                             ('AttributeError: list has no attribute get', False),
@@ -1833,17 +1868,18 @@ class FinalVerdictTests(unittest.TestCase):
         """The frozen package's only function writes and the operator granted read alone: the gateway refuses every call
         of it, so identity is all fresh reuse can run. That limit is the operator's, not the driver's, so the once-only
         verdict is unscored. With the write grant, running identity alone is still not equivalent."""
-        from generative_driver.configurator import Controller, IDENTITY_ONLY, UNGRANTED
+        from generative_driver.configurator import (Controller, IDENTITY_ONLY, REPLAY_IDENTITY_ONLY, REPLAY_UNGRANTED,
+                                                    UNGRANTED)
         self.assertEqual(IDENTITY_ONLY, 'fresh reuse ran no function of the frozen package beyond its identity '
                          'operation; identity alone is not evidence of function, nor is an operation that only waits '
                          "or repeats identity's requests")
         operations = {'identify': {'effect': 'read'}, 'set_rate': {'effect': 'write'},
                       'settle': {'effect': 'read', 'steps': [{'op': 'delay', 'ms': 1}]}}
-        for grants, calls, equivalent, reason in (
-                (['read'], [('set_rate', None), ('identify', self.passed('identify'))], None, UNGRANTED),
+        for grants, calls, equivalent, replay_reason, mission_reason in (
+                (['read'], [('set_rate', None), ('identify', self.passed('identify'))], None, REPLAY_UNGRANTED, UNGRANTED),
                 # A granted operation that only waits is no function: the operator's grants still permit none.
-                (['read'], [('settle', self.passed('settle'))], None, UNGRANTED),
-                (['read', 'write'], [('identify', self.passed('identify'))], False, IDENTITY_ONLY)):
+                (['read'], [('settle', self.passed('settle'))], None, REPLAY_UNGRANTED, UNGRANTED),
+                (['read', 'write'], [('identify', self.passed('identify'))], False, REPLAY_IDENTITY_ONLY, IDENTITY_ONLY)):
             called = [operation for operation, _ in calls]
             with self.subTest(grants=grants, calls=called), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
@@ -1853,7 +1889,9 @@ class FinalVerdictTests(unittest.TestCase):
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', equivalent), result)
                     self.assertEqual(self.operations(result), [('scripted_thermometer_' + calls[-1][0], 'succeeded')])
-                    self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [reason])
+                    self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [replay_reason])
+                    self.assertEqual(result['equivalence']['mission']['passed'], equivalent)
+                    self.assertEqual([d['reason'] for d in result['equivalence']['mission']['diff']], [mission_reason])
                     reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
                     note = next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
                     self.assertIs(note['passed'], equivalent)
@@ -1873,8 +1911,9 @@ class FinalVerdictTests(unittest.TestCase):
         unscored, unless the package failed its offline emit_check. Listening needs no grant, so a device no worker
         listened to is the candidate pipeline's omission: not equivalent. With the grant, or on a device that was heard
         to stay quiet, the same runs are judged as usual."""
-        from generative_driver.configurator import (Controller, SUPPLIED, UNGRANTED, UNHEARD, UNLISTENED, UNREACHABLE,
-                                                    _fresh_reuse, _frozen_package, _ungranted, digest)
+        from generative_driver.configurator import (Controller, REPLAY_UNGRANTED, SUPPLIED, UNGRANTED, UNHEARD,
+                                                    UNLISTENED, UNREACHABLE, _fresh_reuse, _frozen_package, _ungranted,
+                                                    digest)
         from generative_driver.toolkit import call_tool
         from test_package import example_model, example_replay
         # The real tools under the read grant alone, as the gateway dispatches them, on a model whose uart channel
@@ -1914,14 +1953,14 @@ class FinalVerdictTests(unittest.TestCase):
         for name, grants, listen, channel, replay, result, equivalent, note, reasons in (
                 # Its runtime refused the live probe of these bytes, so emit_check could replay only supplied exchanges.
                 ('a package that resets on open, without the reset grant', ['read'], False, resets, 'supplied',
-                 None, None, None, [unreplayed, UNGRANTED]),
+                 None, None, None, [unreplayed, REPLAY_UNGRANTED]),
                 ('a package that resets on open, with the reset grant', ['read', 'reset'], False, resets, 'passed',
                  self.PASSED, True, True, []),
                 ('a device observed resetting on open, without the reset grant', ['read'], True, resets, 'supplied', None,
                  None, None, [unreplayed, UNREACHABLE]),
                 # A package that fails its offline check failed whatever the device access.
                 ('a device observed resetting on open, whose package failed emit_check', ['read'], True, resets, 'failed',
-                 None, False, None, [rejected, UNREACHABLE]),
+                 None, False, None, [rejected]),
                 ('a listen that could not open the bound port, without the reset grant', ['read'], 'unopened', uart,
                  'supplied', None, None, None, [unreplayed, UNHEARD]),
                 ('a listen whose result was never recorded, without the reset grant', ['read'], 'unrecorded', uart,
@@ -2008,7 +2047,7 @@ class FinalVerdictTests(unittest.TestCase):
         unreplayed = ('the emitted package passed emit_check without a replay of the recorded device exchanges (' + SUPPLIED + ')')
         for replay, equivalent, reasons, refusals in (
                 ('supplied', None, [unreplayed, UNBOUND], ['No operator-owned device binding for this stage']),
-                ('failed', False, ['the emitted package did not pass emit_check: replay failed', UNBOUND], [])):
+                ('failed', False, ['the emitted package did not pass emit_check: replay failed'], [])):
             with self.subTest(replay=replay), tempfile.TemporaryDirectory() as directory:
                 controller = Controller(Path(directory) / 'home')
                 try:
@@ -2232,13 +2271,15 @@ class FinalVerdictTests(unittest.TestCase):
                     with self.finishing(controller, calls=calls):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
-                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+                    self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
                     self.assertEqual(self.operations(result), operations)
-                    diff = result['equivalence']['diff']
+                    mission = result['equivalence']['mission']
+                    self.assertIs(mission['passed'], False, mission)
+                    diff = mission['diff']
                     self.assertEqual({d['id'] for d in diff}, {'fresh_reuse_live_operations'})
                     reasons = [d['reason'] for d in diff]
                     self.assertEqual([reason.split(' (dispatch ')[0] for reason in reasons], says)
-                    self.assertEqual(result['reason'], 'Final verdict: not equivalent: ' + '; '.join(reasons))
+                    self.assertEqual(mission['reason'], '; '.join(reasons))
                     reuse = next(h for h in result['accepted_handoffs'] if h['stage'] == 'reuse')
                     note = next(c for c in reuse['checks'] if c['name'] == 'fresh_package_execution')
                     self.assertEqual((note['passed'], note['reason']), (False, '; '.join(reasons)))
@@ -2267,17 +2308,19 @@ class FinalVerdictTests(unittest.TestCase):
                         run = self.start(controller)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
-                    self.assertIsNone(result['equivalence']['equivalent'], result['equivalence'])
+                    self.assertTrue(result['equivalence']['equivalent'], result['equivalence'])
+                    mission = result['equivalence']['mission']
+                    self.assertIsNone(mission['passed'], mission)
                     self.assertEqual(self.operations(result)[0], (self.READ, outcome))
                     started = [e['id'] for e in controller.call('events', run)['events']
                                if e['kind'] == 'tool.started' and e['data']['name'] == self.READ]
-                    [entry] = result['equivalence']['diff']
+                    [entry] = mission['diff']
                     self.assertEqual(entry['id'], 'fresh_reuse_live_operations')
                     self.assertTrue(entry['reason'].startswith(self.READ + ' was '), entry['reason'])
                     self.assertIn(detail, entry['reason'])
                     self.assertIn('(dispatch ' + str(started[0]) + ')', entry['reason'])
                     self.assertNotIn('failed on the device', entry['reason'])
-                    self.assertEqual(result['reason'], 'Final verdict: unscored: ' + entry['reason'])
+                    self.assertEqual(mission['reason'], entry['reason'])
                 finally:
                     controller.close()
 
@@ -2304,17 +2347,19 @@ class FinalVerdictTests(unittest.TestCase):
                         resume_when_idle(self, controller, run)
                         result = wait_stopped(controller, run)
                     self.assertEqual((result['status'], result['outcome_category']), ('completed', 'completed'), result)
-                    self.assertEqual(result['equivalence']['equivalent'], equivalent, result['equivalence'])
+                    self.assertTrue(result['equivalence']['equivalent'], result['equivalence'])
+                    mission = result['equivalence']['mission']
+                    self.assertEqual(mission['passed'], equivalent, mission)
                     started = [e for e in controller.call('events', run)['events']
                                if e['kind'] == 'tool.started' and e['data']['name'] == self.READ]
                     self.assertEqual(len({e['data']['assignment_id'] for e in started}), 2)
                     self.assertEqual(self.operations(result), [(self.READ, outcome), (self.READ, 'succeeded')])
-                    reasons = [d['reason'] for d in result['equivalence']['diff']]
+                    reasons = [d['reason'] for d in mission['diff']]
                     if says:
                         [reason] = reasons
                         self.assertIn(says, reason)
                         self.assertIn('(dispatch ' + str(started[0]['id']) + ')', reason)
-                        self.assertTrue(result['reason'].endswith(reason), result['reason'])
+                        self.assertEqual(mission['reason'], reason)
                     else:
                         self.assertEqual((result['reason'], reasons), ('Final verdict: equivalent', []))
                     self.assertEqual(len(final_verdicts(controller, run)), 1)
@@ -2578,9 +2623,11 @@ class FinalVerdictTests(unittest.TestCase):
             self.assertEqual(facts['tools'], {'scripted_thermometer_' + name: name for name in facts['effects']})
             self.assertEqual((facts['sha256'], facts['manifest_sha256'], facts['resets_on_open']),
                              (frozen['sha256'], digest(package / 'manifest.json'), False))
+            self.assertEqual((facts['probed_operation'], facts['replayed_function']), ('read_temperature', True))
             # Nothing of a package's own command line or of an earlier format is among the facts.
             self.assertEqual(set(facts), {'sha256', 'manifest_sha256', 'tools', 'identity', 'effects', 'resets_on_open',
-                                          'functions'})
+                                          'functions', 'probed_operation', 'replayed_function', 'evidence_sha256',
+                                          'operations', 'identity_requests'})
             real_digest = runtime_package.digest
             def unreadable(path):
                 if Path(path).parent.name == 'drivers':
@@ -2905,7 +2952,7 @@ class RealToolVerdictTests(unittest.TestCase):
         return 'scripted_thermometer_' + operation
 
     def run_generic(self, home, reuse, *, emit=None, replies=None, on_emit_check=None, resume=False, model=None,
-                    effects=None, emit_report=None, emit_runtime=None, seen=None):
+                    effects=None, emit_report=None, emit_runtime=None, seen=None, probe_operation='read_temperature'):
         """`reuse(call, package, workspace)` is the fresh-reuse worker. Its `call(operation, **arguments)` calls the
         generated tool of that operation of the package it was assigned, through the gateway, and returns the result
         or the exception the gateway raised. Interpret hands on `model` (the thermometer by default).
@@ -2951,7 +2998,7 @@ class RealToolVerdictTests(unittest.TestCase):
                     return error
             workspace = Path(request.workspace)
             if request.stage == 'probe':
-                call('probe_run', model_dir=str(inputs[0]), operation='read_temperature', n=1)
+                call('probe_run', model_dir=str(inputs[0]), operation=probe_operation, n=1)
             elif request.stage == 'emit':
                 model = next(p for p in inputs if (p / 'model.json').is_file())
                 record = next((p for p in inputs if p.suffix == '.json'), None)
@@ -2996,8 +3043,7 @@ class RealToolVerdictTests(unittest.TestCase):
 
     @staticmethod
     def outcomes(result):
-        check = next(c for c in result['equivalence']['checks'] if c['id'] == 'fresh_reuse_live_operations')
-        return [(o['name'], o['outcome']) for o in check['operations']]
+        return [(o['name'], o['outcome']) for o in result['equivalence']['mission']['operations']]
 
     @staticmethod
     def reuse_note(result):
@@ -3086,10 +3132,10 @@ class RealToolVerdictTests(unittest.TestCase):
         self.assertEqual((result['status'], result['uncertain_effect']), ('completed', False), result)
 
     def test_03_B6_fresh_reuse_must_run_a_function_of_the_frozen_package_beyond_its_identity(self):
-        """Identity alone is not evidence of function: self-evidence needs fresh reuse to run, with a generated tool, at
-        least one operation of the frozen package beyond its identity operation on the device. The reuse note follows
-        the verdict's rule."""
-        for name, operations, equivalent in (
+        """Identity alone is not evidence of function: fresh reuse's mission report and reuse note require running,
+        with a generated tool, at least one operation of the frozen package beyond its identity operation on the
+        device, while the driver verdict judges the emitted package's own live replay."""
+        for name, operations, mission_passed in (
                 ('a function beyond identity', ['read_temperature'], True),
                 ('the identity operation only', ['identify'], False),
                 ('the identity operation, then a function', ['identify', 'read_temperature'], True)):
@@ -3101,22 +3147,26 @@ class RealToolVerdictTests(unittest.TestCase):
                 self.assertEqual([(r['operation'], r['ok']) for r in ran],
                                  [(operation, True) for operation in operations], ran)
                 equivalence = result['equivalence']
-                self.assertEqual(equivalence['equivalent'], equivalent, equivalence)
-                replay, live = equivalence['checks']
+                self.assertTrue(equivalence['equivalent'], equivalence)
+                [replay] = equivalence['checks']
+                live = equivalence['mission']
                 self.assertTrue(replay['passed'] and replay['basis'].startswith(
                     'emit_check replay of the recorded device exchanges'), replay)
+                self.assertEqual(live['passed'], mission_passed, live)
                 self.assertEqual([(o['name'], o['outcome'], o['emitted_package']) for o in live['operations']],
                                  [(self.tool(operation), 'succeeded', True) for operation in operations])
                 note = self.reuse_note(result)
-                self.assertEqual(note['passed'], equivalent, note)
-                if not equivalent:
-                    self.assertEqual(equivalence['diff'],
+                self.assertEqual(note['passed'], mission_passed, note)
+                if not mission_passed:
+                    self.assertEqual(live['diff'],
                                      [{'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
                     self.assertEqual(note['reason'], self.IDENTITY_ONLY)
 
     def test_an_operation_that_only_waits_is_no_function_of_the_frozen_package(self):
-        """A settle operation of delays alone sends nothing to the device once identity is verified, so running it is
-        running identity alone: not equivalent. Running it and a function that exchanges with the device is."""
+        """A settle operation of delays alone sends nothing to the device once identity is verified, so probing or
+        running it alone is running identity alone: not equivalent. Running or probing a function that exchanges with
+        the device is."""
+        from generative_driver.configurator import REPLAY_IDENTITY_ONLY
         model = thermometer_model()
         model['operations']['settle'] = {'effect': 'read', 'parameters': {}, 'outputs': {}, 'steps': [{'op': 'delay', 'ms': 1}]}
         model['provenance'].append({'item': 'operations.settle', 'source': 'scripted fixture'})
@@ -3124,7 +3174,8 @@ class RealToolVerdictTests(unittest.TestCase):
             with self.subTest(operations=operations), tempfile.TemporaryDirectory() as directory:
                 ran = []
                 result, _ = self.run_generic(Path(directory) / 'home', lambda call, package, workspace: ran.extend(
-                    call(operation) for operation in operations), model=model)
+                    call(operation) for operation in operations), model=model,
+                    probe_operation=operations[-1])
                 self.assertEqual(result['status'], 'completed', result)
                 self.assertEqual([r['operation'] for r in ran if r['ok']], operations, ran)
                 equivalence = result['equivalence']
@@ -3132,14 +3183,17 @@ class RealToolVerdictTests(unittest.TestCase):
                 self.assertEqual(self.outcomes(result),
                                  [(self.tool(operation), 'succeeded') for operation in operations])
                 self.assertEqual(equivalence['diff'], [] if equivalent else [
+                    {'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+                self.assertEqual(equivalence['mission']['passed'], equivalent)
+                self.assertEqual(equivalence['mission']['diff'], [] if equivalent else [
                     {'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
                 self.assertEqual(self.reuse_note(result)['passed'], equivalent)
 
     def test_an_operation_that_repeats_the_identity_request_is_no_function_of_the_frozen_package(self):
-        """get_chip_id sends the device what identify sends: running it on the device asks nothing identity does not, so
-        it is no function, whatever it accepts back (another capture name or timeout, no expectation, a looser one or
-        another receive bound). Running it and a function that sends something else is equivalent."""
-        from generative_driver.configurator import _frozen_package, digest
+        """get_chip_id sends the device what identify sends: running or probing it on the device asks nothing identity
+        does not, so it is no function, whatever it accepts back (another capture name or timeout, no expectation, a
+        looser one or another receive bound). Running and probing a function that sends something else is equivalent."""
+        from generative_driver.configurator import REPLAY_IDENTITY_ONLY, _frozen_package, digest
         identify = thermometer_model()['operations']['identify']['steps'][0]
         unexpecting = {key: value for key, value in identify.items() if key != 'expect'}
         for alias_name, alias in (
@@ -3156,7 +3210,8 @@ class RealToolVerdictTests(unittest.TestCase):
                     def reuse(call, package, workspace):
                         frozen.append(_frozen_package({'path': str(package), 'sha256': digest(package)}, strict=True))
                         ran.extend(call(operation) for operation in operations)
-                    result, _ = self.run_generic(Path(directory) / 'home', reuse, model=model)
+                    result, _ = self.run_generic(Path(directory) / 'home', reuse, model=model,
+                                                 probe_operation=operations[-1])
                     self.assertEqual(result['status'], 'completed', result)
                     self.assertEqual(frozen[0]['functions'], ['read_temperature'])
                     self.assertEqual([r['operation'] for r in ran if r['ok']], operations, ran)
@@ -3165,6 +3220,9 @@ class RealToolVerdictTests(unittest.TestCase):
                     self.assertEqual(self.outcomes(result),
                                      [(self.tool(operation), 'succeeded') for operation in operations])
                     self.assertEqual(equivalence['diff'], [] if equivalent else [
+                        {'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+                    self.assertEqual(equivalence['mission']['passed'], equivalent)
+                    self.assertEqual(equivalence['mission']['diff'], [] if equivalent else [
                         {'id': 'fresh_reuse_live_operations', 'reason': self.IDENTITY_ONLY}])
                     self.assertEqual(self.reuse_note(result)['passed'], equivalent)
 
@@ -3250,24 +3308,26 @@ class RealToolVerdictTests(unittest.TestCase):
                 self.assertTrue(passed['ok'], passed)
                 refused = [e['data'] for e in events if e['kind'] == 'tool.refused' and e['data']['stage'] == 'reuse']
                 abandoned = [e['data'] for e in events if e['kind'] == 'tool.abandoned']
-                reasons = [d['reason'] for d in result['equivalence']['diff']]
+                mission = result['equivalence']['mission']
+                reasons = [d['reason'] for d in mission['diff']]
+                self.assertTrue(result['equivalence']['equivalent'], result['equivalence'])
                 if when == 'before the call':
                     self.assertEqual([(e['name'], e['reason']) for e in refused], [(read, str(refusal))])
                     self.assertIn('an assigned input was altered', str(refusal))
                     self.assertEqual((abandoned, self.outcomes(result)), ([], [(read, 'succeeded')]))
-                    self.assertEqual((result['equivalence']['equivalent'], reasons), (True, []))
+                    self.assertEqual((mission['passed'], reasons), (True, []))
                 else:
                     self.assertIn('manifest pin mismatch', str(refusal))
                     self.assertEqual((refused, [e['name'] for e in abandoned]), ([], [read]))
                     self.assertEqual(self.outcomes(result), [(read, 'unresolved'), (read, 'succeeded')])
-                    self.assertEqual((result['equivalence']['equivalent'], reasons), (None, [
+                    self.assertEqual((mission['passed'], reasons), (None, [
                         read + ' was dispatched but its result was never recorded (dispatch '
                         + abandoned[0]['dispatch_id'] + ')']))
 
     def test_03_B6_a_host_failure_before_the_child_starts_leaves_the_call_unrecorded_and_the_verdict_unscored(self):
         """A generated call runs a checked copy of the frozen package. When the host cannot read that copy back, nothing
-        reached the device and the dispatch ends without a recorded result: the verdict is unscored, never a refusal
-        or a driver failure."""
+        reached the device and the dispatch ends without a recorded result: fresh reuse's mission report is unsettled,
+        never a refusal or a driver failure."""
         from unittest.mock import patch
         import interface_runtime.package as runtime_package
         read = self.tool('read_temperature')
@@ -3288,11 +3348,13 @@ class RealToolVerdictTests(unittest.TestCase):
         self.assertIsInstance(ran[0], PermissionError, ran)
         self.assertEqual(sent[0], sent[1], 'the device received a request of the call that never started')
         self.assertEqual((result['status'], result['uncertain_effect'], result['equivalence']['equivalent']),
-                         ('completed', False, None), result)
+                         ('completed', False, True), result)
+        mission = result['equivalence']['mission']
+        self.assertIsNone(mission['passed'], mission)
         [abandoned] = [e['data'] for e in events if e['kind'] == 'tool.abandoned']
         self.assertEqual((abandoned['name'], abandoned['type']), (read, 'PermissionError'), abandoned)
         self.assertEqual(self.outcomes(result), [(read, 'unresolved')])
-        self.assertEqual([d['reason'] for d in result['equivalence']['diff']], [
+        self.assertEqual([d['reason'] for d in mission['diff']], [
             read + ' was dispatched but its result was never recorded (dispatch ' + abandoned['dispatch_id'] + ')'])
 
     def test_an_emit_check_the_host_could_not_run_stops_for_the_host_and_resumes(self):
@@ -3311,6 +3373,46 @@ class RealToolVerdictTests(unittest.TestCase):
                 self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']), ('failed', 'host', 'emit'), stopped)
                 self.assertIn('emit_check could not run', stopped['reason'])
                 self.assertIn(says, stopped['reason'])
+                self.assertIsNone(stopped['equivalence'])
+                self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
+
+    def test_01_B7_emit_check_stops_for_budget_timeout_or_exit_and_rejects_on_memory_error(self):
+        """Decision D1 / core-13: only MemoryError rejects a package; budget exhaustion stops for the operator,
+        and a timeout or a process that ends without a result stops for the host so resume can check it again."""
+        from unittest.mock import patch
+        from generative_driver import tool_process
+        from generative_driver.configurator import Controller
+        # MemoryError from emit_check rejects the package without stopping for the host.
+        with tempfile.TemporaryDirectory() as directory:
+            result, events = self.run_generic(
+                Path(directory) / 'home', self.reads,
+                on_emit_check=lambda attempt: patch('generative_driver._toolchain.interface.emit_check',
+                                                    side_effect=MemoryError('out of memory')))
+            self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+            self.assertFalse(any(e['kind'] == 'run.failed' for e in events))
+            emitted = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+            check = next(c for c in emitted['checks'] if c['name'] == 'package_integrity_and_replay')
+            self.assertFalse(check['passed'])
+            self.assertIn('MemoryError', check['rejected'][0]['reason'])
+        # Unfinished reasons through _kit_tool: budget -> operator stop; timeout / ToolProcessExit -> host stop.
+        real_check_tool = Controller._check_tool
+        for label, unfinished, expected_status, expected_category in (
+                ('budget', tool_process.Unfinished('emit_check', 'budget'), 'blocked', 'operator'),
+                ('timeout', tool_process.Unfinished('emit_check', 'timeout'), 'failed', 'host'),
+                ('process exit', tool_process.Unfinished('emit_check', 'raised', 'ToolProcessExit', 'signal 9'),
+                 'failed', 'host')):
+            with self.subTest(label), tempfile.TemporaryDirectory() as directory:
+                calls = []
+                def check_tool(controller, call_tool, run_id, stage, name, arguments):
+                    if name == 'emit_check' and not calls:
+                        calls.append(1)
+                        with patch.object(controller, '_kit_tool', side_effect=unfinished):
+                            return real_check_tool(controller, call_tool, run_id, stage, name, arguments)
+                    return real_check_tool(controller, call_tool, run_id, stage, name, arguments)
+                with patch.object(Controller, '_check_tool', check_tool):
+                    (stopped, result), _ = self.run_generic(Path(directory) / 'home', self.reads, resume=True)
+                self.assertEqual((stopped['status'], stopped['outcome_category'], stopped['stage']),
+                                 (expected_status, expected_category, 'emit'), stopped)
                 self.assertIsNone(stopped['equivalence'])
                 self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', True), result)
 
@@ -3420,12 +3522,171 @@ class RealToolVerdictTests(unittest.TestCase):
             result, _ = self.run_generic(root / 'home', self.reads, emit=emit)
         equivalence = result['equivalence']
         self.assertEqual((result['status'], equivalence['equivalent']), ('completed', False), result)
-        replay_check, operations = equivalence['checks']
+        [replay_check] = equivalence['checks']
+        operations = equivalence['mission']
         self.assertEqual((replay_check['passed'], operations['passed']), (False, True))
         kind = 'replay of supplied exchanges, not recorded from the device'
         self.assertTrue(replay_check['basis'].startswith('emit_check ' + kind), replay_check)
         self.assertEqual(equivalence['diff'], [{'id': 'emitted_package_replay', 'reason': 'the emitted package passed '
                          'emit_check without a replay of the recorded device exchanges (' + kind + ')'}])
+
+    def test_01_B8_generic_verdict_grades_emitted_driver_alone_and_reports_reuse_in_mission(self):
+        """Decision D2: a generic run's verdict judges the emitted driver alone from emit_check's replay of recorded
+        live exchanges including a function beyond identity; fresh reuse runs and is reported beside it in `mission`."""
+        from generative_driver.configurator import REPLAY_IDENTITY_ONLY, REPLAY_UNGRANTED
+        # 1. Live replay of a function (read_temperature) is equivalent even when fresh reuse does nothing or fails.
+        for label, reuse_fn, expected_mission in (
+                ('reuse calls nothing', lambda call, pkg, ws: None, False),
+                ('reuse calls identify only', lambda call, pkg, ws: call('identify'), False),
+                ('reuse calls read_temperature and succeeds', lambda call, pkg, ws: call('read_temperature'), True)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                result, _ = self.run_generic(Path(directory) / 'home', reuse_fn)
+                eq = result['equivalence']
+                self.assertEqual((result['status'], eq['equivalent'], eq['basis'], eq['diff']),
+                                 ('completed', True, 'self-evidence', []), eq)
+                self.assertEqual([c['id'] for c in eq['checks']], ['emitted_package_replay'])
+                self.assertIs(eq['mission']['passed'], expected_mission, eq['mission'])
+        # 2. Live replay of identity alone is not equivalent even when fresh reuse calls read_temperature.
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_generic(Path(directory) / 'home', self.reads, probe_operation='identify')
+            eq = result['equivalence']
+            self.assertEqual((result['status'], eq['equivalent']), ('completed', False), eq)
+            self.assertEqual(eq['diff'], [{'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+            self.assertIs(eq['mission']['passed'], True, eq['mission'])
+        # 3. Live replay of identity when grants permit no function beyond identity is unscored (None).
+        write_only = thermometer_model()
+        write_only['operations'] = {
+            'identify': write_only['operations']['identify'],
+            'set_mode': {'effect': 'write', 'parameters': {}, 'outputs': {}, 'steps': [
+                {'op': 'exchange', 'tx': [{'text': 'M1\n'}],
+                 'rx': {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}, 'timeout_ms': 1000}]},
+        }
+        write_only['provenance'] = [{'item': 'operations.identify', 'source': 'scripted'},
+                                    {'item': 'operations.set_mode', 'source': 'scripted'}]
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_generic(Path(directory) / 'home', lambda call, pkg, ws: call('identify'),
+                                         probe_operation='identify', model=write_only, effects=['read'])
+            eq = result['equivalence']
+            self.assertEqual((result['status'], eq['equivalent']), ('completed', None), eq)
+            self.assertEqual(eq['diff'], [{'id': 'emitted_package_replay', 'reason': REPLAY_UNGRANTED}])
+            self.assertIsNone(eq['mission']['passed'], eq['mission'])
+
+    def test_relabelled_or_fabricated_live_probe_is_never_counted_as_recorded_live_evidence(self):
+        """A probe file whose evidence_kind was edited to 'live' (or fabricated) was never recorded by the
+        configurator on its device connection: emit records SUPPLIED and the verdict is not equivalent."""
+        from generative_driver.configurator import REPLAYED, SUPPLIED, _self_evidence, digest
+        from generative_driver.toolkit import call_tool
+        rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / 'model'; model.mkdir()
+            (model / 'model.json').write_text(json.dumps(thermometer_model()))
+            replay = root / 'replay.json'
+            replay.write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
+                {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000},
+                {'tx_hex': b'T\n'.hex(), 'rx_hex': b'21.5\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+            supplied = call_tool('probe_run', {'run_dir': str(root / 'supplied'), 'model_dir': str(model),
+                                               'operation': 'read_temperature', 'n': 1, 'replay': str(replay)})
+            self.assertEqual((supplied['_exit'], supplied['evidence_kind']), (0, 'replay'), supplied)
+            relabelled = json.loads(Path(supplied['probe']).read_text(encoding='utf-8'))
+            relabelled['evidence_kind'] = 'live'
+            relabelled['timing_policy'] = 'real'
+
+            def emit_relabelled(call, model_dir, record, workspace):
+                forged = workspace / 'forged-live-probe.json'
+                forged.write_text(json.dumps(relabelled, indent=2), encoding='utf-8')
+                return call('emit_package', model_dir=str(model_dir), probe_json=str(forged))['package_dir']
+
+            # Even when probe stage only ran identify live, relabelling a replay read_temperature probe as live fails.
+            result, _ = self.run_generic(root / 'home', self.reads, emit=emit_relabelled, probe_operation='identify')
+            eq = result['equivalence']
+            self.assertEqual((result['status'], eq['equivalent']), ('completed', False), eq)
+            emit_handoff = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+            check = next(c for c in emit_handoff['checks'] if c['name'] == 'package_integrity_and_replay')
+            self.assertEqual(check.get('verified_by'), [SUPPLIED], check)
+            self.assertEqual(eq['diff'], [{'id': 'emitted_package_replay', 'reason': 'the emitted package passed '
+                             'emit_check without a replay of the recorded device exchanges (' + SUPPLIED + ')'}])
+
+            # Defense-in-depth: _self_evidence refuses REPLAYED when events contain no matching recorded live probe.
+            pkg = thermometer_package(root / 'pkg')
+            fake_emit = {'stage': 'emit', 'revision': 0, 'artifacts': [{'path': str(pkg), 'sha256': digest(pkg)}],
+                         'checks': [{'name': 'package_integrity_and_replay', 'passed': True, 'verified_by': [REPLAYED]}]}
+            direct = _self_evidence([fake_emit], [])
+            self.assertIs(direct['equivalent'], False, direct)
+
+    def test_encoded_identity_aliases_and_zero_param_identity_replays_are_not_functions(self):
+        """Steps are compared by the encoded bytes reaching the device, not raw tx token lists."""
+        from generative_driver.configurator import REPLAY_IDENTITY_ONLY, _frozen_package, digest
+        rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
+        cases = (
+            ('split text', {}, [{'text': 'ID'}, {'text': '\n'}]),
+            ('hex bytes', {}, [{'hex': b'ID\n'.hex()}]),
+            ('mixed text and hex', {}, [{'text': 'I'}, {'hex': '44'}, {'text': '\n'}]),
+            ('single-value string enum param', {'ch': {'type': 'string', 'enum': ['D']}},
+             [{'text': 'I'}, {'arg': 'ch', 'format': 'ascii'}, {'text': '\n'}]),
+        )
+        for label, params, tx in cases:
+            model = thermometer_model()
+            model['operations']['alias_id'] = {
+                'effect': 'read', 'parameters': params, 'outputs': {},
+                'steps': [{'op': 'exchange', 'tx': tx, 'rx': rx, 'timeout_ms': 1000}],
+            }
+            model['provenance'].append({'item': 'operations.alias_id', 'source': 'scripted fixture'})
+            with self.subTest(alias=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                # Build package directly and inspect _frozen_package static functions.
+                pkg = thermometer_package(root / 'pkg', operations={
+                    'identify': model['operations']['identify'],
+                    'read_temperature': model['operations']['read_temperature'],
+                    'alias_id': model['operations']['alias_id'],
+                }, probed='identify')
+                frozen = _frozen_package({'path': str(pkg), 'sha256': digest(pkg)}, strict=True)
+                self.assertEqual(frozen['functions'], ['read_temperature'], (label, frozen))
+
+        # Parameterless split-text alias probed live must still be judged not equivalent (REPLAY_IDENTITY_ONLY).
+        split_model = thermometer_model()
+        split_model['operations']['alias_id'] = {
+            'effect': 'read', 'parameters': {}, 'outputs': {},
+            'steps': [{'op': 'exchange', 'tx': [{'text': 'ID'}, {'text': '\n'}], 'rx': rx, 'timeout_ms': 1000}],
+        }
+        split_model['provenance'].append({'item': 'operations.alias_id', 'source': 'scripted fixture'})
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_generic(Path(directory) / 'home', self.reads, model=split_model,
+                                         probe_operation='alias_id')
+            self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+            self.assertEqual(result['equivalence']['diff'],
+                             [{'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+
+        # Multi-valued parameter op: probing with pad='' sends identity bytes (not a replayed function), while
+        # probing with pad='31' sends distinct bytes (is a replayed function).
+        from generative_driver.toolkit import call_tool
+        param_model = thermometer_model()
+        param_model['operations']['echo_id'] = {
+            'effect': 'read', 'parameters': {'pad': {'type': 'bytes', 'min_length': 0, 'max_length': 2}},
+            'outputs': {}, 'steps': [{'op': 'exchange', 'tx': [{'text': 'ID'}, {'arg': 'pad', 'format': 'raw'}, {'text': '\n'}],
+                                      'rx': rx, 'timeout_ms': 1000}],
+        }
+        param_model['provenance'].append({'item': 'operations.echo_id', 'source': 'scripted fixture'})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mdir = root / 'model'; mdir.mkdir()
+            (mdir / 'model.json').write_text(json.dumps(param_model))
+            for pad_hex, expected_replayed in (('', False), ('31', True)):
+                with self.subTest(pad_hex=pad_hex):
+                    tx_bytes = b'ID' + bytes.fromhex(pad_hex) + b'\n'
+                    rfile = root / f'replay-{pad_hex or "empty"}.json'
+                    rfile.write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
+                        {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000},
+                        {'tx_hex': tx_bytes.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+                    probe = call_tool('probe_run', {'run_dir': str(root / 'run'), 'model_dir': str(mdir),
+                                                    'operation': 'echo_id', 'parameters': {'pad': pad_hex},
+                                                    'n': 1, 'replay': str(rfile)})
+                    self.assertEqual(probe['_exit'], 0, probe)
+                    pkg = call_tool('emit_package', {'run_dir': str(root / 'run'), 'model_dir': str(mdir),
+                                                     'probe_json': probe['probe']})['package_dir']
+                    frozen = _frozen_package({'path': pkg, 'sha256': digest(pkg)}, strict=True)
+                    self.assertIn('echo_id', frozen['functions'])
+                    self.assertIs(frozen['replayed_function'], expected_replayed, frozen)
 
 
 class ConfiguratorTests(unittest.TestCase):
@@ -4730,6 +4991,119 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 self.assertIn('acquire_serial_listen', text)
                 self.assertIn('reset', text)
                 self.assertNotIn('/dev/cu.secret', text)
+            finally:
+                controller.close()
+
+
+class DeviceReleaseAndRecoveryTests(unittest.TestCase):
+    """Feature 3: a device is never held or left running without a way out."""
+
+    def test_03_B2_restart_blocked_run_without_uncertain_effect_keeps_binding_claimed_until_resumed_or_cancelled(self):
+        from generative_driver.configurator import Controller, SafetyError
+        binding = {'host': '127.0.0.1', 'port': 45679}
+        params = {'goal': 'Restart lease contract', 'binding': binding, 'effects': ['read'],
+                  'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(30)']}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / 'home'
+            controller = Controller(home)
+            try:
+                run = controller.call('start', params)
+                until = time.monotonic() + 5
+                while time.monotonic() < until:
+                    if controller.call('status', run)['status'] == 'running':
+                        break
+                    time.sleep(.02)
+                self.assertEqual(controller.call('status', run)['status'], 'running')
+                # Simulate a hard crash: close without stopping the run cleanly (status stays 'running', bindings stays).
+                with controller._db() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?',
+                                                (run['run_id'],)).fetchone()[0], 1)
+                worker = controller._workers.pop(run['run_id'])
+                worker[0].set()
+                worker[1].join(5)
+                with controller._db() as db:
+                    db.execute("UPDATE runs SET status='running', cancelled=0, uncertain=0 WHERE id=?", (run['run_id'],))
+                    controller._claim_binding(binding, run['run_id'], db)
+            finally:
+                controller.close()
+            reopened = Controller(home)
+            try:
+                status = reopened.call('status', run)
+                self.assertEqual((status['status'], status['uncertain_effect']), ('blocked', False), status)
+                # Another run MUST NOT claim the binding while the restart-blocked run may still have an old child.
+                with self.assertRaisesRegex(SafetyError, 'already owned'):
+                    reopened.call('start', params)
+                # Cancelling the blocked run releases the binding cleanly for a new run.
+                reopened.call('cancel', run)
+                second = reopened.call('start', params)
+                self.assertTrue(second['ok'], second)
+                reopened.call('cancel', second)
+            finally:
+                reopened.close()
+
+    def test_03_B6_respond_holds_controller_lock_across_worker_check_and_resolution(self):
+        import threading
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory).resolve() / 'home')
+            try:
+                run, assignment = ConfiguratorTests()._idle_run(controller, effects=['read', 'write'])
+                ConfiguratorTests._pending_write(controller, run, assignment)
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                lock_held = []
+                real_resolve = controller.dispatch_record.resolve_by_operator
+                def check_lock(*args, **kwargs):
+                    # Try acquiring _lock from another thread; must fail if respond holds _lock across resolution.
+                    acquired = []
+                    def probe():
+                        got = controller._lock.acquire(blocking=False)
+                        if got:
+                            controller._lock.release()
+                        acquired.append(got)
+                    t = threading.Thread(target=probe)
+                    t.start()
+                    t.join(2)
+                    lock_held.append(not acquired[0])
+                    return real_resolve(*args, **kwargs)
+                with patch.object(controller.dispatch_record, 'resolve_by_operator', side_effect=check_lock):
+                    controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe',
+                                                'observation': ConfiguratorTests.STATEMENT})
+                self.assertEqual(lock_held, [True], 'respond did not hold _lock during resolve_by_operator')
+            finally:
+                controller.close()
+
+    def test_03_B7_spawn_failure_and_cleanup_failure_never_leave_run_stuck_in_workers(self):
+        import threading
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        binding = {'host': '127.0.0.1', 'port': 45680}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory).resolve() / 'home')
+            try:
+                # Part 1: Thread.start failure in _spawn rolls back _workers, marks run failed, releases binding.
+                with patch.object(threading.Thread, 'start', side_effect=RuntimeError("can't start new thread")):
+                    with self.assertRaisesRegex(RuntimeError, "can't start new thread"):
+                        controller.call('start', {'goal': 'Spawn fail contract', 'binding': binding,
+                                                  'executor_config': {'command': [sys.executable, '-c', 'pass']}})
+                self.assertEqual(controller._workers, {})
+                with controller._db() as db:
+                    row = db.execute('SELECT id, status FROM runs').fetchone()
+                    leased = db.execute('SELECT COUNT(*) FROM bindings').fetchone()[0]
+                self.assertEqual((row['status'], leased), ('failed', 0))
+                # Resume works once Thread.start recovers.
+                resumed = controller.call('resume', {'run_id': row['id']})
+                self.assertIn(resumed['status'], ('queued', 'running', 'completed', 'failed', 'blocked'))
+                wait_stopped(controller, {'run_id': row['id']})
+                # Part 2: Cleanup raising inside _run finally still pops _workers so shutdown/resume never wedge.
+                with patch.object(controller, '_settle_release', side_effect=RuntimeError('cleanup exploded')):
+                    run2 = controller.call('start', {'goal': 'Cleanup fail contract', 'binding': binding,
+                                                     'executor_config': {'command': [sys.executable, '-c', 'raise SystemExit(1)']}})
+                    wait_worker_exit(controller, run2)
+                self.assertNotIn(run2['run_id'], controller._workers)
+                self.assertFalse(controller.call('status', run2)['stopping'])
+                self.assertTrue(controller.close(timeout=2))
             finally:
                 controller.close()
 

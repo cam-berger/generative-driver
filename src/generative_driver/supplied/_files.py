@@ -1,6 +1,9 @@
 """Two helpers the stage modules share: the finder of an artifact in an accepted handoff, and the writer of the JSON
 files a stage leaves."""
+import contextlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -20,7 +23,18 @@ def accepted_artifact(handoff, name, sha256=None):
 
 
 def write_json(path, value):
-    """Write `value` as indented JSON at `path`, after making the folder it lies in."""
+    """Write `value` as indented JSON at `path`, atomically through a temporary file in its folder."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+    data = (json.dumps(value, indent=2, allow_nan=False) + '\n').encode('utf-8')
+    fd, tmp = tempfile.mkstemp(prefix='.' + path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise

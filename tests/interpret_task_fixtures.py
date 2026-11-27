@@ -294,6 +294,10 @@ elif (workspace / 'CROSS_CHECK.md').is_file():
         write('model.json', model)
     elif action == 'break':
         write('model.json', 'not a model')
+    elif action == 'break_replies':
+        write('replies.json', '{not valid json')
+    elif action == 'bad_replies_steps':
+        write('replies.json', {'schema': 'interface-replies/1', 'operations': {'measure': {'steps': 1}}})
     write('NOTES.md', 'Cross-check notes.\n')
 elif (workspace / 'BRIEF.md').is_file():
     seen('single')

@@ -1282,6 +1282,68 @@ class CatchUpTests(TaskRunCase):
         self.assertIn('TASKS.json', result['reason'])
         self.assertEqual([record['task'] for record in seen(folder)], ['acquire', 'inventory'])
 
+    def test_03_B5_late_resume_device_failure_does_not_block_run_resumed_on_replacement_device(self):
+        import sys
+        import threading
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        from generative_driver.device_client import DeviceUnavailable
+        device_a = SuppliedDevice(self.root / 'device-a', replies=GAUGE)
+        device_b = SuppliedDevice(self.root / 'device-b', replies=GAUGE)
+        self.addCleanup(device_a.close)
+        self.addCleanup(device_b.close)
+        controller = Controller(self.root / 'home-core12')
+        self.addCleanup(controller.close)
+        token = 'core12-eval-token'
+        params = {
+            'goal': 'Supplied resume race test',
+            'device': device_a.descriptor,
+            'firmware': hand_written_firmware(self.root),
+            'mission': MISSION,
+            'evaluation_token_sha256': hashlib.sha256(token.encode()).hexdigest(),
+            'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(30)']},
+        }
+        run = controller.call('start', params)
+        until = time.monotonic() + 5
+        while time.monotonic() < until and controller.call('status', run)['status'] != 'running':
+            time.sleep(.02)
+        controller.call('cancel', run)
+        stopped(controller, run)
+        entered, release = threading.Event(), threading.Event()
+        real_ready = controller._device_ready
+        def slow_old_device(spec):
+            if (spec.get('_device') or {}).get('session_id') == device_a.session_id:
+                entered.set()
+                release.wait(10)
+                raise DeviceUnavailable('Device provider unavailable: TimeoutError: old device timed out')
+            return real_ready(spec)
+        errors = []
+        def stale_resume():
+            try:
+                controller.call('resume', run)
+            except Exception as exc:
+                errors.append(exc)
+        with patch.object(controller, '_device_ready', side_effect=slow_old_device):
+            stale = threading.Thread(target=stale_resume, daemon=True)
+            stale.start()
+            self.assertTrue(entered.wait(5), 'stale resume did not enter _device_ready')
+            # Meanwhile attach replacement device B and resume the run on device B.
+            controller.call('attach_device', {**run, 'token': token, 'device': device_b.descriptor})
+            resumed = controller.call('resume', run)
+            self.assertIn(resumed['status'], ('queued', 'running'), resumed)
+            until = time.monotonic() + 5
+            while time.monotonic() < until and controller.call('status', run)['status'] != 'running':
+                time.sleep(.02)
+            # Now the stale resume for device A fails with DeviceUnavailable!
+            release.set()
+            stale.join(5)
+            self.assertEqual(len(errors), 1)
+            # The resumed run on device B MUST stay running, NEVER blocked by device A's late failure!
+            after = controller.call('status', run)
+            self.assertEqual(after['status'], 'running', after)
+            controller.call('cancel', run)
+            stopped(controller, run)
+
 
 if __name__ == '__main__':
     unittest.main()

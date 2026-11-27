@@ -75,7 +75,7 @@ class PackageSession:
                     warnings.append(warning)
 
         def result(value):
-            requested = any(step['operation'] == operation and step['op'] != 'delay'
+            requested = any(step['operation'] == operation and step['op'] != 'delay' and step.get('dispatched') is True
                             for step in value.get('transcript', []))
             self._last_result = {**value, 'schema': 'driver-result/1', 'operation': operation,
                     'observations': observations, 'warnings': warnings,

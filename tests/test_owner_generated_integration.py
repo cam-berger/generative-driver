@@ -201,11 +201,12 @@ class OwnerGeneratedTests(unittest.TestCase):
                     def send_bytes(self,data):sent.append(data)
                     def poll(self,timeout):timeouts.append(timeout);return True
                     def recv_bytes(self,limit):raise EOFError('lost response')
-                with patch.object(client,'Client',return_value=Connection()),patch.object(client,'_start',side_effect=AssertionError('must not resend')):
+                with patch.object(client,'open_connection',return_value=Connection()),patch.object(client,'_start',side_effect=AssertionError('must not resend')):
                     result=client.call(method,{'request_id':'once'},home)
                 self.assertFalse(result['ok'])
                 self.assertEqual(len(sent),1)
-                self.assertEqual(timeouts,[620])
+                self.assertEqual(len(timeouts),1)
+                self.assertTrue(600 < timeouts[0] <= 620, timeouts)
 
     def test_recovery_accepts_only_owner_proven_generated_completed_model_failure(self):
         from generative_driver.device_recovery import unresolved_outcomes

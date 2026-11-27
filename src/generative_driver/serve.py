@@ -12,6 +12,7 @@ import os
 import signal
 import sys
 import threading
+import uuid
 from pathlib import Path
 
 
@@ -46,9 +47,23 @@ def _session(package, binding, effects, home):
         validate_binding(model['channel'], bound)
     except TransportError as error:
         raise _Refused('the binding does not fit the channel of this driver: ' + str(error)) from None
+    request_id = uuid.uuid4().hex
     try:
-        return ManagedDriver.open(package, binding=bound, effects=['read', *effects], home=home), model
+        return ManagedDriver.open(package, binding=bound, effects=['read', *effects], home=home,
+                                  request_id=request_id), model
     except (OSError, RuntimeError, ValueError) as error:
+        if isinstance(error, (OSError, RuntimeError)) or 'interrupted after dispatch' in str(error):
+            # A lost reply may have left the session open in the service: announce the idempotent request_id,
+            # retry once with the same id to recover any opened session, and close it cleanly.
+            _say('device_open reply was lost (request ' + request_id + '); retrying once to close any opened session')
+            try:
+                recovered = ManagedDriver.open(package, binding=bound, effects=['read', *effects], home=home,
+                                               request_id=request_id)
+            except (OSError, RuntimeError, ValueError) as retry_error:
+                _say('could not recover device_open request ' + request_id + ': ' + str(retry_error))
+            else:
+                _say('session ' + recovered.session_id + ' was opened for request ' + request_id + '; closing it')
+                _close(recovered)
         raise _Refused(str(error)) from None
 
 
@@ -82,10 +97,14 @@ def _close(driver):
     """The exit status after one attempt to close the session of `driver`: 0 when it is closed. A close the service
     refuses is said on standard error with the session's id and what holds it, read from the session's status, and
     the session stays as it is for the operator."""
-    closed = driver.close()
-    if closed.get('ok') and closed.get('status') == 'closed':
-        return 0
-    status = driver.status()
+    try:
+        closed = driver.close()
+        if closed.get('ok') and closed.get('status') == 'closed':
+            return 0
+        status = driver.status()
+    except (OSError, RuntimeError, ValueError) as error:
+        _say('session ' + driver.session_id + ' stays open: ' + str(error))
+        return 1
     held = [text for key, text in (('in_flight', 'an invocation is still active'),
                                    ('uncertain_effect', 'an effect is uncertain, which the operator resolves'))
             if status.get(key)]

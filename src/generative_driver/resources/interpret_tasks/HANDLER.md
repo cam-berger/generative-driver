@@ -13,8 +13,8 @@ Every file here is a sealed input: read it and leave it unchanged. Changing one 
   for each.
 - `MODEL_FRAME.json`: the model's format tag, which the configurator writes, and the device name, channel and
   framing as the inventory found them.
-- `IDENTITY.json`, unless your command identifies the device: the identity operation its task wrote. Your operation
-  runs after it on the same connection.
+- `IDENTITY.json`, unless your command identifies the device: the identity operation its task wrote, with its `model`
+  and `replies`. Your operation runs after it on the same connection.
 - `CODE.c`: the decompiled code of your command's handler functions and of the functions they call, nearest first.
   Its first comment says which functions it holds and which it cut or left out.
 - `STRINGS.json`: the strings those functions reference.
@@ -63,7 +63,8 @@ name it in `NOTES.md`; the last worker, which sees the whole model, writes it.
 Check it before you finish. In a folder of your own, such as `check/`, write `model.json` with the schema, device and
 channel of `MODEL_FRAME.json`, an `identity` naming the identity operation, that operation (yours if your command
 identifies the device, else the one in `IDENTITY.json`) and yours, with their provenance; `replies.json`
-(`interface-replies/1` for lines, `/2` for binary frames) with your replies; and run `python3 validate.py check` and
+(`interface-replies/1` for lines, `/2` for binary frames) with the identity operation's replies (from `IDENTITY.json`,
+unless your command identifies the device) beside yours; and run `python3 validate.py check` and
 `python3 qualify.py check check/replies.json`. Fix what they report, and answer the validator's `advice`, which lists
 what is still undocumented. A fragment that does not validate in that model is left out of the assembly.
 

@@ -1,4 +1,5 @@
 """Configured external agent runtimes. No provider keys are read from host stores."""
+import contextlib
 from dataclasses import dataclass, field
 import json
 import os
@@ -31,6 +32,10 @@ REPORT_SCHEMA = {
         'unresolved': {'type': 'array', 'items': {'type': 'string'}},
     }, 'required': ['status', 'summary', 'artifacts', 'checks', 'unresolved'],
 }
+
+OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024
+_CHUNK_BYTES = 64 * 1024
+_QUEUE_MAX = 128
 
 STAGE_BOUNDARY = ('Use only the assigned workspace, supplied inputs, and assigned tool gateway. '
     'Supplied device observations, instrument readings, repair feedback and sealed previous candidates from this '
@@ -287,66 +292,131 @@ def execute(request, config, cancel_event=None, on_event=None):
         service_log.caught(exc, step='launch')
         return {**result, 'status': 'blocked', 'cause': 'runtime_unavailable',
                 'reason': 'Cannot start configured runtime: ' + str(exc), 'elapsed_seconds': 0}
-    messages = queue.Queue()
+    stop_reading = threading.Event()
+    messages = queue.Queue(maxsize=_QUEUE_MAX)
     def reader(stream, channel):
-        for line in stream:
-            messages.put((channel, line))
-        messages.put((channel, None))
-    for channel, stream in (('out', proc.stdout), ('err', proc.stderr)):
-        threading.Thread(target=reader, args=(stream, channel), daemon=True).start()
-    try:
-        proc.stdin.write(prompt)
-        proc.stdin.close()
-    except (BrokenPipeError, OSError):
-        pass
+        def put(item):
+            while not stop_reading.is_set():
+                try:
+                    messages.put(item, timeout=0.1)
+                    return True
+                except queue.Full:
+                    continue
+            return False
+        try:
+            while not stop_reading.is_set():
+                chunk = stream.readline(_CHUNK_BYTES)
+                if not chunk:
+                    break
+                if not put((channel, chunk)):
+                    return
+        except (OSError, ValueError):
+            pass
+        finally:
+            put((channel, None))
     text_parts = []
     done = set()
     outcome = None
     launch_error = None
     size = 0
-    with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
-        while len(done) < 2 or proc.poll() is None:
-            if cancel_event and cancel_event.is_set():
-                outcome = ('cancelled', 'Run cancelled; external worker stopped', 'cancelled')
-                _terminate(proc)
-            elif time.monotonic() - started > request.budget_seconds:
-                outcome = ('blocked', 'Stage exhausted the remaining run time budget', 'run_budget')
-                _terminate(proc)
-            try:
-                channel, line = messages.get(timeout=0.1)
-            except queue.Empty:
-                continue
-            if line is None:
-                done.add(channel)
-                continue
-            size += len(line)
-            if size > 32 * 1024 * 1024:
-                outcome = ('failed', 'External worker output exceeded 32 MiB', 'output_limit')
-                _terminate(proc)
-                continue
-            if channel == 'err':
-                stderr_file.write(line)
-                stderr_file.flush()
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                event = {'type': 'unparsed_stdout', 'text': line.rstrip()}
-            transcript_file.write(json.dumps(event) + '\n')
-            transcript_file.flush()
-            if on_event:
-                on_event(event)
-            if event.get('type') == 'generative_driver.runtime_start_failed' and isinstance(event.get('error'), str):
-                launch_error = event['error']
-            if event.get('type') == 'turn.completed' and isinstance(event.get('usage'), dict):
-                usage = event['usage']
-                result['usage'] = {key: usage.get(key) for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')}
-            item = event.get('item', {})
-            if item.get('type') == 'agent_message' and event.get('type') == 'item.completed':
-                text_parts.append(item.get('text', ''))
-    result.update(exit_code=proc.wait(), elapsed_seconds=time.monotonic() - started)
-    proc.stdout.close()
-    proc.stderr.close()
+    out_buf = []
+    def handle_stdout_line(line, transcript_file):
+        nonlocal launch_error
+        try:
+            event = json.loads(line)
+        except ValueError:
+            event = None
+        if not isinstance(event, dict):
+            event = {'type': 'unparsed_stdout', 'text': line.rstrip()}
+        transcript_file.write(json.dumps(event) + '\n')
+        transcript_file.flush()
+        if on_event:
+            on_event(event)
+        if event.get('type') == 'generative_driver.runtime_start_failed' and isinstance(event.get('error'), str):
+            launch_error = event['error']
+        if event.get('type') == 'turn.completed' and isinstance(event.get('usage'), dict):
+            usage = event['usage']
+            result['usage'] = {key: usage.get(key) for key in ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')}
+        item = event.get('item')
+        if (isinstance(item, dict) and item.get('type') == 'agent_message'
+                and event.get('type') == 'item.completed' and isinstance(item.get('text'), str)):
+            text_parts.append(item['text'])
+    def writer():
+        try:
+            for offset in range(0, len(prompt), _CHUNK_BYTES):
+                if stop_reading.is_set():
+                    break
+                proc.stdin.write(prompt[offset:offset + _CHUNK_BYTES])
+                proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                proc.stdin.close()
+    io_threads = []
+    terminated = False
+    exited_cleanly = False
+    try:
+        for channel, stream in (('out', proc.stdout), ('err', proc.stderr)):
+            t = threading.Thread(target=reader, args=(stream, channel), daemon=True)
+            t.start()
+            io_threads.append((t, stream))
+        prompt_writer = threading.Thread(target=writer, daemon=True)
+        prompt_writer.start()
+        io_threads.append((prompt_writer, proc.stdin))
+        with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
+            while len(done) < 2 or proc.poll() is None:
+                if cancel_event and cancel_event.is_set():
+                    outcome = ('cancelled', 'Run cancelled; external worker stopped', 'cancelled')
+                    stop_reading.set()
+                    terminated = True
+                    _terminate(proc)
+                    break
+                if time.monotonic() - started > request.budget_seconds:
+                    outcome = ('blocked', 'Stage exhausted the remaining run time budget', 'run_budget')
+                    stop_reading.set()
+                    terminated = True
+                    _terminate(proc)
+                    break
+                try:
+                    channel, chunk = messages.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if chunk is None:
+                    if channel == 'out' and out_buf:
+                        handle_stdout_line(''.join(out_buf), transcript_file)
+                        out_buf.clear()
+                    done.add(channel)
+                    continue
+                size += len(chunk.encode('utf-8', errors='replace'))
+                if size > OUTPUT_LIMIT_BYTES:
+                    outcome = ('failed', 'External worker output exceeded 32 MiB', 'output_limit')
+                    stop_reading.set()
+                    terminated = True
+                    _terminate(proc)
+                    break
+                if channel == 'err':
+                    stderr_file.write(chunk)
+                    stderr_file.flush()
+                    continue
+                out_buf.append(chunk)
+                if chunk.endswith('\n'):
+                    handle_stdout_line(''.join(out_buf), transcript_file)
+                    out_buf.clear()
+        result.update(exit_code=proc.wait(), elapsed_seconds=time.monotonic() - started)
+        exited_cleanly = outcome is None and len(done) == 2
+    finally:
+        stop_reading.set()
+        if proc.poll() is None:
+            _terminate(proc)
+        elif os.name != 'nt' and not terminated and (not exited_cleanly or len(done) < 2):
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+        for t, pipe in io_threads:
+            t.join(timeout=1.0)
+            if not t.is_alive() and pipe is not None:
+                with contextlib.suppress(OSError, ValueError):
+                    pipe.close()
     if outcome:
         return {**result, 'status': outcome[0], 'reason': outcome[1], 'cause': outcome[2]}
     if launch_error is not None:

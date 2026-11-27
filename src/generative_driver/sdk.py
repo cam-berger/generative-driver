@@ -215,7 +215,7 @@ class Application:
                 'code': 'application_error', 'fault': 'model',
                 'message': type(error).__name__+': '+str(error)}}
         return {'schema': 'driver-result/1', 'operation': name, **outcome,
-                'units': {key: definition['unit'] for key, definition in spec.outputs.items()},
+                'units': {key: definition.get('unit') for key, definition in spec.outputs.items()},
                 'warnings': operation_warnings({'parameters': spec.parameters, 'outputs': spec.outputs,
                     'uncertainties': spec.uncertainties}, 'tools.'+name) +
                     [warning for child in context.calls for warning in child['warnings']],

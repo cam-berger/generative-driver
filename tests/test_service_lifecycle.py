@@ -114,7 +114,7 @@ class ServiceLifecycleTests(unittest.TestCase):
                 def poll(self, timeout): return True
                 def recv_bytes(self, limit): raise EOFError('reply lost after dispatch')
             sent = []
-            with patch.object(client, 'Client', return_value=Connection()), \
+            with patch.object(client, 'open_connection', return_value=Connection()), \
                  patch.object(client, '_start', side_effect=AssertionError('Do not replay an interrupted write')):
                 result = client.call('tool', {'name':'interface_execute'}, home)
             self.assertFalse(result['ok'])

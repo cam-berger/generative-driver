@@ -229,6 +229,215 @@ class OneFormatTests(unittest.TestCase):
                 self.assertEqual(played["results"][0]["outputs"], outputs)
                 self.assertEqual(played["transactions"], transactions)
 
+    def test_01_B1_tx_checksum_input_exceeding_bound_is_rejected_at_validation(self):
+        model = one_format_model()
+        # 4096-byte payload + 20 1-byte checksums over it: encoded tx is 4116 bytes (<= 65536),
+        # but total checksum input is 81920 bytes (> 65536).
+        model["operations"]["status"]["steps"][0]["tx"] = [
+            {"hex": "ab" * 4096},
+            *({"check": "crc8", "over_parts": [0, 1], "byteorder": "big"} for _ in range(20)),
+        ]
+        checked = validate_model(model)
+        self.assertFalse(checked["ok"], checked)
+        self.assertTrue(any("checksum input" in d["what"] for d in checked["defects"]), checked["defects"])
+
+    def test_01_B2_unpadded_frame_excludes_check_and_end_bytes_from_non_hex_decoders(self):
+        from interface_runtime import checks
+        model = one_format_model()
+        # Unpadded frame with type byte 0x81, 1-byte length at offset 2, 1-byte crc8 check, 1-byte end marker.
+        # With empty body (len=0), bytes are: aa 81 00 <crc> 55 -> header ends at 3, check at 3, end at 4.
+        frame = {"mode": "frame", "sync_hex": "aa",
+                 "length": {"offset": 2, "size": 1, "byteorder": "big", "add": 5},
+                 "max_bytes": 16,
+                 "check": {"algorithm": "crc8", "from": 0, "byteorder": "big"},
+                 "end_hex": "55"}
+        model["operations"]["status"]["steps"][0] = {
+            "op": "exchange", "tx": [{"hex": "01"}], "rx": frame, "timeout_ms": 1000, "capture": "reply",
+            "expect": {"prefix_hex": "aa81"}}
+        model["operations"]["status"]["outputs"] = {
+            "value": {"from": "reply", "kind": "integer", "offset": 3, "size": 1, "byteorder": "big", "signed": False}}
+        self.assertTrue(validate_model(model)["ok"], validate_model(model))
+        header = bytes.fromhex("aa8100")
+        short_frame = header + checks.encode("crc8", header, "big") + b"\x55"
+        def serve():
+            replies = iter([b"FAMILY:TOY-ALL\nREADY\n", short_frame])
+            class Handle:
+                def exchange(self, tx, rx, timeout_ms):
+                    return next(replies)
+                def close(self):
+                    return None
+            return lambda channel, binding: Handle()
+        result = execute(model, "status", binding={}, transport_factory=serve())
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error"]["fault"], "model", result)
+        # Raw hex decoder still receives the full verified frame including check and end bytes.
+        model["operations"]["status"]["outputs"] = {"raw": {"from": "reply", "kind": "hex"}}
+        raw_result = execute(model, "status", binding={}, transport_factory=serve())
+        self.assertTrue(raw_result["ok"], raw_result)
+        self.assertEqual(raw_result["outputs"]["raw"], short_frame.hex())
+
+    def test_01_B3_step_refused_before_transport_call_is_not_marked_dispatched_or_uncertain(self):
+        import json, tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from generative_driver.dispatch_outcome import read
+        from interface_runtime import checks
+        from interface_runtime.driver import execute_package
+        from interface_runtime.evidence import run_samples
+        from generative_driver._toolchain import interface as iface_tool
+        frame = {"mode": "frame", "sync_hex": "aa",
+                 "length": {"offset": 2, "size": 1, "byteorder": "big", "add": 3},
+                 "max_bytes": 16, "max_reads": 4}
+        id_reply = b"\xaa\x01\x00"
+        model = {
+            "schema": "interface-model/7", "device": {"name": "TOY-USB"},
+            "channel": {"type": "usb", "interface": 0, "in_endpoint": 0x81, "out_endpoint": 0x01},
+            "identity": {"operation": "identify"},
+            "operations": {
+                "identify": {"effect": "read", "parameters": {}, "outputs": {}, "steps": [{
+                    "op": "exchange", "tx": [{"hex": "aa01"}], "rx": frame, "timeout_ms": 1000,
+                    "expect": {"prefix_hex": "aa01"}}]},
+                "write_short": {
+                    "effect": "write",
+                    "parameters": {"payload": {"type": "bytes", "min_length": 1, "max_length": 8}},
+                    "outputs": {},
+                    "steps": [{
+                        "op": "exchange", "tx": [{"arg": "payload", "format": "raw"}],
+                        "rx": frame, "timeout_ms": 1000, "expect": {"prefix_hex": "aa01"},
+                        "match": [{"tx_offset": 0, "rx_offset": 0, "size": 2}],
+                    }],
+                },
+            },
+            "provenance": [{"item": "operations.identify", "source": "test"},
+                           {"item": "operations.write_short", "source": "test"}],
+        }
+        self.assertTrue(validate_model(model)["ok"], validate_model(model))
+        sent = []
+        class Handle:
+            def exchange(self, tx, rx, timeout_ms):
+                sent.append(tx)
+                return id_reply
+            def close(self):
+                return None
+        result = execute(model, "write_short", {"payload": "aa"}, binding={}, allow_effects=("write",),
+                         transport_factory=lambda channel, binding: Handle())
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(sent, [bytes.fromhex("aa01")], "write step must never reach transport")
+        self.assertIs(result["transcript"][-1].get("dispatched"), False, result["transcript"][-1])
+        reading = read("interface_execute", result)
+        self.assertFalse(reading.executions[0].sent, reading)
+        self.assertFalse(reading.leaves_uncertain, reading)
+        # Same through PackageSession / execute_package: requested_command_dispatched must be False.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model_dir = root / "model"; model_dir.mkdir()
+            (model_dir / "model.json").write_text(json.dumps(model), encoding="utf-8")
+            replay = {"schema": "interface-replay/1", "transactions": [
+                {"tx_hex": "aa01", "rx_hex": id_reply.hex(), "rx": frame, "timeout_ms": 1000}]}
+            probe_out = root / "probe.json"
+            sample = run_samples(model, "identify", replay=replay)
+            self.assertTrue(sample["ok"], sample)
+            from interface_runtime.package import digest
+            probe_out.write_text(json.dumps({"schema": "interface-probe/1",
+                                             "model_sha256": digest(model_dir / "model.json"),
+                                             "operation": "identify", "parameters": {}, "allow_effects": [],
+                                             **sample}), encoding="utf-8")
+            emitted = iface_tool.emit_package(str(root / "run"), str(model_dir), str(probe_out))
+            self.assertTrue(emitted["ok"], emitted)
+            sent.clear()
+            with patch("interface_runtime.transports.open_transport", lambda channel, binding: Handle()):
+                pkg_res = execute_package(emitted["package_dir"], "write_short", {"payload": "aa"},
+                                          binding={}, allow_effects=("write",))
+        self.assertFalse(pkg_res["ok"], pkg_res)
+        self.assertEqual(sent, [bytes.fromhex("aa01")])
+        self.assertIs(pkg_res["requested_command_dispatched"], False, pkg_res)
+        pkg_reading = read("toy_usb_write_short", pkg_res, generated=True)
+        self.assertFalse(pkg_reading.leaves_uncertain, pkg_reading)
+
+    def test_01_B4_resetting_uart_close_error_records_close_error_and_keeps_transactions(self):
+        from unittest.mock import patch
+        from interface_runtime.evidence import run_samples
+        model = one_format_model()
+        model["channel"] = {"type": "uart", "baudrate": 115200, "resets_on_open": True}
+        lines = model["operations"]["identify"]["steps"][0]["rx"]
+        class ClosingFailHandle:
+            def exchange(self, tx, rx, timeout_ms):
+                return b"FAMILY:TOY-ALL\nREADY\n"
+            def close(self):
+                raise OSError("serial port vanished on close")
+        with patch("interface_runtime.evidence.open_transport", lambda channel, binding: ClosingFailHandle()):
+            outcome = run_samples(model, "identify", n=2, binding={"port": "/dev/fake"}, allow_effects=("reset",))
+        self.assertFalse(outcome["ok"], outcome)
+        self.assertEqual(len(outcome["transactions"]), 2, outcome["transactions"])
+        self.assertTrue(outcome["results"][0]["ok"], outcome["results"][0])
+        self.assertFalse(outcome["results"][-1]["ok"], outcome["results"][-1])
+        self.assertEqual(outcome["results"][-1]["error"]["code"], "close_error", outcome["results"][-1])
+        self.assertEqual(outcome["results"][-1]["error"]["fault"], "host", outcome["results"][-1])
+
+    def test_check_probe_accepts_legacy_transcripts_without_dispatched_and_keeps_current_probes_exact(self):
+        import copy
+        from interface_runtime.evidence import check_probe, run_samples
+        model = one_format_model()
+        # Include a delay step so delay vs non-delay legacy handling is exercised too.
+        model["operations"]["identify"]["steps"].append({"op": "delay", "ms": 1})
+        lines = model["operations"]["identify"]["steps"][0]["rx"]
+        frame = model["operations"]["status"]["steps"][0]["rx"]
+        request = b"\x02\x31"
+        body = b"\x02\x91\x8b\x00"
+        status_tx = b"\x35\x7a" + request + binascii.crc_hqx(request, 0xffff).to_bytes(2, "big")
+        status_rx = b"\x7a\x35" + body + binascii.crc_hqx(body, 0xffff).to_bytes(2, "big")
+        replay = {"schema": "interface-replay/1", "transactions": [
+            {"tx_hex": b"ID\n".hex(), "rx_hex": b"FAMILY:TOY-ALL\nREADY\n".hex(), "rx": lines, "timeout_ms": 1000},
+            {"tx_hex": status_tx.hex(), "rx_hex": status_rx.hex(), "rx": frame, "timeout_ms": 1000}]}
+        sample = run_samples(model, "status", replay=replay)
+        self.assertTrue(sample["ok"], sample)
+        sha = "0" * 64
+        current = {"schema": "interface-probe/1", "model_sha256": sha, "operation": "status",
+                   "parameters": {}, "allow_effects": [], **sample}
+        self.assertTrue(check_probe(model, current, sha)["ok"])
+
+        # Legacy probe recorded before `dispatched` existed: no transcript step carries `dispatched`.
+        legacy = copy.deepcopy(current)
+        for res in legacy["results"]:
+            for step in res["transcript"]:
+                step.pop("dispatched", None)
+        checked_legacy = check_probe(model, legacy, sha)
+        self.assertTrue(checked_legacy["ok"], checked_legacy)
+
+        # Current probes keep exact comparison: missing on only one step, false dispatched, or dispatched on delay fail.
+        partial = copy.deepcopy(current)
+        partial["results"][0]["transcript"][0].pop("dispatched")
+        self.assertFalse(check_probe(model, partial, sha)["ok"])
+
+        false_dispatched = copy.deepcopy(current)
+        false_dispatched["results"][0]["transcript"][0]["dispatched"] = False
+        self.assertFalse(check_probe(model, false_dispatched, sha)["ok"])
+
+        delay_dispatched = copy.deepcopy(current)
+        delay_step = next(s for s in delay_dispatched["results"][0]["transcript"] if s["op"] == "delay")
+        delay_step["dispatched"] = True
+        self.assertFalse(check_probe(model, delay_dispatched, sha)["ok"])
+
+    def test_resetting_uart_closes_session_when_interrupted_and_preserves_interrupt(self):
+        from unittest.mock import patch
+        from interface_runtime.evidence import run_samples
+        model = one_format_model()
+        model["channel"] = {"type": "uart", "baudrate": 115200, "resets_on_open": True}
+        for close_raises in (False, True):
+            with self.subTest(close_raises=close_raises):
+                closed = []
+                class InterruptHandle:
+                    def exchange(self, tx, rx, timeout_ms):
+                        raise KeyboardInterrupt("user cancelled")
+                    def close(self):
+                        closed.append(True)
+                        if close_raises:
+                            raise OSError("close also failed")
+                with patch("interface_runtime.evidence.open_transport", lambda channel, binding: InterruptHandle()):
+                    with self.assertRaises(KeyboardInterrupt):
+                        run_samples(model, "identify", n=1, binding={"port": "/dev/fake"}, allow_effects=("reset",))
+                self.assertEqual(closed, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

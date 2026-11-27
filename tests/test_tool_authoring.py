@@ -77,6 +77,17 @@ class ToolAuthoringTests(unittest.TestCase):
         self.assertEqual(result['invalid_outputs'], {'value': 'not a number'})
         self.assertEqual(result['calls'], [])
 
+    def test_02_B9_application_tool_output_without_unit_key_returns_structured_result(self):
+        application = Application('unitless-output', drivers={})
+        spec = ToolSpec(name='count', description='Return a unitless count.', parameters={},
+                        outputs={'total': {'schema': {'type': 'integer'}, 'description': 'Item count.',
+                                           'uncertainties': []}}, dependencies={})
+        application.register(spec, lambda context, arguments: {'total': 42})
+        result = application.invoke('count', {})
+        self.assertTrue(result['ok'], result)
+        self.assertEqual(result['outputs'], {'total': 42})
+        self.assertEqual(result['units'], {'total': None})
+
 
 class ManagedDriverTests(unittest.TestCase):
     """The SDK on a package of format 3 (docs/features/package-format/03-package.md, Behaviour 03-B14)."""

@@ -171,7 +171,7 @@ print(json.dumps({'_exit': 0}))
         from generative_driver._toolchain import core
         good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
         cases = {"fuse failure": (good, (1, "")), "locked": (good, (0, "SECURE_BOOT_EN = True\n")),
-                 "no partition table": (b"\xff" * 0x20000, (0, "SECURE_BOOT_EN = False\n"))}
+                 "no partition table": (b"\xff" * 0x20000, (0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"))}
         for name, (image, fuses) in cases.items():
             for grant in (True, False):
                 with self.subTest(name, grant=grant):
@@ -309,6 +309,79 @@ print(json.dumps({'_exit': 0}))
             self.assertTrue(result["artifacts"])
             self.assertTrue(any("default-reset" in c for c in commands))
 
+    def test_01_B6_esp_flash_selects_protection_fuses_by_chip_and_refuses_unknown_protection(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+
+        def run_case(chip_line, fuse_text):
+            commands = []
+            inner = self._esp_fake_sh(commands, image, fuses=(0, fuse_text))
+            def fake(cmd, **kw):
+                if "chip-id" in cmd:
+                    commands.append(cmd)
+                    return 0, chip_line + "\nMAC: 80:45:6b:2d:2f:6c\n", ""
+                return inner(cmd, **kw)
+            with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", fake):
+                res = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            return res, commands
+
+        # Classic ESP32: locked by FLASH_CRYPT_CNT (odd bits), ABS_DONE_0, or ABS_DONE_1 -> exit 0, no dump.
+        for label, fuses in (
+                ("esp32 flash crypt odd", "FLASH_CRYPT_CNT (BLOCK0) = 1 R/W (0b0000001)\nABS_DONE_0 = False\nABS_DONE_1 = False\n"),
+                ("esp32 abs_done_0", "FLASH_CRYPT_CNT = 0\nABS_DONE_0 = True\nABS_DONE_1 = False\n"),
+                ("esp32 abs_done_1", "FLASH_CRYPT_CNT = 0\nABS_DONE_0 = False\nABS_DONE_1 = True\n")):
+            with self.subTest(label):
+                res, cmds = run_case("Chip is ESP32-D0WD-V3 (revision v3.0)", fuses)
+                self.assertFalse(res["available"], res)
+                self.assertEqual(res["_exit"], 0, res)
+                self.assertFalse(any("read-flash" in c for c in cmds), cmds)
+
+        # Classic ESP32: unlocked (even FLASH_CRYPT_CNT and both ABS_DONE false) -> dumps.
+        for label, fuses in (
+                ("esp32 unlocked zero", "FLASH_CRYPT_CNT (BLOCK0) = 0 R/W (0b0000000)\nABS_DONE_0 (BLOCK0) = False R/W (0b0)\nABS_DONE_1 (BLOCK0) = False R/W (0b0)\n"),
+                ("esp32 unlocked even bits", "FLASH_CRYPT_CNT = 3\nABS_DONE_0 = False\nABS_DONE_1 = False\n")):
+            with self.subTest(label):
+                res, cmds = run_case("Chip is ESP32-D0WD-V3 (revision v3.0)", fuses)
+                self.assertTrue(res["available"], res)
+                self.assertTrue(any("read-flash" in c for c in cmds), cmds)
+
+        # Documented ESP32-S2 package variants and esptool 5 "Chip type:" output -> modern unlocked dumps.
+        modern_unlocked = "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"
+        for label, chip_line in (
+                ("esptool 4 ESP32-S2FNR2", "Chip is ESP32-S2FNR2 (revision v0.0)"),
+                ("esptool 4 ESP32-S2FH2", "Chip is ESP32-S2FH2 (revision v1.0)"),
+                ("esptool 4 ESP32-S2FH4", "Chip is ESP32-S2FH4 (revision v1.0)"),
+                ("esptool 4 ESP32-S2FN4R2", "Chip is ESP32-S2FN4R2 (revision v1.0)"),
+                ("esptool 4 ESP32-S2R2", "Chip is ESP32-S2R2 (revision v0.0)"),
+                ("esptool 5 Chip type S3", "Detecting chip type... ESP32-S3\nChip type:      ESP32-S3 (QFN56) (revision v0.2)"),
+                ("esptool 5 Chip type S2FH2", "Chip type: ESP32-S2FH2 (revision v1.0)")):
+            with self.subTest(label):
+                res, cmds = run_case(chip_line, modern_unlocked)
+                self.assertTrue(res["available"], res)
+                self.assertNotEqual(res["chip"], "unknown", res)
+                self.assertTrue(any("read-flash" in c for c in cmds), cmds)
+
+        # Missing expected fields or unrecognized chip -> protection unknown, exit 1, no dump.
+        for label, chip_line, fuses in (
+                ("esp32 missing classic fields", "Chip is ESP32-D0WD-V3 (revision v3.0)",
+                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"),
+                ("esp32s3 missing crypt cnt", "Chip is ESP32-S3 (QFN56)", "SECURE_BOOT_EN = False\n"),
+                ("esp32s3 unreadable field", "Chip is ESP32-S3 (QFN56)",
+                 "SPI_BOOT_CRYPT_CNT = ???\nSECURE_BOOT_EN = False\n"),
+                ("unrecognized chip", "Chip is ESP32-X99 (rev 1)",
+                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"),
+                ("esptool 5 unrecognized chip", "Chip type: ESP32-X99 (rev 1)", modern_unlocked),
+                ("unrecognized S2 suffix", "Chip is ESP32-S2BOGUS (rev 1)", modern_unlocked),
+                ("missing chip line", "Detecting chip type... failed", modern_unlocked)):
+            with self.subTest(label):
+                res, cmds = run_case(chip_line, fuses)
+                self.assertFalse(res["available"], res)
+                self.assertEqual(res["_exit"], 1, res)
+                self.assertIn("unknown", res["reason"].lower(), res)
+                self.assertFalse(any("read-flash" in c for c in cmds), cmds)
+
     def test_01_B6_classification_names_no_front_end_for_an_elf_image_a_datasheet_or_a_bus_scan(self):
         from unittest.mock import patch
         from generative_driver.toolkit import call_tool
@@ -368,6 +441,79 @@ print(json.dumps({'_exit': 0}))
         # A raw image names the front end a run gives it.
         self.assertEqual(raw["front_end"], "interpret-interface")
         self.assertEqual(set(raw), fields | {"interpret_input", "front_end"}, raw)
+
+    def test_02_B1_acquire_datasheet_verifies_before_publishing_and_keeps_each_import_in_its_own_folder(self):
+        import hashlib
+        from input_path_fixtures import have_pypdf, network, pdf_bytes
+        if not have_pypdf():
+            self.skipTest("pypdf is not installed")
+        from generative_driver.toolkit import call_tool
+        first_pdf = pdf_bytes(["First datasheet page 1"])
+        second_pdf = pdf_bytes(["Second datasheet page 1", "Second datasheet page 2"])
+        bad_pdf = pdf_bytes(["Tampered datasheet"])
+        url1, url2, url_bad = "https://vendor.example/a.pdf", "https://vendor.example/b.pdf", "https://vendor.example/bad.pdf"
+        with tempfile.TemporaryDirectory() as temp, network({url1: first_pdf, url2: second_pdf, url_bad: bad_pdf}):
+            run_dir = Path(temp).resolve() / "run"
+            # A failed hash check publishes nothing.
+            failed = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url_bad,
+                                                     "expected_sha256": "0" * 64})
+            self.assertEqual((failed["available"], failed["_exit"]), (False, 1), failed)
+            acquire_dir = run_dir / "acquire"
+            self.assertEqual(list(acquire_dir.iterdir()) if acquire_dir.exists() else [], [])
+            # First import succeeds into its own folder.
+            one = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url1,
+                                                  "expected_sha256": hashlib.sha256(first_pdf).hexdigest()})
+            self.assertTrue(one["available"], one)
+            pdf1, pages1 = Path(one["artifact"]), Path(one["pages_dir"])
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            # Another failed hash check leaves the first import untouched and adds no files.
+            failed2 = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url_bad,
+                                                      "expected_sha256": "f" * 64})
+            self.assertEqual((failed2["available"], failed2["_exit"]), (False, 1), failed2)
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            self.assertEqual(len(list(acquire_dir.iterdir())), 1, list(acquire_dir.iterdir()))
+            # Second import writes to a new folder without modifying the first.
+            two = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url2,
+                                                  "expected_sha256": hashlib.sha256(second_pdf).hexdigest()})
+            self.assertTrue(two["available"], two)
+            pdf2, pages2 = Path(two["artifact"]), Path(two["pages_dir"])
+            self.assertNotEqual(pdf1, pdf2)
+            self.assertNotEqual(pages1, pages2)
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            self.assertEqual(pdf2.read_bytes(), second_pdf)
+            self.assertIn("First datasheet", (pages1 / "001.txt").read_text(encoding="utf-8"))
+            self.assertIn("Second datasheet", (pages2 / "001.txt").read_text(encoding="utf-8"))
+
+    def test_02_B1_repeated_bus_scan_and_register_sweep_keep_earlier_artifacts_unchanged(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+
+        class Bus:
+            def __init__(self, url, speed):
+                pass
+            def probe(self, address):
+                return address == 0x42
+            def reg_read(self, address, base, length):
+                return bytes([(base + i) & 0xFF for i in range(length)])
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp, patch("generative_driver._toolchain.runner.FtdiI2c", Bus), \
+                patch("time.sleep"):
+            run_dir = Path(temp).resolve() / "run"
+            first = call_tool("acquire_classify", {"run_dir": str(run_dir), "bus_url": "ftdi://ftdi:232h/1",
+                                                   "allow_register_sweep": True})
+            self.assertTrue(first["available"], first)
+            scan1, sweep1 = Path(first["inputs_for_interpret"]["scan"]), Path(first["inputs_for_interpret"]["sweep"])
+            scan1_bytes, sweep1_bytes = scan1.read_bytes(), sweep1.read_bytes()
+            second = call_tool("acquire_classify", {"run_dir": str(run_dir), "bus_url": "ftdi://ftdi:232h/1",
+                                                    "allow_register_sweep": True})
+            self.assertTrue(second["available"], second)
+            scan2, sweep2 = Path(second["inputs_for_interpret"]["scan"]), Path(second["inputs_for_interpret"]["sweep"])
+            self.assertNotEqual(scan1, scan2)
+            self.assertNotEqual(sweep1, sweep2)
+            self.assertEqual(scan1.read_bytes(), scan1_bytes)
+            self.assertEqual(sweep1.read_bytes(), sweep1_bytes)
 
     def test_bus_discovery_never_selects_a_default_adapter(self):
         from generative_driver.toolkit import call_tool

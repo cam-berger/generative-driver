@@ -755,7 +755,7 @@ class CheckTests(unittest.TestCase):
         written = entry(self.home, 'run=' + run['run_id'], 'stage=interpret', 'tool=model_validate')
         self.assertIn('reason=timeout', written)
 
-    def test_04_B9_an_emit_check_that_was_stopped_rejects_the_package_and_is_no_host_stop(self):
+    def test_04_B9_an_emit_check_that_timed_out_stops_for_the_host_and_does_not_reject(self):
         call = serve(self, self.home)
         told = self.root / 'package-to-report'
         run = call('start', {'goal': 'A run whose emitted package cannot be checked in time', 'budget_seconds': 300,
@@ -770,19 +770,10 @@ class CheckTests(unittest.TestCase):
                               'arguments': {'package_dir': str(package)}})
         self.assertNotIn('abandoned', given)
         # From here a tool has no time at all: the worker reports the package and the configurator's own emit_check
-        # of it is stopped.
+        # of it times out -> host stop at emit, resumable, never rejecting the package.
         self.shorten(0)
         (self.root / 'told.part').write_text(str(package), encoding='utf-8')
         os.replace(self.root / 'told.part', told)
-        events = self.follow(call, run, lambda events: any(
-            event['kind'] == 'stage.accepted' and event['data']['stage'] == 'emit' for event in events))
-        checks, outcome = self.checks(events, 'emit')
-        replayed = checks['package_integrity_and_replay']
-        self.assertFalse(replayed['passed'])
-        self.assertEqual(replayed['rejected'], [{'package': 'package', 'reason': 'emit_check did not finish: the '
-                                                 'configurator stopped it when its limit of 0 seconds passed'}])
-        self.assertEqual(outcome, 'advance')
-        # No host stop: the run goes on without a package and ends with its verdict.
         until = time.monotonic() + 60
         while True:
             status = call('status', run)
@@ -790,7 +781,11 @@ class CheckTests(unittest.TestCase):
                 break
             self.assertLess(time.monotonic(), until, status)
             time.sleep(.05)
-        self.assertEqual((status['status'], status['outcome_category']), ('completed', 'completed'), status)
+        self.assertEqual((status['status'], status['outcome_category'], status['stage']),
+                         ('failed', 'host', 'emit'), status)
+        self.assertIn('emit_check could not run on this host', status['reason'])
+        events = call('events', {**run, 'after': 0})['events']
+        self.assertFalse(any(e['kind'] == 'stage.accepted' and e['data']['stage'] == 'emit' for e in events))
 
 
 class InlineTests(ChildProcessCase):
@@ -819,6 +814,33 @@ class InlineTests(ChildProcessCase):
         with patch('generative_driver.toolkit.call_tool', self.replacement):
             reply = controller.call('tool', {**worker, 'name': 'model_validate', 'arguments': {}})
         self.assertEqual((reply['ran'], reply['in_process']), ('model_validate', os.getpid()))
+
+
+@unittest.skipIf(os.name == 'nt', 'POSIX process-group cleanup after tool crash')
+class CrashCleanupTests(unittest.TestCase):
+    def test_03_B3_tool_process_kills_orphaned_children_in_process_group_after_crash(self):
+        from generative_driver import tool_process
+        from interpret_task_fixtures import gone
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pid_file = root / 'child.pid'
+            ready = root / 'child.ready'
+            # Inject a fake tool module on PYTHONPATH? Even simpler: override _BOOT for one call to spawn a child and crash!
+            boot = (
+                'import os, pathlib, subprocess, sys, time; '
+                f'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]); '
+                f'pathlib.Path({str(pid_file)!r}).write_text(str(p.pid), encoding="utf-8"); '
+                f'pathlib.Path({str(ready)!r}).write_text("ok", encoding="utf-8"); '
+                'os._exit(1)'
+            )
+            with patch.object(tool_process, '_BOOT', boot):
+                with self.assertRaises(tool_process.Unfinished):
+                    tool_process.run('acquire_flash', {}, directory=root / 'calls',
+                                     stop=lambda: None, context={})
+            self.assertTrue(ready.is_file())
+            child_pid = int(pid_file.read_text(encoding='utf-8'))
+            self.assertTrue(gone(child_pid, seconds=5),
+                            f'orphaned grandchild {child_pid} survived tool crash')
 
 
 if __name__ == '__main__':

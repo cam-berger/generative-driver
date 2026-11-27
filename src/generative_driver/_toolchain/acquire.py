@@ -17,6 +17,18 @@ def _mkdir(run, *parts):
     return p
 
 
+def _next_path(folder, stem, suffix="", *, always_number=False):
+    """Next unused path in `folder` so repeated calls never overwrite an earlier recorded artifact."""
+    if not always_number:
+        first = os.path.join(folder, f"{stem}{suffix}")
+        if not os.path.exists(first):
+            return first
+    n = 1 if always_number else 2
+    while os.path.exists(os.path.join(folder, f"{stem}-{n}{suffix}")):
+        n += 1
+    return os.path.join(folder, f"{stem}-{n}{suffix}")
+
+
 @core.tool("acquire_firmware_artifact")
 def acquire_firmware_artifact(run_dir, source_path, origin, expected_sha256,
                               source_url=None, reported_version=None, artifact_version=None, **_):
@@ -495,28 +507,40 @@ def acquire_datasheet(run_dir, part_hint=None, url=None, expected_sha256=None, *
                 "reason": "part not in the registry and no url given", "_exit": 0}
     entry = entry or {"url": url, "sha256": expected_sha256, "vendor": None, "revision": None, "title": None}
     out = _mkdir(run, "acquire")
-    pdf = os.path.join(out, "datasheet.pdf")
-    src, how = None, None
-    cache = entry.get("cache") and os.path.join(core.BENCH, entry["cache"])
-    if cache and os.path.exists(cache) and (not entry.get("sha256") or core.sha256(cache) == entry["sha256"]):
-        shutil.copyfile(cache, pdf); src, how = entry["cache"], "cache, hash verified"
-    else:
-        with urllib.request.urlopen(entry["url"], timeout=120) as r, open(pdf, "wb") as fh:
-            fh.write(r.read())
-        src, how = entry["url"], "fetched"
-    got = core.sha256(pdf)
-    if entry.get("sha256") and got != entry["sha256"]:
-        return {"available": False, "reason": f"sha256 mismatch: {got}", "_exit": 1}
-    import pypdf
-    pages = _mkdir(out, "pages")
-    reader = pypdf.PdfReader(pdf)
-    index = []
-    for i, pg in enumerate(reader.pages, 1):
-        txt = pg.extract_text() or ""
-        open(os.path.join(pages, f"{i:03d}.txt"), "w", encoding="utf-8").write(txt)
-        first = next((l.strip() for l in txt.splitlines() if l.strip()), "")
-        index.append({"page": i, "chars": len(txt), "first_line": first[:90]})
-    json.dump(index, open(os.path.join(pages, "index.json"), "w", encoding="utf-8"), indent=1)
+    staging = tempfile.mkdtemp(prefix=".datasheet-", dir=out)
+    try:
+        pdf = os.path.join(staging, "datasheet.pdf")
+        src, how = None, None
+        cache = entry.get("cache") and os.path.join(core.BENCH, entry["cache"])
+        if cache and os.path.exists(cache) and (not entry.get("sha256") or core.sha256(cache) == entry["sha256"]):
+            shutil.copyfile(cache, pdf); src, how = entry["cache"], "cache, hash verified"
+        else:
+            with urllib.request.urlopen(entry["url"], timeout=120) as r, open(pdf, "wb") as fh:
+                fh.write(r.read())
+            src, how = entry["url"], "fetched"
+        got = core.sha256(pdf)
+        if entry.get("sha256") and got != entry["sha256"]:
+            shutil.rmtree(staging, ignore_errors=True)
+            return {"available": False, "reason": f"sha256 mismatch: {got}", "_exit": 1}
+        import pypdf
+        pages = _mkdir(staging, "pages")
+        reader = pypdf.PdfReader(pdf)
+        index = []
+        for i, pg in enumerate(reader.pages, 1):
+            txt = pg.extract_text() or ""
+            with open(os.path.join(pages, f"{i:03d}.txt"), "w", encoding="utf-8") as fh:
+                fh.write(txt)
+            first = next((l.strip() for l in txt.splitlines() if l.strip()), "")
+            index.append({"page": i, "chars": len(txt), "first_line": first[:90]})
+        with open(os.path.join(pages, "index.json"), "w", encoding="utf-8") as fh:
+            json.dump(index, fh, indent=1)
+        dest = _next_path(out, "datasheet", always_number=True)
+        os.rename(staging, dest)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    pdf = os.path.join(dest, "datasheet.pdf")
+    pages = os.path.join(dest, "pages")
     return {"available": True, "rung": "datasheet", "artifact": core.label(pdf),
             "pages_dir": core.label(pages), "page_count": len(index),
             "vendor": entry.get("vendor"), "revision": entry.get("revision"), "source": src, "how": how,
@@ -974,7 +998,7 @@ def acquire_bus_scan(run_dir, bus_url=None, speed_hz=100000, **_):
         acks = [f"0x{a:02x}" for a in range(0x08, 0x78) if be.probe(a)]
     finally:
         be.close()
-    p = os.path.join(_mkdir(run, "acquire"), "scan.json")
+    p = _next_path(_mkdir(run, "acquire"), "scan", ".json")
     with open(p, "w", encoding="utf-8") as file:
         json.dump({"acks": acks, "bus_url": bus_url}, file, indent=1)
     return {"acks": acks, "scan": core.label(p), "_files": {core.label(p): core.sha256(p)}}
@@ -1011,10 +1035,11 @@ def acquire_register_sweep(run_dir, address, bus_url=None, speed_hz=100000,
     changing = [r for r in range(256) if len({c[r] for c in cols}) > 1]
     ident = [{"reg": f"0x{r:02x}", "value": f"0x{cols[0][r]:02x}"} for r in constant
              if cols[0][r] not in (0x00, 0xFF)][:8]
-    p = os.path.join(_mkdir(run, "acquire"), "sweep.json")
-    json.dump({"address": f"0x{addr:02x}", "snapshots": snaps,
-               "constant": [f"0x{r:02x}" for r in constant], "changing": [f"0x{r:02x}" for r in changing],
-               "identity_candidates": ident}, open(p, "w", encoding="utf-8"), indent=1)
+    p = _next_path(_mkdir(run, "acquire"), "sweep", ".json")
+    with open(p, "w", encoding="utf-8") as file:
+        json.dump({"address": f"0x{addr:02x}", "snapshots": snaps,
+                   "constant": [f"0x{r:02x}" for r in constant], "changing": [f"0x{r:02x}" for r in changing],
+                   "identity_candidates": ident}, file, indent=1)
     return {"sweep": core.label(p), "constant_count": len(constant),
             "changing_count": len(changing), "identity_candidates": ident,
             "_files": {core.label(p): core.sha256(p)}}

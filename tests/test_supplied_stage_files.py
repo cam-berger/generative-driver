@@ -117,6 +117,36 @@ class RepairPreparationTests(unittest.TestCase):
             self.assertIn('temperature', (b/'DEFECTS.json').read_text())
             self.assertIn('DEFECTS.json', json.loads((b/'INPUT_HASHES.json').read_text()))
 
+    def test_02_B10_write_json_replaces_atomically_and_preserves_existing_file_on_write_failure(self):
+        import os
+        from unittest.mock import patch
+        from generative_driver.supplied._files import write_json
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'history.json'
+            write_json(target, {'version': 1})
+            original = target.read_text(encoding='utf-8')
+            # Failed os.replace preserves the existing file and removes temporary files.
+            with patch.object(os, 'replace', side_effect=OSError('simulated crash')):
+                with self.assertRaises(OSError):
+                    write_json(target, {'version': 2})
+            self.assertEqual(target.read_text(encoding='utf-8'), original)
+            self.assertEqual([p.name for p in target.parent.iterdir()], ['history.json'])
+            # Non-serializable JSON preserves the existing file and leaves no temp file.
+            with self.assertRaises(ValueError):
+                write_json(target, {'bad': float('nan')})
+            self.assertEqual(target.read_text(encoding='utf-8'), original)
+            self.assertEqual([p.name for p in target.parent.iterdir()], ['history.json'])
+            # Normal replace uses os.replace and writes the new content cleanly.
+            replaced = []
+            real_replace = os.replace
+            def track(src, dst):
+                replaced.append((Path(src).parent, Path(dst)))
+                return real_replace(src, dst)
+            with patch.object(os, 'replace', side_effect=track):
+                write_json(target, {'version': 3})
+            self.assertEqual(json.loads(target.read_text(encoding='utf-8')), {'version': 3})
+            self.assertEqual(replaced, [(target.parent, target)])
+
 class QualificationNoteTests(unittest.TestCase):
     def test_a_valid_model_without_predicted_reply_qualification_is_handed_on_with_a_note(self):
         # Catches a qualification gate refusing the candidate: its own qualification is a note, the model behind

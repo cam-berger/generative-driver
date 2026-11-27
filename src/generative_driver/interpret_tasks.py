@@ -133,7 +133,7 @@ class _Attempt:
         self.results = []  # (task, runtime result) of each task run so far
         self.task_notes = {}  # each completed task's NOTES.md, by task
         self.ignored = set()  # (command, path) of each citation of no forwarded document page, noted once
-        self.kept = {'inventory': None, 'fragments': {}}  # what this attempt's records hold, as the notes name it
+        self.kept = {'inventory': None, 'fragments': {}, 'assembled': {}}  # what this attempt's records hold, as the notes name it
         tasks = json.loads((self.source / 'TASKS.json').read_text(encoding='utf-8'))
         tasks.pop('kit_analysis', None)  # It tells the single worker of the export, which no task gets.
         self.tasks_json = json.dumps(tasks, indent=1)
@@ -183,7 +183,8 @@ class _Attempt:
                 if fragment is None:
                     raise _Fallback('The identity command ' + command['name'] + "'s task wrote no usable fragment ("
                                     + why + ')')
-                identity = {'operation': fragment['operation'], 'model': _operation(fragment)}
+                identity = {'operation': fragment['operation'], 'model': _operation(fragment),
+                            'replies': fragment['replies']}
             elif fragment is None:
                 self.notes.append('The handler task for ' + command['name'] + ' wrote no usable fragment (' + why
                                   + '); its command is left out of the assembly.')
@@ -222,7 +223,7 @@ class _Attempt:
         identity = fragments[inventory['identity']]
         frame = {'schema': _schema(), 'device': inventory['device'], 'channel': inventory['channel'],
                  'identity': {'operation': identity['operation']}}
-        kept = []
+        kept, sources = [], {}
         for command, fragment in fragments.items():
             alone = [identity] if fragment is identity else [identity, fragment]
             defects = _validation(_model(frame, alone))['defects']
@@ -231,11 +232,13 @@ class _Attempt:
                 if fragment is identity:
                     raise _Fallback('The identity command ' + command + "'s fragment" + why)
                 self.notes.append('The fragment of ' + command + why + '; it is left out of the assembly.')
-            elif any(fragment['operation'] == other['operation'] for other in kept):
+            elif fragment['operation'] in sources:
                 self.notes.append('The fragment of ' + command + ' names the operation ' + fragment['operation']
                                   + ', which is already taken; it is left out of the assembly.')
             else:
                 kept.append(fragment)
+                sources[fragment['operation']] = command
+        self.kept['assembled'] = sources
         model = _model(frame, kept)
         replies = {'schema': 'interface-replies/1',
                    'operations': {fragment['operation']: fragment['replies'] for fragment in kept}}
@@ -249,23 +252,46 @@ class _Attempt:
         record = self.load(previous['record'])
         inventory = self.load(record['inventory'])
         written = {command: self.load(entry) for command, entry in record['fragments'].items()}
-        self.kept = {'inventory': record['inventory'], 'fragments': dict(record['fragments'])}
+        assembled_sources = dict(record['assembled']) if isinstance(record.get('assembled'), dict) else None
+        self.kept = {'inventory': record['inventory'], 'fragments': dict(record['fragments']),
+                     'assembled': dict(assembled_sources) if assembled_sources is not None else {}}
         final = Path(previous['model'])
-        files = {name: json.loads((final / name).read_text(encoding='utf-8'))
-                 for name in ('model.json', 'replies.json') if (final / name).is_file()}
+        files = {'model.json': json.loads((final / 'model.json').read_text(encoding='utf-8'))}
+        if (final / 'replies.json').is_file():
+            if _replies_problem(final / 'replies.json') is None:
+                files['replies.json'] = json.loads((final / 'replies.json').read_text(encoding='utf-8'))
+            else:
+                self.notes.append('The previous attempt\'s replies.json could not be read; it is treated as absent.')
         model, differences = files['model.json'], self.plan.get('differences') or []
         named = _named_operations(differences)
         frame = {'schema': _schema(), 'device': model.get('device'), 'channel': model.get('channel'),
                  'framing': inventory.get('framing')}
         identity = (model.get('identity') or {}).get('operation')
         operations = model.get('operations') or {}
-        rerun = [command for command in _identity_first(inventory)
-                 if command['name'] in written and written[command['name']]['operation'] in named]
+        identity_replies = ((files.get('replies.json') or {}).get('operations') or {}).get(identity)
+        if identity_replies is None:
+            identity_command = (assembled_sources or {}).get(identity) or inventory.get('identity')
+            if identity_command in written:
+                identity_replies = written[identity_command].get('replies')
+        if assembled_sources is not None:
+            suppliers = {assembled_sources[op] for op in named if op in assembled_sources}
+            rerun = [command for command in _identity_first(inventory)
+                     if command['name'] in suppliers and command['name'] in written]
+        else:
+            seen_ops, rerun = set(), []
+            for command in _identity_first(inventory):
+                if command['name'] in written:
+                    op = written[command['name']]['operation']
+                    if op in named and op not in seen_ops:
+                        seen_ops.add(op)
+                        rerun.append(command)
         replaced = {}
         for command in rerun:
             name = written[command['name']]['operation']
-            fragment, why = self.handler(command, frame, None if name == identity else {
-                'operation': identity, 'model': operations.get(identity)}, repair={
+            identity_input = None if name == identity else {
+                'operation': identity, 'model': operations.get(identity),
+                **({'replies': identity_replies} if identity_replies is not None else {})}
+            fragment, why = self.handler(command, frame, identity_input, repair={
                 'PREVIOUS_FRAGMENT.json': written[command['name']],
                 'PREVIOUS_OPERATION.json': {'operation': name, 'model': operations.get(name)},
                 'DIFFERENCES.json': named[name]})
@@ -285,6 +311,7 @@ class _Attempt:
             self.keep_fragment(command['name'], fragment)
             if name == identity:
                 operations = {**operations, name: _operation(fragment)}
+                identity_replies = fragment['replies']
         self.notes.append('This repair re-ran the handler tasks of ' + (', '.join(c['name'] for c in rerun) or 'no '
                           'command') + '; every other operation and the channel come from the previous final model.')
         assembled = _replaced(files, replaced)
@@ -310,6 +337,8 @@ class _Attempt:
             why = _defect(defects[0]) if defects else None
         except (OSError, ValueError) as error:
             why = 'model.json cannot be read: ' + type(error).__name__
+        if why is None and (workspace / 'replies.json').is_file():
+            why = _replies_problem(workspace / 'replies.json')
         if why is not None:
             self.notes.append('The cross-check left no usable result (' + why + '); the assembled files are handed '
                               'off as the configurator assembled them.')
@@ -353,7 +382,7 @@ class _Attempt:
         """Keep the attempt's record.json, which the next repair starts from, and return where with its hash."""
         return self.keep('record.json', {'schema': RECORD_SCHEMA, 'revision': self.plan['revision'],
                                          'attempt': self.plan['attempt'], 'inventory': self.kept['inventory'],
-                                         'fragments': self.kept['fragments'],
+                                         'fragments': self.kept['fragments'], 'assembled': self.kept['assembled'],
                                          'repair_of': (self.plan.get('previous') or {}).get('record'),
                                          'tasks': [{**task, 'status': result.get('status')}
                                                    for task, result in self.results]})
@@ -475,6 +504,8 @@ def _read_fragment(path):
     missing = [key for key, shape in shapes.items() if not isinstance(fragment.get(key), shape)]
     if missing or not fragment['operation']:
         return None, 'fragment.json lacks ' + ', '.join(missing or ['operation'])
+    if not isinstance(fragment['replies'].get('steps'), list):
+        return None, 'fragment.json replies lacks a steps list'
     return fragment, None
 
 
@@ -524,10 +555,26 @@ def _replaced(files, fragments):
     return files
 
 
+def _replies_problem(path):
+    """Why `path`'s replies.json cannot be used, or None when it is a JSON object mapping operations to step lists."""
+    try:
+        replies = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError) as error:
+        return 'replies.json cannot be read: ' + type(error).__name__
+    if not isinstance(replies, dict):
+        return 'replies.json is not a JSON object'
+    operations = replies.get('operations')
+    if not isinstance(operations, dict) or not all(
+            isinstance(entry, dict) and isinstance(entry.get('steps'), list) for entry in operations.values()):
+        return 'replies.json operations must map each operation to an object with a steps list'
+    return None
+
+
 def _replies_schema(replies):
     """`replies` under interface-replies/2 when any reply is whole-frame bytes, else /1."""
     binary = any(isinstance(reply, dict) for entry in (replies.get('operations') or {}).values()
-                 if isinstance(entry, dict) for reply in entry.get('steps') or ())
+                 if isinstance(entry, dict) and isinstance(entry.get('steps'), list)
+                 for reply in entry['steps'])
     return {**replies, 'schema': 'interface-replies/2' if binary else 'interface-replies/1'}
 
 

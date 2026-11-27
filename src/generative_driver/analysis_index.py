@@ -122,15 +122,18 @@ class Export:
             room = max(0, room - over)
 
     def _excerpt(self, addresses, purpose, bound, room):
-        parts, whole, short, left = [], [], None, []
+        parts, whole, short, left, missing = [], [], None, [], []
         for address in addresses:
             text = self._code(address)
+            if not text:
+                missing.append(address)
+                continue
             size = len(text.encode('utf-8'))
-            if text and short is None and not left and size + 1 <= room:
+            if short is None and not left and size + 1 <= room:
                 parts.append(text if text.endswith('\n') else text + '\n')
                 whole.append(address)
                 room -= size + 1
-            elif text and short is None and not left and room > 1:
+            elif short is None and not left and room > 1:
                 cut = text.encode('utf-8')[:room - 1].decode('utf-8', errors='ignore')
                 cut = cut[:cut.rfind('\n') + 1] if '\n' in cut else cut
                 parts.append(cut)
@@ -143,6 +146,8 @@ class Export:
             note.append('   Cut short: %s (its first %d of %d bytes).' % short)
         if left:
             note.append('   Left out: ' + _listed(left) + '.')
+        if missing:
+            note.append('   No decompiled code: ' + _listed(missing) + '.')
         return '\n'.join(note) + ' */\n\n' + '\n'.join(parts)
 
     def strings_table(self):

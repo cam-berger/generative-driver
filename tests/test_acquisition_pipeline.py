@@ -226,6 +226,42 @@ class AcquisitionPipelineTests(unittest.TestCase):
             for artifact in handoff['artifacts']:
                 self.assertEqual(artifact['sha256'], hashlib.sha256(Path(artifact['path']).read_bytes()).hexdigest())
 
+    def test_02_B1_repeated_datasheet_import_and_classify_sweep_never_stop_acquire_for_integrity(self):
+        from input_path_fixtures import have_pypdf, network, pdf_bytes
+        if not have_pypdf():
+            self.skipTest('pypdf is not installed')
+        pdf1, pdf2 = pdf_bytes(['Sheet one']), pdf_bytes(['Sheet two'])
+        url1, url2 = 'https://vendor.example/one.pdf', 'https://vendor.example/two.pdf'
+
+        class Bus:
+            def __init__(self, url, speed):
+                pass
+            def probe(self, address):
+                return address == 0x42
+            def reg_read(self, address, base, length):
+                return bytes(length)
+            def close(self):
+                pass
+
+        with patch('generative_driver._toolchain.runner.FtdiI2c', Bus), \
+                network({url1: pdf1, url2: pdf2}), acquisition({'url': 'ftdi://ftdi:232h/1'}) as active:
+            controller, run, assignment, release = active
+            call = lambda name, **arguments: controller.call(
+                'tool', {**run, 'assignment_id': assignment['id'], 'name': name, 'arguments': arguments})
+            r1 = call('acquire_datasheet', url=url1, expected_sha256=hashlib.sha256(pdf1).hexdigest())
+            bad = call('acquire_datasheet', url=url2, expected_sha256='0' * 64)
+            r2 = call('acquire_datasheet', url=url2, expected_sha256=hashlib.sha256(pdf2).hexdigest())
+            with patch('time.sleep'):
+                c1 = call('acquire_classify', allow_register_sweep=True)
+                c2 = call('acquire_classify', allow_register_sweep=True)
+            self.assertTrue(r1['available'] and r2['available'] and not bad['available'], (r1, bad, r2))
+            self.assertTrue(c1['available'] and c2['available'], (c1, c2))
+            release.touch()
+            handoff = eventually(lambda: next((h for h in controller.call('result', run)['accepted_handoffs']
+                                               if h['stage'] == 'acquire'), None))
+            self.assertNotEqual(controller.call('status', run)['outcome_category'], 'integrity')
+            self.assertGreaterEqual(len(handoff['artifacts']), 6, handoff)
+
 
 if __name__ == '__main__':
     unittest.main()

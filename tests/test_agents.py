@@ -177,6 +177,69 @@ print(json.dumps({"type":"turn.completed","usage":{"input_tokens":42,"cached_inp
             self.assertEqual(result['runtime'], 'codex')
             self.assertTrue(Path(result['transcript']).is_file())
 
+    def test_02_B7_non_object_json_or_null_item_stdout_does_not_crash_supervision_and_terminates_on_callback_error(self):
+        from generative_driver.agents import StageRequest, execute
+        from interpret_task_fixtures import gone
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            odd = root / 'odd_stdout.py'
+            odd.write_text('''import json, sys
+sys.stdin.read()
+for line in ('123', '[1, 2]', '"hello"', 'null',
+             json.dumps({'type': 'item.completed', 'item': None}),
+             json.dumps({'type': 'item.completed', 'item': 42}),
+             json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 99}})):
+    print(line, flush=True)
+report = {'status': 'completed', 'summary': 'ok', 'artifacts': [], 'checks': [], 'unresolved': []}
+print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': json.dumps(report)}}), flush=True)
+''', encoding='utf-8')
+            result = execute(StageRequest(stage='interpret', workspace=root / 'odd', prompt='odd', budget_seconds=10),
+                             {'runtime': 'codex', 'command': [sys.executable, str(odd)]})
+            self.assertEqual(result['status'], 'completed', result)
+            self.assertEqual(result['report']['summary'], 'ok')
+            # If supervision raises after Popen (e.g. in on_event), the worker process must be terminated in finally.
+            sleeper = root / 'sleeper.py'
+            pid_file = root / 'worker.pid'
+            sleeper.write_text('''import json, os, pathlib, sys, time
+sys.stdin.read()
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8')
+print(json.dumps({'type': 'ping'}), flush=True)
+time.sleep(30)
+''', encoding='utf-8')
+            def boom(event):
+                raise RuntimeError('supervision boom')
+            with self.assertRaisesRegex(RuntimeError, 'supervision boom'):
+                execute(StageRequest(stage='interpret', workspace=root / 'boom', prompt='boom',
+                                     budget_seconds=10, report_required=False),
+                        {'runtime': 'codex', 'command': [sys.executable, str(sleeper), str(pid_file)]},
+                        on_event=boom)
+            self.assertTrue(gone(int(pid_file.read_text(encoding='utf-8')), seconds=5),
+                            'worker process survived exception inside execute()')
+
+    def test_02_B8_unbounded_single_line_without_newlines_hits_output_limit_without_buffering_whole_line(self):
+        from unittest.mock import patch
+        from generative_driver import agents
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            flood = root / 'flood.py'
+            flood.write_text('''import sys, time
+sys.stdin.read()
+chunk = 'x' * 8192
+for _ in range(1024):
+    sys.stdout.write(chunk)
+    sys.stdout.flush()
+time.sleep(30)
+''', encoding='utf-8')
+            started = time.monotonic()
+            with patch.object(agents, 'OUTPUT_LIMIT_BYTES', 32 * 1024), \
+                    patch.object(agents, '_CHUNK_BYTES', 4096):
+                result = agents.execute(
+                    agents.StageRequest(stage='interpret', workspace=root / 'flood', prompt='flood',
+                                        budget_seconds=15, report_required=False),
+                    {'runtime': 'codex', 'command': [sys.executable, str(flood)]})
+            self.assertEqual((result['status'], result['cause']), ('failed', 'output_limit'), result)
+            self.assertLess(time.monotonic() - started, 5, 'single line without newline waited instead of hitting limit')
+
 
 if __name__ == '__main__':
     unittest.main()

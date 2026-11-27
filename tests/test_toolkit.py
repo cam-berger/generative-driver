@@ -423,6 +423,79 @@ print(json.dumps({'_exit': 0}))
         self.assertEqual(raw["front_end"], "interpret-interface")
         self.assertEqual(set(raw), fields | {"interpret_input", "front_end"}, raw)
 
+    def test_02_B1_acquire_datasheet_verifies_before_publishing_and_keeps_each_import_in_its_own_folder(self):
+        import hashlib
+        from input_path_fixtures import have_pypdf, network, pdf_bytes
+        if not have_pypdf():
+            self.skipTest("pypdf is not installed")
+        from generative_driver.toolkit import call_tool
+        first_pdf = pdf_bytes(["First datasheet page 1"])
+        second_pdf = pdf_bytes(["Second datasheet page 1", "Second datasheet page 2"])
+        bad_pdf = pdf_bytes(["Tampered datasheet"])
+        url1, url2, url_bad = "https://vendor.example/a.pdf", "https://vendor.example/b.pdf", "https://vendor.example/bad.pdf"
+        with tempfile.TemporaryDirectory() as temp, network({url1: first_pdf, url2: second_pdf, url_bad: bad_pdf}):
+            run_dir = Path(temp).resolve() / "run"
+            # A failed hash check publishes nothing.
+            failed = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url_bad,
+                                                     "expected_sha256": "0" * 64})
+            self.assertEqual((failed["available"], failed["_exit"]), (False, 1), failed)
+            acquire_dir = run_dir / "acquire"
+            self.assertEqual(list(acquire_dir.iterdir()) if acquire_dir.exists() else [], [])
+            # First import succeeds into its own folder.
+            one = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url1,
+                                                  "expected_sha256": hashlib.sha256(first_pdf).hexdigest()})
+            self.assertTrue(one["available"], one)
+            pdf1, pages1 = Path(one["artifact"]), Path(one["pages_dir"])
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            # Another failed hash check leaves the first import untouched and adds no files.
+            failed2 = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url_bad,
+                                                      "expected_sha256": "f" * 64})
+            self.assertEqual((failed2["available"], failed2["_exit"]), (False, 1), failed2)
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            self.assertEqual(len(list(acquire_dir.iterdir())), 1, list(acquire_dir.iterdir()))
+            # Second import writes to a new folder without modifying the first.
+            two = call_tool("acquire_datasheet", {"run_dir": str(run_dir), "url": url2,
+                                                  "expected_sha256": hashlib.sha256(second_pdf).hexdigest()})
+            self.assertTrue(two["available"], two)
+            pdf2, pages2 = Path(two["artifact"]), Path(two["pages_dir"])
+            self.assertNotEqual(pdf1, pdf2)
+            self.assertNotEqual(pages1, pages2)
+            self.assertEqual(pdf1.read_bytes(), first_pdf)
+            self.assertEqual(pdf2.read_bytes(), second_pdf)
+            self.assertIn("First datasheet", (pages1 / "001.txt").read_text(encoding="utf-8"))
+            self.assertIn("Second datasheet", (pages2 / "001.txt").read_text(encoding="utf-8"))
+
+    def test_02_B1_repeated_bus_scan_and_register_sweep_keep_earlier_artifacts_unchanged(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+
+        class Bus:
+            def __init__(self, url, speed):
+                pass
+            def probe(self, address):
+                return address == 0x42
+            def reg_read(self, address, base, length):
+                return bytes([(base + i) & 0xFF for i in range(length)])
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as temp, patch("generative_driver._toolchain.runner.FtdiI2c", Bus), \
+                patch("time.sleep"):
+            run_dir = Path(temp).resolve() / "run"
+            first = call_tool("acquire_classify", {"run_dir": str(run_dir), "bus_url": "ftdi://ftdi:232h/1",
+                                                   "allow_register_sweep": True})
+            self.assertTrue(first["available"], first)
+            scan1, sweep1 = Path(first["inputs_for_interpret"]["scan"]), Path(first["inputs_for_interpret"]["sweep"])
+            scan1_bytes, sweep1_bytes = scan1.read_bytes(), sweep1.read_bytes()
+            second = call_tool("acquire_classify", {"run_dir": str(run_dir), "bus_url": "ftdi://ftdi:232h/1",
+                                                    "allow_register_sweep": True})
+            self.assertTrue(second["available"], second)
+            scan2, sweep2 = Path(second["inputs_for_interpret"]["scan"]), Path(second["inputs_for_interpret"]["sweep"])
+            self.assertNotEqual(scan1, scan2)
+            self.assertNotEqual(sweep1, sweep2)
+            self.assertEqual(scan1.read_bytes(), scan1_bytes)
+            self.assertEqual(sweep1.read_bytes(), sweep1_bytes)
+
     def test_bus_discovery_never_selects_a_default_adapter(self):
         from generative_driver.toolkit import call_tool
         with tempfile.TemporaryDirectory() as temp:

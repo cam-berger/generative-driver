@@ -161,7 +161,8 @@ class HandlerTests(TaskCase):
                 self.assertIn('HANDLER.md', record['prompt'])
         # Only the tasks after the identity command's get the identity operation that task wrote.
         self.assertNotIn('IDENTITY.json', identify['files'])
-        self.assertEqual(measure['IDENTITY.json'], {'operation': 'identify', 'model': FRAGMENTS['identify']['model']})
+        self.assertEqual(measure['IDENTITY.json'], {'operation': 'identify', 'model': FRAGMENTS['identify']['model'],
+                                                    'replies': FRAGMENTS['identify']['replies']})
         # Its handler functions' code and their callees', nearest first, and the strings they reference.
         functions = lambda code: [line.split(': ')[1] for line in code.splitlines()
                                   if line.startswith('// entry address')]
@@ -388,7 +389,8 @@ class RepairTests(TaskCase):
         self.assertEqual(handler['PREVIOUS_FRAGMENT.json'], FRAGMENTS['measure'])
         self.assertEqual(handler['PREVIOUS_OPERATION.json'], {'operation': 'measure', 'model': MEASURE})
         self.assertEqual(handler['DIFFERENCES.json'], MEASURE_DIFF)
-        self.assertEqual(handler['IDENTITY.json'], {'operation': 'identify', 'model': IDENTIFY})
+        self.assertEqual(handler['IDENTITY.json'], {'operation': 'identify', 'model': IDENTIFY,
+                                                    'replies': FRAGMENTS['identify']['replies']})
         self.assertEqual(handler['MODEL_FRAME.json'], {'schema': 'interface-model/7', 'device': {'name': 'DEMO-42'},
                                                        'channel': {'type': 'tcp'}, 'framing': INVENTORY['framing']})
         # The cross-check runs again with the previous final model and every difference.
@@ -583,6 +585,166 @@ class OneFormatTaskTests(TaskCase):
         self.assertEqual(check['replies.json']['operations']['measure'], {'steps': [['T=21.5']]})
         self.assertFalse({'contract.json', 'previous-model/contract.json'} & set(check['files']))
         self.assertEqual(handed_off(result, 1)['model.json']['operations']['measure'], repaired)
+
+
+class WorkerFaultToleranceTests(TaskCase):
+    """Feature 2: bad worker output in interpret tasks never stops a run as a host fault."""
+
+    def test_02_B2_malformed_fragment_replies_steps_is_dropped_or_falls_back_without_crashing(self):
+        # Non-identity handler with non-list replies.steps -> omitted with a note, run completes.
+        bad_measure = {**FRAGMENTS['measure'], 'replies': {'steps': 1}}
+        controller, run, _, _ = self.tasks_run({'inventory': INVENTORY, 'single': SINGLE_MODEL,
+                                                'fragments': {**FRAGMENTS, 'measure': bad_measure}})
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(sorted(handed_off(result)['model.json']['operations']), ['identify'])
+        self.assertTrue(any('measure' in note and 'no usable fragment' in note
+                            for note in interpretation(result)['notes']), interpretation(result))
+        # Identity handler with non-list replies.steps -> falls back to single worker, run completes.
+        root = self.root / 'id-bad'
+        bad_id = {**FRAGMENTS['identify'], 'replies': {'steps': 1}}
+        controller, run, _, _ = self.tasks_run({'inventory': INVENTORY, 'single': SINGLE_MODEL,
+                                                'fragments': {**FRAGMENTS, 'identify': bad_id}},
+                                               root=root, home=root / 'home')
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        self.assertEqual(interpretation(result)['mode'], 'single')
+
+    def test_02_B3_malformed_cross_check_replies_falls_back_to_assembled_and_repair_tolerates_unreadable_replies(self):
+        for index, action in enumerate(('break_replies', 'bad_replies_steps')):
+            with self.subTest(action=action):
+                root = self.root / f'cc-{index}'
+                controller, run, _, _ = self.tasks_run(
+                    {'inventory': INVENTORY, 'fragments': FRAGMENTS, 'cross_check': action},
+                    root=root, home=root / 'home')
+                result = stopped(controller, run)
+                self.assertEqual(result['status'], 'completed', result)
+                files = handed_off(result)
+                self.assertEqual(files['model.json'], ASSEMBLED)
+                self.assertEqual(sorted(files['replies.json']['operations']), ['identify', 'measure'])
+                self.assertTrue(any('cross-check' in note and 'assembled' in note
+                                    for note in interpretation(result)['notes']), interpretation(result))
+        # Direct repair check: an unreadable replies.json from an earlier handoff is treated as absent, not a crash.
+        from generative_driver import interpret_tasks
+        real_replies_problem = interpret_tasks._replies_problem
+        seen_calls = []
+        def allow_first_cross_check(path):
+            seen_calls.append(path)
+            if len(seen_calls) == 1:
+                return None
+            return real_replies_problem(path)
+        root2 = self.root / 'corrupt-repair'
+        with patch.object(interpret_tasks, '_replies_problem', side_effect=allow_first_cross_check):
+            controller2, run2, _, _ = self.tasks_run(
+                {'inventory': INVENTORY, 'fragments': FRAGMENTS, 'cross_check': 'break_replies',
+                 'repair_fragments': {'measure': fragment('measure', MEASURE_FIXED, ['T=21.5'])}},
+                root=root2, home=root2 / 'home',
+                diffs=lambda rev: MEASURE_DIFF if rev == 0 else None)
+            result2 = stopped(controller2, run2)
+        self.assertEqual(result2['status'], 'completed', result2)
+        self.assertEqual(handed_off(result2, 1)['model.json']['operations']['measure'], MEASURE_FIXED)
+        self.assertTrue(any('replies.json' in note and 'absent' in note
+                            for note in interpretation(result2, 1)['notes']), interpretation(result2, 1))
+
+    def test_02_B4_missing_decompiled_handler_code_is_listed_separately_and_later_addresses_still_fill(self):
+        from generative_driver.analysis_index import Export
+        from interpret_task_fixtures import export_files
+        export_dir = self.root / 'export'
+        export_dir.mkdir()
+        for name, text in export_files().items():
+            path = export_dir / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding='utf-8')
+        export = Export(export_dir)
+        excerpt = export.excerpt(['0800dead', '08000300', '08000340'], 'Handler code')
+        self.assertIn('No decompiled code: 0800dead.', excerpt)
+        self.assertNotIn('Left out: 0800dead', excerpt)
+        self.assertIn('Included whole: 08000300, 08000340.', excerpt)
+        self.assertIn('void handle_identify(', excerpt)
+        self.assertIn('void handle_measure(', excerpt)
+
+    def test_02_B5_identity_json_carries_replies_on_first_and_repair_and_handler_self_check_qualifies(self):
+        import subprocess
+        import sys
+        # Use contains_text and an output on identify so qualify.py passes both LF and CRLF framings cleanly.
+        id_out = {'id': {'from': 'id', 'kind': 'utf8', 'strip': True}}
+        identify_qualifiable = {**IDENTIFY, 'outputs': id_out,
+                                'steps': [{**IDENTIFY['steps'][0], 'expect': {'contains_text': 'DEMO-42'}}]}
+        identify_repaired = {**IDENTIFY, 'outputs': id_out,
+                             'steps': [{**IDENTIFY['steps'][0], 'expect': {'contains_text': 'DEMO-43'}}]}
+        both_diffs = MEASURE_DIFF + IDENTITY_DIFF
+        controller, run, _, folder = self.tasks_run(
+            {'inventory': INVENTORY,
+             'fragments': {**FRAGMENTS, 'identify': fragment('identify', identify_qualifiable, ['DEMO-42'])},
+             'repair_fragments': {
+                 'identify': fragment('identify', identify_repaired, ['DEMO-43']),
+                 'measure': fragment('measure', MEASURE_FIXED, ['T=21.5'])}},
+            diffs=lambda rev: both_diffs if rev == 0 else None)
+        result = stopped(controller, run)
+        self.assertEqual(result['status'], 'completed', result)
+        handlers = seen(folder, 'handler')
+        first_measure = handlers[1]
+        repaired_measure = handlers[3]
+        self.assertEqual(first_measure['IDENTITY.json'], {
+            'operation': 'identify', 'model': identify_qualifiable, 'replies': {'steps': [['DEMO-42']]}})
+        self.assertEqual(repaired_measure['IDENTITY.json'], {
+            'operation': 'identify', 'model': identify_repaired, 'replies': {'steps': [['DEMO-43']]}})
+        # Follow HANDLER.md's self-check instructions literally in first_measure's workspace using IDENTITY.json.
+        ws = Path(first_measure['workspace'])
+        guide = (ws / 'HANDLER.md').read_text(encoding='utf-8')
+        self.assertIn('IDENTITY.json', guide)
+        self.assertIn('replies', guide.split('Check it before you finish.')[1])
+        check_dir = ws / 'self_check'
+        check_dir.mkdir()
+        frame = first_measure['MODEL_FRAME.json']
+        ident = first_measure['IDENTITY.json']
+        check_model = {
+            'schema': frame['schema'], 'device': frame['device'], 'channel': frame['channel'],
+            'identity': {'operation': ident['operation']},
+            'operations': {ident['operation']: ident['model'], 'measure': MEASURE},
+            'provenance': [{'item': 'operations.identify', 'source': 'identity'},
+                           {'item': 'operations.measure', 'source': 'handler'}],
+        }
+        check_replies = {
+            'schema': 'interface-replies/1',
+            'operations': {ident['operation']: ident['replies'], 'measure': FRAGMENTS['measure']['replies']},
+        }
+        (check_dir / 'model.json').write_text(json.dumps(check_model), encoding='utf-8')
+        (check_dir / 'replies.json').write_text(json.dumps(check_replies), encoding='utf-8')
+        ran = subprocess.run([sys.executable, str(ws / 'qualify.py'), str(check_dir), str(check_dir / 'replies.json')],
+                             cwd=ws, capture_output=True, text=True, timeout=30)
+        self.assertEqual(ran.returncode, 0, ran.stdout + ran.stderr)
+        self.assertIn('all supplied operations qualify: True', ran.stdout)
+
+    def test_02_B6_repair_reruns_only_the_command_that_supplied_the_assembled_operation(self):
+        # Case 1: 'measure' wins assembly, 'status' also outputs operation 'measure' (dropped as already taken).
+        # Repair for MEASURE_DIFF must rerun only 'measure', not 'status'.
+        for index, (label, first_frags, expected_rerun, repair_frags, expected_output) in enumerate((
+                ('first command won', {**FRAGMENTS, 'status': fragment('measure', STATUS, ['S:ok'])},
+                 'measure',
+                 {'measure': fragment('measure', MEASURE_FIXED, ['T=21.5']),
+                  'status': fragment('measure', STATUS, ['S:wrong'])},
+                 MEASURE_FIXED),
+                ('second command won after first failed validation',
+                 {**FRAGMENTS, 'measure': fragment('measure', {**MEASURE, 'steps': []}, []),
+                  'status': fragment('measure', MEASURE, ['T:21.5'])},
+                 'status',
+                 {'measure': fragment('measure', STATUS, ['S:wrong']),
+                  'status': fragment('measure', MEASURE_FIXED, ['T=21.5'])},
+                 MEASURE_FIXED))):
+            with self.subTest(case=label):
+                root = self.root / f'dup-{index}'
+                controller, run, _, folder = self.tasks_run(
+                    {'inventory': WITH_STATUS, 'single': SINGLE_MODEL,
+                     'fragments': first_frags, 'repair_fragments': repair_frags},
+                    root=root, home=root / 'home',
+                    diffs=lambda rev: MEASURE_DIFF if rev == 0 else None)
+                result = stopped(controller, run)
+                self.assertEqual(result['status'], 'completed', result)
+                tasks = [(record['task'], record['command']) for record in seen(folder)]
+                after_probe = tasks[tasks.index(('probe', None)) + 1:]
+                self.assertEqual(after_probe, [('handler', expected_rerun), ('cross-check', None)])
+                self.assertEqual(handed_off(result, 1)['model.json']['operations']['measure'], expected_output)
 
 
 if __name__ == '__main__':

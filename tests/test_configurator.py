@@ -4859,5 +4859,118 @@ print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':
                 controller.close()
 
 
+class DeviceReleaseAndRecoveryTests(unittest.TestCase):
+    """Feature 3: a device is never held or left running without a way out."""
+
+    def test_03_B2_restart_blocked_run_without_uncertain_effect_keeps_binding_claimed_until_resumed_or_cancelled(self):
+        from generative_driver.configurator import Controller, SafetyError
+        binding = {'host': '127.0.0.1', 'port': 45679}
+        params = {'goal': 'Restart lease contract', 'binding': binding, 'effects': ['read'],
+                  'executor_config': {'command': [sys.executable, '-c', 'import time; time.sleep(30)']}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve() / 'home'
+            controller = Controller(home)
+            try:
+                run = controller.call('start', params)
+                until = time.monotonic() + 5
+                while time.monotonic() < until:
+                    if controller.call('status', run)['status'] == 'running':
+                        break
+                    time.sleep(.02)
+                self.assertEqual(controller.call('status', run)['status'], 'running')
+                # Simulate a hard crash: close without stopping the run cleanly (status stays 'running', bindings stays).
+                with controller._db() as db:
+                    self.assertEqual(db.execute('SELECT COUNT(*) FROM bindings WHERE run_id=?',
+                                                (run['run_id'],)).fetchone()[0], 1)
+                worker = controller._workers.pop(run['run_id'])
+                worker[0].set()
+                worker[1].join(5)
+                with controller._db() as db:
+                    db.execute("UPDATE runs SET status='running', cancelled=0, uncertain=0 WHERE id=?", (run['run_id'],))
+                    controller._claim_binding(binding, run['run_id'], db)
+            finally:
+                controller.close()
+            reopened = Controller(home)
+            try:
+                status = reopened.call('status', run)
+                self.assertEqual((status['status'], status['uncertain_effect']), ('blocked', False), status)
+                # Another run MUST NOT claim the binding while the restart-blocked run may still have an old child.
+                with self.assertRaisesRegex(SafetyError, 'already owned'):
+                    reopened.call('start', params)
+                # Cancelling the blocked run releases the binding cleanly for a new run.
+                reopened.call('cancel', run)
+                second = reopened.call('start', params)
+                self.assertTrue(second['ok'], second)
+                reopened.call('cancel', second)
+            finally:
+                reopened.close()
+
+    def test_03_B6_respond_holds_controller_lock_across_worker_check_and_resolution(self):
+        import threading
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory).resolve() / 'home')
+            try:
+                run, assignment = ConfiguratorTests()._idle_run(controller, effects=['read', 'write'])
+                ConfiguratorTests._pending_write(controller, run, assignment)
+                controller.call('cancel', run)
+                wait_stopped(controller, run)
+                lock_held = []
+                real_resolve = controller.dispatch_record.resolve_by_operator
+                def check_lock(*args, **kwargs):
+                    # Try acquiring _lock from another thread; must fail if respond holds _lock across resolution.
+                    acquired = []
+                    def probe():
+                        got = controller._lock.acquire(blocking=False)
+                        if got:
+                            controller._lock.release()
+                        acquired.append(got)
+                    t = threading.Thread(target=probe)
+                    t.start()
+                    t.join(2)
+                    lock_held.append(not acquired[0])
+                    return real_resolve(*args, **kwargs)
+                with patch.object(controller.dispatch_record, 'resolve_by_operator', side_effect=check_lock):
+                    controller.call('respond', {**run, 'effect_resolution': 'confirmed_safe',
+                                                'observation': ConfiguratorTests.STATEMENT})
+                self.assertEqual(lock_held, [True], 'respond did not hold _lock during resolve_by_operator')
+            finally:
+                controller.close()
+
+    def test_03_B7_spawn_failure_and_cleanup_failure_never_leave_run_stuck_in_workers(self):
+        import threading
+        from unittest.mock import patch
+        from generative_driver.configurator import Controller
+        binding = {'host': '127.0.0.1', 'port': 45680}
+        with tempfile.TemporaryDirectory() as directory:
+            controller = Controller(Path(directory).resolve() / 'home')
+            try:
+                # Part 1: Thread.start failure in _spawn rolls back _workers, marks run failed, releases binding.
+                with patch.object(threading.Thread, 'start', side_effect=RuntimeError("can't start new thread")):
+                    with self.assertRaisesRegex(RuntimeError, "can't start new thread"):
+                        controller.call('start', {'goal': 'Spawn fail contract', 'binding': binding,
+                                                  'executor_config': {'command': [sys.executable, '-c', 'pass']}})
+                self.assertEqual(controller._workers, {})
+                with controller._db() as db:
+                    row = db.execute('SELECT id, status FROM runs').fetchone()
+                    leased = db.execute('SELECT COUNT(*) FROM bindings').fetchone()[0]
+                self.assertEqual((row['status'], leased), ('failed', 0))
+                # Resume works once Thread.start recovers.
+                resumed = controller.call('resume', {'run_id': row['id']})
+                self.assertIn(resumed['status'], ('queued', 'running', 'completed', 'failed', 'blocked'))
+                wait_stopped(controller, {'run_id': row['id']})
+                # Part 2: Cleanup raising inside _run finally still pops _workers so shutdown/resume never wedge.
+                with patch.object(controller, '_settle_release', side_effect=RuntimeError('cleanup exploded')):
+                    run2 = controller.call('start', {'goal': 'Cleanup fail contract', 'binding': binding,
+                                                     'executor_config': {'command': [sys.executable, '-c', 'raise SystemExit(1)']}})
+                    wait_worker_exit(controller, run2)
+                self.assertNotIn(run2['run_id'], controller._workers)
+                self.assertFalse(controller.call('status', run2)['stopping'])
+                self.assertTrue(controller.close(timeout=2))
+            finally:
+                controller.close()
+
+
 if __name__ == '__main__':
     unittest.main()

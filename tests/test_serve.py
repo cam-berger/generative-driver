@@ -689,6 +689,71 @@ class OneWayTests(ServeCase):
         self.assertEqual(reply.structured_content['outputs'], {'temperature': 21.5})
         self.assertEqual(reply.structured_content['mcp']['tool_name'], 'samp1_measure')
 
+    def test_03_B1_serve_recovers_and_closes_session_when_device_open_reply_is_lost(self):
+        import io
+        import secrets
+        from multiprocessing.connection import Listener
+        from generative_driver.client import call, code_identity
+        from generative_driver.configurator import Controller
+        from generative_driver.serve import serve
+        package = self.package(samp1())
+        owner = Controller(self.home)
+        self.addCleanup(owner.close)
+        family = 'AF_PIPE' if os.name == 'nt' else 'AF_UNIX'
+        address = (r'\\.\pipe\gd-serve-lost-' + secrets.token_hex(8)
+                   if os.name == 'nt' else str(self.home / 'owner.sock'))
+        key = secrets.token_bytes(32)
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / 'service.json').write_text(json.dumps({
+            'address': address, 'family': family, 'authkey': key.hex(), 'code': code_identity()}), encoding='utf-8')
+        opened_requests, stop = [], threading.Event()
+        with demonstration_device() as binding, Listener(address, family=family, authkey=key) as listener:
+            def peer():
+                while True:
+                    with listener.accept() as conn:
+                        req = json.loads(conn.recv_bytes(2 * 1024 * 1024))
+                        method, params = req['method'], req.get('params', {})
+                        if method == 'ping':
+                            conn.send_bytes(json.dumps({'ok': True, 'pid': os.getpid(),
+                                                        'code': code_identity()}).encode())
+                        else:
+                            try:
+                                result = owner.call(method, params)
+                            except Exception as exc:
+                                result = {'ok': False, 'error': type(exc).__name__, 'reason': str(exc)}
+                            if method == 'device_open':
+                                opened_requests.append((params.get('request_id'), result.get('session_id')))
+                                if len(opened_requests) == 1:
+                                    # Session IS opened in the service, but the reply is lost!
+                                    continue
+                            conn.send_bytes(json.dumps(result).encode())
+                    if stop.is_set():
+                        return
+            thread = threading.Thread(target=peer, daemon=True)
+            thread.start()
+            try:
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    code = serve(package, json.dumps(binding), home=self.home)
+                errors = buf.getvalue()
+                self.assertEqual(code, 1, errors)
+                self.assertEqual(len(opened_requests), 2, f'expected retry with same request_id: {opened_requests}')
+                req1, sid1 = opened_requests[0]
+                req2, sid2 = opened_requests[1]
+                self.assertEqual(req1, req2)
+                self.assertEqual(sid1, sid2)
+                self.assertIn(req1, errors)
+                self.assertIn(sid1, errors)
+                # The recovered session is closed, and the binding is free for a new session.
+                self.assertEqual(owner.call('device_status', {'session_id': sid1})['status'], 'closed')
+                reopened = owner.call('device_open', {'package_dir': str(package), 'binding': binding})
+                self.assertTrue(reopened['ok'], reopened)
+                owner.call('device_close', {'session_id': reopened['session_id']})
+            finally:
+                stop.set()
+                call('ping', home=self.home, autostart=False)
+                thread.join(5)
+
 
 if __name__ == '__main__':
     unittest.main()

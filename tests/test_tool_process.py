@@ -816,5 +816,32 @@ class InlineTests(ChildProcessCase):
         self.assertEqual((reply['ran'], reply['in_process']), ('model_validate', os.getpid()))
 
 
+@unittest.skipIf(os.name == 'nt', 'POSIX process-group cleanup after tool crash')
+class CrashCleanupTests(unittest.TestCase):
+    def test_03_B3_tool_process_kills_orphaned_children_in_process_group_after_crash(self):
+        from generative_driver import tool_process
+        from interpret_task_fixtures import gone
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            pid_file = root / 'child.pid'
+            ready = root / 'child.ready'
+            # Inject a fake tool module on PYTHONPATH? Even simpler: override _BOOT for one call to spawn a child and crash!
+            boot = (
+                'import os, pathlib, subprocess, sys, time; '
+                f'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"]); '
+                f'pathlib.Path({str(pid_file)!r}).write_text(str(p.pid), encoding="utf-8"); '
+                f'pathlib.Path({str(ready)!r}).write_text("ok", encoding="utf-8"); '
+                'os._exit(1)'
+            )
+            with patch.object(tool_process, '_BOOT', boot):
+                with self.assertRaises(tool_process.Unfinished):
+                    tool_process.run('acquire_flash', {}, directory=root / 'calls',
+                                     stop=lambda: None, context={})
+            self.assertTrue(ready.is_file())
+            child_pid = int(pid_file.read_text(encoding='utf-8'))
+            self.assertTrue(gone(child_pid, seconds=5),
+                            f'orphaned grandchild {child_pid} survived tool crash')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -112,6 +112,12 @@ def run(name, arguments, *, directory, stop, context):
             # However the wait ends, the process and what it started never outlive the call.
             _stop(process)
             raise
+        if os.name != 'nt':
+            # On POSIX, a tool process that exited or crashed may still have children in its process group.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
         try:
             outcome = json.loads((exchange / 'result.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):

@@ -3,7 +3,7 @@ from contextlib import suppress
 import hashlib
 import json
 import math
-from multiprocessing.connection import Client
+from multiprocessing import AuthenticationError
 import os
 from pathlib import Path
 import secrets
@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 import threading
+
+from ._ipc import TimedConnection, open_connection
 
 
 def _wait_for_exit(pid, timeout=10):
@@ -229,14 +231,15 @@ def _interrupted_reply(method, params, error):
 
 def _request(home, method, params, *, reply_timeout=None):
     endpoint = json.loads((home / 'service.json').read_text(encoding='utf-8'))
-    with Client(endpoint['address'], family=endpoint['family'], authkey=bytes.fromhex(endpoint['authkey'])) as conn:
+    timeout = reply_timeout if reply_timeout is not None else (620 if method in ('tool', 'mcp_tool', 'device_execute') else 30)
+    deadline = time.monotonic() + timeout
+    family = endpoint['family']
+    with open_connection(endpoint['address'], family, bytes.fromhex(endpoint['authkey']), deadline) as conn:
         message = json.dumps({'method': method, 'params': params}).encode('utf-8')
         try:
-            conn.send_bytes(message)
-            timeout = reply_timeout if reply_timeout is not None else (620 if method in ('tool', 'mcp_tool', 'device_execute') else 30)
-            if not conn.poll(timeout):
-                raise TimeoutError('Configurator request timed out')
-            return json.loads(conn.recv_bytes(4 * 1024 * 1024))
+            timed = TimedConnection(conn, deadline, family=family)
+            timed.send_bytes(message)
+            return json.loads(timed.recv_bytes(4 * 1024 * 1024))
         except (OSError, EOFError, ValueError) as error:
             raise _RequestInterrupted('Configurator request interrupted after dispatch: ' + str(error)) from error
 
@@ -250,9 +253,9 @@ def _start(home, timeout=30):
             break
         except FileExistsError:
             try:
-                if _request(home, 'ping', {}).get('ok'):
+                if _request(home, 'ping', {}, reply_timeout=min(2.0, max(0.2, deadline - time.monotonic()))).get('ok'):
                     return
-            except (OSError, EOFError, ValueError):
+            except (OSError, EOFError, ValueError, AuthenticationError):
                 pass
             if time.monotonic() > deadline:
                 if time.time() - lock.stat().st_mtime > 60:
@@ -263,9 +266,9 @@ def _start(home, timeout=30):
     try:
         while True:
             try:
-                if _request(home, 'ping', {}).get('ok'):
+                if _request(home, 'ping', {}, reply_timeout=min(2.0, max(0.2, deadline - time.monotonic()))).get('ok'):
                     return
-            except (OSError, EOFError, ValueError):
+            except (OSError, EOFError, ValueError, AuthenticationError):
                 pass
             try:
                 recorded = json.loads((home / 'service.json').read_text(encoding='utf-8'))
@@ -324,9 +327,9 @@ def _start(home, timeout=30):
             if process.poll() is not None:
                 raise RuntimeError(f'Configurator exited during startup (exit {process.returncode}); inspect ' + str(home / 'daemon.log'))
             try:
-                if _request(home, 'ping', {}).get('ok'):
+                if _request(home, 'ping', {}, reply_timeout=min(2.0, max(0.2, deadline - time.monotonic()))).get('ok'):
                     return
-            except (OSError, EOFError, ValueError):
+            except (OSError, EOFError, ValueError, AuthenticationError):
                 time.sleep(.05)
         raise TimeoutError('Configurator failed to start; inspect ' + str(home / 'daemon.log'))
     finally:
@@ -352,7 +355,7 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             return {'ok': False, 'reason': _incompatible(endpoint)}
     try:
         result = _request(directory, method, params, **request_options)
-    except (OSError, EOFError, ValueError) as error:
+    except (OSError, EOFError, ValueError, AuthenticationError) as error:
         if method == 'shutdown':
             try:
                 endpoint = json.loads((directory / 'service.json').read_text(encoding='utf-8'))
@@ -365,6 +368,8 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
         # lost. The owner may already have performed it; reconnect to its state.
         if isinstance(error, _RequestInterrupted):
             return _interrupted_reply(method, params, error)
+        if isinstance(error, TimeoutError):
+            return {'ok': False, 'reason': str(error)}
         if not autostart:
             return {'ok': False, 'reason': 'Configurator is not reachable. Run generative-driver service start from an operator terminal, then reconnect this UI.'}
         _start(directory)
@@ -372,6 +377,8 @@ def call(method, params=None, home=None, *, autostart=True, read_timeout=None):
             result = _request(directory, method, params, **request_options)
         except _RequestInterrupted as error:
             return _interrupted_reply(method, params, error)
+        except TimeoutError as error:
+            return {'ok': False, 'reason': str(error)}
     if method == 'shutdown' and result.get('stopped'):
         return _confirmed_shutdown(result.get('pid'))
     if method == 'ping' and result.get('ok'):

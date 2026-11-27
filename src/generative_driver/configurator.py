@@ -1257,6 +1257,11 @@ class Controller:
                     worker[0].set()
                 wait_for_worker = worker is not None and run_id not in self._inflight
                 self._state(run_id, 'cancelled', 'Cancellation requested; retain outstanding-effect uncertainty')
+                if worker is None and run_id not in self._inflight:
+                    with self._db() as db:
+                        current = db.execute('SELECT uncertain FROM runs WHERE id=?', (run_id,)).fetchone()
+                        if current and not current['uncertain']:
+                            db.execute('DELETE FROM bindings WHERE run_id=?', (run_id,))
             # Worker cleanup acquires _lock. Never join while holding it, and
             # keep cancellation responsive when a device/tool call is in flight.
             if wait_for_worker:
@@ -1274,18 +1279,19 @@ class Controller:
             resolution = params.get('effect_resolution') or (observation.get('effect_resolution') if isinstance(observation,dict) else None)
             if not isinstance(message,str) or not message.strip():
                 raise ValueError('respond requires an operator message')
-            if row['status'] not in TERMINAL or row['status'] == 'completed':
-                raise ValueError('Respond only while the run is stopped')
             with self._lock:
+                row = self._row(run_id)
+                if row['status'] not in TERMINAL or row['status'] == 'completed':
+                    raise ValueError('Respond only while the run is stopped')
                 if resolution is not None and (run_id in self._inflight or run_id in self._workers):
                     raise ValueError('Previous worker or operation is still stopping; reconcile after it finishes')
-            with self._db() as db:
-                resolved = {}
-                if resolution is not None:
-                    resolved = {'resolved_dispatch_ids': self.dispatch_record.resolve_by_operator(
-                        run_id, kind='run', effect_resolution=resolution, observation=observation, db=db)}
-                self._event(run_id,'operator.response',{'message':message,'observation':observation,
-                                                        'effect_resolution':resolution,**resolved},db)
+                with self._db() as db:
+                    resolved = {}
+                    if resolution is not None:
+                        resolved = {'resolved_dispatch_ids': self.dispatch_record.resolve_by_operator(
+                            run_id, kind='run', effect_resolution=resolution, observation=observation, db=db)}
+                    self._event(run_id,'operator.response',{'message':message,'observation':observation,
+                                                            'effect_resolution':resolution,**resolved},db)
             return self.call('status', {'run_id': run_id})
         if method in ('attach_device', 'resume') and self._row(run_id)['sealed']:
             # Before anything asks the device, so a stray resume cannot turn a fault into an integrity failure.
@@ -1502,7 +1508,17 @@ class Controller:
         cancel = threading.Event()
         thread = threading.Thread(target=self._run, args=(run_id, cancel), daemon=True)
         self._workers[run_id] = (cancel, thread)
-        thread.start()
+        try:
+            thread.start()
+        except BaseException as error:
+            self._workers.pop(run_id, None)
+            with self._db() as db:
+                self._state(run_id, 'failed', 'Could not start run worker: ' + type(error).__name__ + ': ' + str(error),
+                            outcome_category='host', db=db)
+                row = db.execute('SELECT uncertain FROM runs WHERE id=?', (run_id,)).fetchone()
+                if row and not row['uncertain'] and run_id not in self._inflight:
+                    db.execute('DELETE FROM bindings WHERE run_id=?', (run_id,))
+            raise
 
     def _run(self, run_id, cancel):
         spec = stage = None
@@ -1753,19 +1769,25 @@ class Controller:
             self._state(run_id, 'failed' if category == 'host' else 'blocked', type(exc).__name__ + ': ' + str(exc),
                         outcome_category=category)
         finally:
-            if spec:
-                try:
-                    failures = self._release(run_id, spec, run_dir)
-                except Exception as exc:
-                    self.log.error(exc, step='release', run_id=run_id, stage=stage)
-                    failures = [('cleanup.failed', type(exc).__name__ + ': ' + str(exc), None)]
-                self._settle_release(run_id, failures)
-            with self._lock:
-                with self._db() as db:
-                    row = db.execute('SELECT uncertain FROM runs WHERE id=?',(run_id,)).fetchone()
-                    if row and not row['uncertain'] and run_id not in self._inflight:
-                        db.execute('DELETE FROM bindings WHERE run_id=?',(run_id,))
-                self._workers.pop(run_id, None)
+            try:
+                if spec:
+                    try:
+                        failures = self._release(run_id, spec, run_dir)
+                    except Exception as exc:
+                        self.log.error(exc, step='release', run_id=run_id, stage=stage)
+                        failures = [('cleanup.failed', type(exc).__name__ + ': ' + str(exc), None)]
+                    try:
+                        self._settle_release(run_id, failures)
+                    except Exception as exc:
+                        self.log.error(exc, step='release', run_id=run_id, stage=stage)
+                with self._lock:
+                    with self._db() as db:
+                        row = db.execute('SELECT uncertain FROM runs WHERE id=?', (run_id,)).fetchone()
+                        if row and not row['uncertain'] and run_id not in self._inflight:
+                            db.execute('DELETE FROM bindings WHERE run_id=?', (run_id,))
+            finally:
+                with self._lock:
+                    self._workers.pop(run_id, None)
 
     def _finalize(self, run_id, spec, accepted):
         """Record the run's one final verdict after reuse, as `<run_id>:final`, and end the queue in the same
@@ -2237,23 +2259,34 @@ class Controller:
         status is asked, outside the controller lock; everything else about the resume is checked under it
         afterwards."""
         from .device_client import DeviceUnavailable
-        row = self._row(run_id)
-        spec = json.loads(row['spec'])
-        if (not spec.get('device') or row['status'] not in ('blocked', 'failed', 'cancelled') or row['uncertain']
-                or run_id in self._workers or run_id in self._inflight):
-            return
+        with self._lock:
+            row = self._row(run_id)
+            spec = json.loads(row['spec'])
+            if (not spec.get('device') or row['status'] not in ('blocked', 'failed', 'cancelled') or row['uncertain']
+                    or run_id in self._workers or run_id in self._inflight):
+                return
+            try:
+                progress = self._workflow_progress(run_id)
+            except ValueError:
+                return
+            if progress['next_stage'] not in STAGES:
+                return
+            checked_device = copy.deepcopy(progress.get('device'))
         try:
-            progress = self._workflow_progress(run_id)
-        except ValueError:
-            return
-        if progress['next_stage'] not in STAGES:
-            return
-        try:
-            self._device_ready({**spec, '_device': progress.get('device')})
+            self._device_ready({**spec, '_device': checked_device})
         except DeviceUnavailable as error:
             reason = str(error) if str(error).endswith('attach a verified device') else str(error) + '; attach a verified device'
-            self.log.error(error, method='resume', run_id=run_id)
-            self._state(run_id, 'blocked', reason, outcome_category='operator')
+            with self._lock:
+                current = self._row(run_id)
+                try:
+                    current_progress = self._workflow_progress(run_id)
+                except ValueError:
+                    current_progress = {}
+                still_stopped = (current['status'] in ('blocked', 'failed', 'cancelled')
+                                 and run_id not in self._workers and run_id not in self._inflight)
+                if still_stopped and current_progress.get('device') == checked_device:
+                    self.log.error(error, method='resume', run_id=run_id)
+                    self._state(run_id, 'blocked', reason, outcome_category='operator')
             refusal = ValueError(reason)
             self.log.written(refusal)  # The stop's entry above is the refusal's entry too.
             raise refusal from None

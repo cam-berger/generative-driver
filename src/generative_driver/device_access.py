@@ -75,13 +75,12 @@ class DeviceAccess:
         if prior and prior['run_id'] != owner_id:
             key = prior['run_id']
             row = db.execute('SELECT status,uncertain FROM runs WHERE id=?', (key,)).fetchone()
-            on = ('queued', 'running', 'open')
             if row is None:
                 row = db.execute('SELECT status,uncertain FROM device_sessions WHERE id=?', (key,)).fetchone()
-                # The call that blocked a session may still run in a child of an earlier owner: the session, and
-                # only a session, holds its lease until it is closed.
-                on += ('blocked',)
-            if row and (row['status'] in on or row['uncertain']
+            # A blocked run recovered after a restart (whose bindings row was not cleared by clean stop) or a
+            # blocked session may still have a child of an earlier owner using the device; keep the lease until
+            # the run is resumed and stops cleanly or cancelled, or the session is closed.
+            if row and (row['status'] in ('queued', 'running', 'open', 'blocked') or row['uncertain']
                         or key in self.owner._workers or key in self.owner._inflight):
                 raise SafetyError(refusal)
         db.execute('INSERT OR REPLACE INTO bindings VALUES(?,?)', (identity, owner_id))

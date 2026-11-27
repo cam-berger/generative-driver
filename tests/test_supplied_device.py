@@ -89,6 +89,92 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(device.sent('status'), [{}])
         device.close()
 
+    def test_03_B4_window_pauses_device_when_set_running_true_reply_is_lost_and_timed_out_call_is_never_sent(self):
+        import json
+        import os
+        import secrets
+        import socket
+        from multiprocessing.connection import Listener
+        # Docstring must not falsely claim nothing reached the device when a reply is lost.
+        self.assertNotIn('nothing reached the device', DeviceUnavailable.__doc__ or '')
+        # Part 1: lost reply to set_running(True) must issue a best-effort set_running(False) so device is not left running.
+        root = Path(self.root.name).resolve()
+        family = 'AF_PIPE' if os.name == 'nt' else 'AF_UNIX'
+        address = (r'\\.\pipe\gd-dev-lost-' + secrets.token_hex(8)
+                   if os.name == 'nt' else str(root / 'lost.sock'))
+        key = secrets.token_bytes(32)
+        endpoint = root / 'lost.json'
+        endpoint.write_text(json.dumps({'address': address, 'family': family, 'authkey': key.hex()}), encoding='utf-8')
+        seen, running, stop = [], [False], threading.Event()
+        with Listener(address, family=family, authkey=key) as listener:
+            def peer():
+                while True:
+                    with listener.accept() as conn:
+                        req = json.loads(conn.recv_bytes(1024 * 1024))
+                        method, params = req['method'], req.get('params', {})
+                        if method == 'set_running':
+                            seen.append(params['running'])
+                            running[0] = params['running']
+                            if len(seen) == 1:
+                                continue  # Drop reply after starting the device!
+                        conn.send_bytes(json.dumps({'ok': True, 'result': {'running': running[0]}}).encode())
+                    if stop.is_set():
+                        return
+            th = threading.Thread(target=peer, daemon=True)
+            th.start()
+            try:
+                client = DeviceClient(endpoint, timeout=2)
+                with self.assertRaises(DeviceUnavailable):
+                    with client.window():
+                        pass
+                self.assertEqual(seen, [True, False], 'window() did not pause device after lost set_running(True) reply')
+                self.assertFalse(running[0])
+            finally:
+                stop.set()
+                try:
+                    DeviceClient(endpoint, timeout=1).status()
+                except DeviceUnavailable:
+                    pass
+                th.join(5)
+
+        # Part 2: stalled handshake times out within client.timeout AND timed-out request is NEVER sent later.
+        if os.name != 'nt':
+            stall_addr = str(root / 'stall.sock')
+            stall_ep = root / 'stall.json'
+            stall_ep.write_text(json.dumps({'address': stall_addr, 'family': 'AF_UNIX', 'authkey': key.hex()}),
+                                encoding='utf-8')
+            srv = socket.socket(socket.AF_UNIX)
+            srv.bind(stall_addr)
+            srv.listen(4)
+            received = []
+            unblock = threading.Event()
+            def stall_peer():
+                conn, _ = srv.accept()
+                try:
+                    unblock.wait(5)
+                    conn.settimeout(0.2)
+                    try:
+                        data = conn.recv(4096)
+                        if data:
+                            received.append(data)
+                    except OSError:
+                        pass
+                finally:
+                    conn.close()
+            th2 = threading.Thread(target=stall_peer, daemon=True)
+            th2.start()
+            try:
+                started = time.monotonic()
+                with self.assertRaises(DeviceUnavailable):
+                    DeviceClient(stall_ep, timeout=0.2)._call('set_running', running=True)
+                self.assertLess(time.monotonic() - started, 1.0)
+                unblock.set()
+                th2.join(5)
+                self.assertEqual(received, [], 'timed-out request was sent after deadline')
+            finally:
+                unblock.set()
+                srv.close()
+
 
 if __name__ == '__main__':
     unittest.main()

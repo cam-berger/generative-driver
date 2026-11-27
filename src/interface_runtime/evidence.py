@@ -171,13 +171,20 @@ def run_samples(model, operation, parameters=None, *, n=1, binding=None, allow_e
     results = []
     if single:
         from .engine import Session
-        with Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder,
-                     delay_fn=(lambda seconds: None) if player is not None else None) as session:
-            for _ in range(n):
-                result = session.execute(operation, parameters)
-                results.append(result)
-                if not result['ok']:
-                    break
+        from .faults import Fault
+        session = Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder,
+                          delay_fn=(lambda seconds: None) if player is not None else None)
+        for _ in range(n):
+            result = session.execute(operation, parameters)
+            results.append(result)
+            if not result['ok']:
+                break
+        try:
+            session.close()
+        except Exception as exc:
+            if results and results[-1]['ok']:
+                results[-1].update(ok=False, outputs={}, units={}, transport_open_attempted=True,
+                                   error={'code': 'close_error', 'message': str(exc), 'fault': Fault.HOST.value})
     else:
         for _ in range(n):
             result = execute(model, operation, parameters, binding=binding,

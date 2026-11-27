@@ -480,6 +480,47 @@ class DiscrepancyTests(TemporaryDirectoryCase):
         with self.assertRaisesRegex(IntegrityError, 'Assigned capability mapping differs from its recorded hash'):
             self.discrepancies(SAMPLED, ground, [call])
 
+    def test_01_B5_sampled_task_with_canonical_inputs_is_compared_against_instrument_readings(self):
+        # A sampled task whose capability mapping binds canonical inputs (copy + affine) beside a constant parameter.
+        model = json.loads(json.dumps(SAMPLE_MODEL))
+        model['operations']['sample']['parameters'] = {
+            'mode': {'type': 'string', 'enum': ['fast', 'slow']},
+            'ch': {'type': 'integer', 'minimum': 0, 'maximum': 3},
+            'gain_code': {'type': 'integer', 'minimum': 0, 'maximum': 20},
+        }
+        (self.model / 'model.json').write_text(json.dumps(model), encoding='utf-8')
+        self.assignment = {'stage': 'probe', 'workspace': str(self.workspace),
+                           'inputs': {str(self.model): digest(self.model)}}
+        mission = {**SAMPLED, 'tasks': {'measure': {
+            **SAMPLED['tasks']['measure'],
+            'inputs': {'channel': {'type': 'integer'}, 'gain': {'type': 'integer'}},
+        }}}
+        mapping = {'schema': 'capabilities/2', 'tasks': {'measure': {
+            'operation': 'sample',
+            'constants': {'mode': 'fast'},
+            'inputs': {
+                'channel': {'parameter': 'ch', 'kind': 'copy'},
+                'gain': {'parameter': 'gain_code', 'kind': 'affine', 'scale': 2, 'offset': 0},
+            },
+            'outputs': {'temperature': {'output': 'temperature', 'unit': 'degC'}},
+        }}}
+        (self.workspace / 'capabilities.json').write_text(json.dumps(mapping), encoding='utf-8')
+        call = {**self.live_call(25.0, sequence=(3, 4)),
+                'parameters': {'mode': 'fast', 'ch': 1, 'gain_code': 4}}
+        found = self.discrepancies(mission, self.assignment, [call])
+        self.assertEqual([(e['task'], e['quantity'], e['reason']) for e in found],
+                         [('measure', 'temperature', 'value mismatch')])
+        self.assertEqual(found[0]['parameters'], {'mode': 'fast', 'ch': 1, 'gain_code': 4})
+        # A call whose constant parameter disagrees does not match this task.
+        other = {**call, 'parameters': {'mode': 'slow', 'ch': 1, 'gain_code': 4}}
+        self.assertEqual(self.discrepancies(mission, self.assignment, [other]), [])
+        # A call whose sequence did not advance is also caught.
+        stale = {**self.live_call(20.0, sequence=(5, 5)),
+                 'parameters': {'mode': 'fast', 'ch': 2, 'gain_code': 6}}
+        self.assertEqual([(e['task'], e['quantity'], e['reason'])
+                          for e in self.discrepancies(mission, self.assignment, [stale])],
+                         [('measure', 'sequence', 'no new acquisition')])
+
 
 class OwnCopiesTests(TemporaryDirectoryCase):
     """What the stage code calls and the grader also has: the tool's own capability rules and package runner."""

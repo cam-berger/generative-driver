@@ -151,6 +151,8 @@ def _tx_bound(parts, parameters, where):
     """Validate a tx list and return its largest encoded length."""
     _require(type(parts) is list, where, "tx must be a list")
     total = 0
+    check_input = 0
+    part_sizes = []
     for i, part in enumerate(parts):
         loc = f"{where}.{i}"
         _fields(part, (), ("hex", "text", "arg", "format", "check", "over_parts", "byteorder"), loc)
@@ -165,12 +167,13 @@ def _tx_bound(parts, parameters, where):
                 _, _, size = checks.resolve(part["check"])
             except checks.CheckError as exc:
                 raise ModelError(loc, str(exc)) from exc
-            total += size
+            check_input += sum(part_sizes[span[0]:span[1]])
+            part_size = size
         elif set(part) == {"hex"}:
-            total += len(_hex(part["hex"], loc))
+            part_size = len(_hex(part["hex"], loc))
         elif set(part) == {"text"}:
             _require(type(part["text"]) is str, loc, "text must be a string")
-            total += len(part["text"].encode("utf-8"))
+            part_size = len(part["text"].encode("utf-8"))
         elif set(part) == {"arg", "format"}:
             _require(type(part["arg"]) is str and part["arg"] in parameters, loc, "unknown parameter")
             p, fmt = parameters[part["arg"]], part["format"]
@@ -179,30 +182,33 @@ def _tx_bound(parts, parameters, where):
             if fmt == "raw" or fmt in _LENGTH_FORMATS:
                 _require(p["type"] == "bytes", loc, "raw and length formats require a bytes parameter")
                 if fmt == "raw":
-                    total += p["max_length"]
+                    part_size = p["max_length"]
                 else:
                     _require(p["max_length"] <= _LENGTH_FORMATS[fmt][1], loc, "max_length exceeds the length field")
-                    total += struct.calcsize(_LENGTH_FORMATS[fmt][0])
+                    part_size = struct.calcsize(_LENGTH_FORMATS[fmt][0])
             elif fmt == "ascii":
                 _require(p["type"] != "bytes", loc, "bytes parameters encode only as raw or a length format")
                 if p["type"] == "string":
                     _require(all(v.isascii() for v in p["enum"]), loc, "ascii arguments require ASCII enum values")
-                    total += max(len(v) for v in p["enum"])
+                    part_size = max(len(v) for v in p["enum"])
                 else:
                     # Number domains also admit Python integers: 10**307 renders
                     # as 308 digits, even when its bound is written as 1e308.
-                    total += max(len(str(p["minimum"])), len(str(p["maximum"])),
-                                 len(str(int(p["minimum"]))), len(str(int(p["maximum"]))),
-                                 24 if p["type"] == "number" else 1)
+                    part_size = max(len(str(p["minimum"])), len(str(p["maximum"])),
+                                    len(str(int(p["minimum"]))), len(str(int(p["maximum"]))),
+                                    24 if p["type"] == "number" else 1)
             else:
                 fmt_spec, lo, hi = _FORMATS[fmt]
                 required_types = ("integer", "number") if fmt.startswith("f") else ("integer",)
                 _require(p["type"] in required_types, loc, "parameter type incompatible with format")
                 _require(lo <= p["minimum"] <= p["maximum"] <= hi, loc, "parameter bounds exceed encoding")
-                total += struct.calcsize(fmt_spec)
+                part_size = struct.calcsize(fmt_spec)
         else:
             raise ModelError(loc, "tx part must be hex, text, arg/format, or check")
+        part_sizes.append(part_size)
+        total += part_size
     _require(total <= 65536, where, "encoded tx exceeds 65536 bytes")
+    _require(check_input <= 65536, where, "tx checksum input exceeds 65536 bytes")
     return total
 
 
@@ -848,6 +854,7 @@ class Session:
                         delay(step["ms"] / 1000)
                         entry["status"] = "completed"
                         continue
+                    entry["dispatched"] = False
                     tx = _encode(step["tx"], arguments)
                     entry["tx_hex"] = tx.hex()
                     for rule in step.get("match", ()):
@@ -856,8 +863,10 @@ class Session:
                     if step["op"] == "usb_control":
                         setup = {key: arguments[value["arg"]] if type(value) is dict else value for key, value in step["setup"].items()}
                         entry["setup"] = setup
+                        entry["dispatched"] = True
                         data = transport.control(setup, tx, step["rx"], step["timeout_ms"])
                     else:
+                        entry["dispatched"] = True
                         data = transport.exchange(tx, step["rx"], step["timeout_ms"])
                     if type(data) is bytes:
                         entry["rx_hex"] = data.hex()
@@ -877,7 +886,7 @@ class Session:
                         _require(_matches(data, step["expect"]), "expect", "response expectation mismatch")
                     if "capture" in step:
                         captures[step["capture"]] = data
-                        if step["rx"]["mode"] == "frame" and step["rx"]["length"].get("padding") is not None:
+                        if step["rx"]["mode"] == "frame":
                             spec = checks.frame_spec(step["rx"])
                             data = data[:checks.frame_data_end(data, spec)]
                         decoder_captures[step["capture"]] = data

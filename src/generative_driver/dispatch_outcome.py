@@ -85,6 +85,7 @@ def _sent(record):
     if not isinstance(steps, list) or not isinstance(operation, str):
         return True
     return any(isinstance(step, dict) and step.get('operation') == operation and step.get('op') != 'delay'
+               and step.get('dispatched') is not False
                for step in steps)
 
 
@@ -101,9 +102,9 @@ def _toolchain_fault(result):
 
 def _host_fault(result):
     """Whether a tool result says the host, not its input, failed, by a positive list: the tool says so (fault host),
-    or it is a toolchain error naming a host failure (the OSError family, ImportError, MemoryError or a subprocess
-    timeout), or an error that names no exception type, which the toolkit returns when even its own record of the call
-    failed. Any other error, such as an AttributeError or RecursionError on content a worker wrote, is no host fault."""
+    or it is a toolchain error naming a host failure (the OSError family, ImportError or a subprocess timeout), or an
+    error that names no exception type, which the toolkit returns when even its own record of the call failed. Any
+    other error, such as MemoryError, AttributeError or RecursionError on content a worker wrote, is no host fault."""
     if result.get('fault') == 'host':
         return True
     if not isinstance(result.get('error'), str):
@@ -111,7 +112,7 @@ def _host_fault(result):
     kind = _toolchain_fault(result)
     cls = getattr(builtins, kind, None)
     return (kind == 'toolchain error' or kind.rsplit('.', 1)[-1] == 'TimeoutExpired'
-            or isinstance(cls, type) and issubclass(cls, (OSError, ImportError, MemoryError)))
+            or isinstance(cls, type) and issubclass(cls, (OSError, ImportError)))
 
 
 def _before_contact(result):

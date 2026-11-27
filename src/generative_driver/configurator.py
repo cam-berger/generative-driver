@@ -702,7 +702,7 @@ def _frozen_package(package, strict=False):
             # What a package lacks, or holds that a package may not, is its own defect, which the check names.
             pass
     checked = verify_package(root)
-    model = the_driver(checked)[1] if checked['ok'] else None
+    entry, model = the_driver(checked) if checked['ok'] else (None, None)
     tools = ({name: tool['operation'] for name, tool in render_mcp(checked['drivers'])['operations'].items()}
              if checked['ok'] else None)
     identity = model.get('identity') if isinstance(model, dict) else None
@@ -720,11 +720,21 @@ def _frozen_package(package, strict=False):
     own = requests(operations.get(identity)) if named and identity is not None else set()
     functions = (sorted(name for name, op in operations.items() if name != identity and requests(op) - own)
                  if named and identity is not None else None)
+    probed = None
+    if checked['ok'] and entry is not None:
+        from interface_runtime.evidence import read_json
+        try:
+            evidence = read_json(root / entry['evidence'])
+            if isinstance(evidence, dict) and isinstance(evidence.get('operation'), str):
+                probed = evidence['operation']
+        except ((ValueError, TypeError, RecursionError) if strict else (OSError, ValueError, TypeError, RecursionError)):
+            probed = None
+    replayed_function = bool(probed is not None and isinstance(functions, list) and probed in functions)
     channel = model.get('channel') if isinstance(model, dict) else None
     return {'sha256': package['sha256'], 'manifest_sha256': checked['manifest_sha256'], 'tools': tools,
             'identity': identity, 'effects': effects,
             'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
-            'functions': functions}
+            'functions': functions, 'probed_operation': probed, 'replayed_function': replayed_function}
 
 
 NEVER_RAN = 'fresh reuse never ran a tool of the frozen package'
@@ -733,6 +743,12 @@ IDENTITY_ONLY = ('fresh reuse ran no function of the frozen package beyond its i
 UNGRANTED = ("the operator's grants permit no function of the frozen package beyond its identity operation (each needs an "
              'effect, or the reset its channel declares on open, that was not granted), so fresh reuse could not test '
              'one; that limit says nothing about the driver')
+REPLAY_IDENTITY_ONLY = ('the replayed device exchanges ran no function of the frozen package beyond its identity '
+                        'operation; identity alone is not evidence of function, nor is an operation that only waits '
+                        "or repeats identity's requests")
+REPLAY_UNGRANTED = ("the operator's grants permit no function of the frozen package beyond its identity operation "
+                    '(each needs an effect, or the reset its channel declares on open, that was not granted), so no '
+                    'live probe could record one; that limit says nothing about the driver')
 # Why the gateway refused every connection to the run's device (`_unreachable`). Each but UNLISTENED is an operator or
 # host limit that says nothing about the driver; UNLISTENED is the candidate pipeline's own omission.
 UNBOUND = ('the operator bound no device to this run, so the configurator refused every device connection: no live probe '
@@ -870,36 +886,30 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
 
 
 def _self_evidence(accepted, events, started=(), assignments=(), grants=None, unreachable=None):
-    """A generic run's final verdict, from the configurator's own records only.
+    """A generic run's final verdict, from the configurator's own records only, judging the emitted driver alone
+    (Decision D2).
 
     `events` are tool.finished payloads; `started` are tool.started payloads with their dispatch ids; `assignments`
     are the run's reuse assignments as {id, inputs}, with the input hashes the configurator recorded; `grants` are the
     run's operator grants; `unreachable` says why the gateway refused every connection to the run's device as of fresh
     reuse (`_unreachable`), or is None.
 
-    - **Equivalent:** the emitted package passed emit_check replay of the recorded device exchanges, which the
-      configurator ran at emit, and fresh reuse passed `_fresh_reuse`: every live operation succeeded, and at least
-      one generated tool call ran a function of the frozen package beyond its identity operation, on the connection
-      the configurator supplied.
-    - **Not equivalent:** no single package passed emit_check replay of device exchanges (a replay of exchanges the
-      worker supplied is not one), the driver failed on the device, or fresh reuse never ran a function of the package
-      beyond its identity with a generated tool.
-    - **Unscored (None):** otherwise, when a live operation was inconclusive (an operator, host or transport fault, or
-      a failure of bytes other than the emitted driver) or was dispatched without a recorded result, or when the
-      operator's grants permit no function of the package beyond its identity (an effect or the reset its channel
-      needs), so none could run. So it is without a replay of device exchanges when no live probe could have recorded
-      one: the operator's or the host's limits let the configurator open no connection to the device (any `unreachable`
-      but UNLISTENED, the pipeline's own omission), or the runtime refuses every operation of the frozen package's bytes
-      for want of the reset grant its channel declares. That excuses only the one package that passed emit_check
-      without a replay of device exchanges, never a driver that was not emitted, a candidate emit_check rejected
-      offline or several packages handed off.
+    - **Equivalent:** the one emitted package passed `emit_check` replay of recorded live device exchanges, and those
+      replayed exchanges include a function of the frozen package beyond its identity operation (compared by what
+      reaches the device).
+    - **Not equivalent:** no single package passed `emit_check` replay of live device exchanges including a function
+      beyond identity (a replay of exchanges the worker supplied is not one, nor is identity alone or an operation
+      that only waits or repeats identity's requests).
+    - **Unscored (None):** when the one emitted package passed `emit_check` offline or replayed only identity because
+      the operator's or host's limits prevented probing a function live (any `unreachable` but UNLISTENED, or
+      `_ungranted`, which includes `_reset_ungranted`). No driver emitted, a candidate `emit_check` rejected offline,
+      or several packages handed off is not equivalent whatever the device access.
+
+    Fresh reuse still runs and its report (`_fresh_reuse`) is recorded beside the verdict in `mission`, never in
+    `checks` or `diff`.
 
     The frozen package is read strictly: a host failure to read it raises (a host stop that resume grades again),
-    never a verdict about the driver.
-
-    Fresh reuse is every reuse assignment that received the frozen package, so an attempt that stopped before its
-    handoff and was resumed is judged with the accepted one. This is self-evidence about the driver's outputs on the
-    device, labelled as such; never an independent grade or truth."""
+    never a verdict about the driver."""
     emits = [h for h in accepted if h['stage'] == 'emit']
     emit = next((h for h in reversed(emits) if _packages(h)), None)
     packages = _packages(emit) if emit else []
@@ -912,8 +922,6 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     # Ruling 7 counts only a replay of the recorded device exchanges: a replay of supplied exchanges reached no device,
     # and a check that recorded neither establishes no replay.
     replayed = passed and kind == REPLAYED
-    replay = {'id': 'emitted_package_replay', 'passed': replayed, **({'package': frozen} if frozen else {}),
-              'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
     reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
     judged = {a['id'] for a in assignments if frozen is not None and frozen['sha256'] in set((a.get('inputs') or {}).values())}
     judged |= {reuse['assignment_id']} if reuse is not None else set()
@@ -921,8 +929,22 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     package = _frozen_package(packages[0], strict=True) if frozen else None
     operations, live = _fresh_reuse(package, [e for e in events if mine(e)], [e for e in started if mine(e)], grants,
                                     unreachable)
+    mission = {**operations, 'diff': live,
+               **({'reason': '; '.join(d['reason'] for d in live)} if live else {})}
+    exercised = replayed and bool(package and package.get('replayed_function'))
+    ungranted = _ungranted(package, grants)
+    unprobed = (unreachable is not None and unreachable != UNLISTENED) or ungranted
     diff = []
-    if not replayed:
+    if exercised:
+        equivalent, replay_passed = True, True
+    elif replayed:
+        if ungranted:
+            equivalent, replay_passed = None, None
+            diff.append({'id': 'emitted_package_replay', 'reason': REPLAY_UNGRANTED})
+        else:
+            equivalent, replay_passed = False, False
+            diff.append({'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY})
+    else:
         if passed:
             reason = ('the emitted package passed emit_check without a replay of the recorded device exchanges'
                       + (' (' + kind + ')' if kind else ''))
@@ -939,16 +961,17 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
             reason = ('emitted package not handed off: ' + gone if not candidates and gone else 'no driver emitted' if not candidates else
                       'the emitted package did not pass emit_check' + (': ' + why if why else '') if candidates == 1 else
                       'none of the ' + str(candidates) + ' emitted packages passed emit_check')
-        diff.append({'id': replay['id'], 'reason': reason})
-    # No live probe could record device exchanges to replay when the operator's or the host's limits kept every
-    # connection from the device, or the runtime refuses the frozen package's bytes without the reset grant its channel
-    # declares. Then the one package that passed emit_check lacks its replay of device exchanges for that limit, not
-    # for the driver, and the verdict is unscored unless the driver failed; it is never equivalent. No driver emitted,
-    # a candidate emit_check rejected offline, or several packages handed off failed whatever the device access.
-    unprobed = (unreachable is not None and unreachable != UNLISTENED) or _reset_ungranted(package, grants)
-    equivalent = (operations['passed'] if replayed else
-                  None if unprobed and passed and operations['passed'] is not False else False)
-    return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay, operations], 'diff': diff + live}
+        diff.append({'id': 'emitted_package_replay', 'reason': reason})
+        if passed:
+            if unreachable is not None:
+                diff.append({'id': 'emitted_package_replay', 'reason': unreachable})
+            elif ungranted:
+                diff.append({'id': 'emitted_package_replay', 'reason': REPLAY_UNGRANTED})
+        equivalent = None if unprobed and passed else False
+        replay_passed = None if equivalent is None else False
+    replay = {'id': 'emitted_package_replay', 'passed': replay_passed, **({'package': frozen} if frozen else {}),
+              'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
+    return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay], 'diff': diff, 'mission': mission}
 
 
 @contextmanager
@@ -2517,8 +2540,19 @@ class Controller:
                 # make the configurator's check fail for the host.
                 result = self._check_tool(call_tool, run_dir.name, stage, 'emit_check',
                                           {'package_dir':str(package),'run_dir':str(run_dir/'checks'/assignment['id'])})
-                # A check that did not finish says nothing about the host: the package is rejected with the cause.
-                if not result.get('unfinished') and dispatch_outcome.read('emit_check', result).host_fault:
+                # Decision D1: budget exhaustion stops for the operator; timeout, a process ending without a result,
+                # or a host fault stops for the host (resumable); MemoryError rejects the package.
+                unfinished = result.get('unfinished')
+                if unfinished in ('budget', 'cancelled', 'shutdown'):
+                    return {'stop': {'category': 'operator', 'reason': str(result.get('error'))}}
+                if unfinished == 'timeout' or (unfinished == 'raised' and (
+                        result.get('unfinished_kind') == tool_process._EXITED
+                        or (result.get('unfinished_kind') and dispatch_outcome.read('emit_check', {
+                            'ok': False, 'error': str(result['unfinished_kind']) + ': ' + str(result.get('error')),
+                            '_exit': 1}).host_fault))):
+                    raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
+                                       + str(result.get('error')))
+                if not unfinished and dispatch_outcome.read('emit_check', result).host_fault:
                     # The host could not run the check, which says nothing about the package: stop for the host
                     # (resumable) rather than reject the package.
                     raise RuntimeError('emit_check could not run on this host for ' + package.name + ': '
@@ -2840,7 +2874,8 @@ class Controller:
             return self._kit_tool(call_tool, name, arguments, run_id=run_id, stage=stage, limits=limits)
         except tool_process.Unfinished as unfinished:
             self.log.abandoned(unfinished, run_id=run_id, stage=stage, step='check')
-            return {'ok': False, '_exit': 1, 'error': str(unfinished), 'unfinished': unfinished.reason}
+            return {'ok': False, '_exit': 1, 'error': str(unfinished), 'unfinished': unfinished.reason,
+                    **({'unfinished_kind': unfinished.kind} if unfinished.kind is not None else {})}
 
     def _abandoned(self, run, marker, name, error):
         """Record a dispatched gateway call that ended without a result as `tool.abandoned`, never as finished, and

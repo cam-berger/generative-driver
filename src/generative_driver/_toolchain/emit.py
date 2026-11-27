@@ -19,8 +19,8 @@ def emit_package(run_dir, model_dir, probe, name=None, version="1.0.0", **_):
 
 # What only the host can make fail. The check reads the package's and the model's bytes inside its own handlers and
 # refuses what it cannot read, so an OSError or ImportError that reaches emit_check came from the host's side of the
-# check.
-HOST_FAULTS = (OSError, ImportError, MemoryError)
+# check. Running out of memory (MemoryError) rejects the package rather than stopping the run for the host.
+HOST_FAULTS = (OSError, ImportError)
 
 
 @core.tool("emit_check")
@@ -32,9 +32,9 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None, **_):
     runtime. No ground truth and no device knowledge.
 
     A package or argument the check refuses is a failed check (exit 1), whatever the package bytes made fail,
-    including bytes it cannot read or parse. Only a failure outside the package bytes is the host's: a file failure
-    around the check (its temporary folder, reading back its own copy), an import or memory exhaustion. That result
-    is fault host with exit 4: it says nothing about the package.
+    including bytes it cannot read or parse or memory exhaustion (MemoryError). Only a failure outside the package
+    bytes is the host's: a file failure around the check (its temporary folder, reading back its own copy) or an
+    import failure. That result is fault host with exit 4: it says nothing about the package.
     """
     from . import interface
     try:
@@ -42,6 +42,9 @@ def emit_check(package_dir, model_dir=None, expected_manifest_sha256=None, **_):
     except HOST_FAULTS as exc:
         return {"ok": False, "fault": "host", "error": f"{type(exc).__name__}: {exc}", "replay_status": "not_run",
                 "_exit": 4}
+    except MemoryError as exc:
+        return {"ok": False, "integrity_ok": False, "replay_status": "not_run",
+                "error": f"{type(exc).__name__}: {exc}", "_exit": 1}
 
 
 @core.tool("emit_test_live")

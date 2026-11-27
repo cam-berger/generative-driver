@@ -92,6 +92,74 @@ def _carve_app(flash, app):
     return True
 
 
+_ESP_MODERN_SUFFIXES = frozenset({'S2', 'S3', 'S31', 'C2', 'C3', 'C5', 'C6', 'C61', 'H2', 'H21', 'H4', 'P4'})
+_ESP_CLASSIC_PREFIXES = ('D0WD', 'D2WD', 'S0WD', 'U4WDH', 'PICO')
+_ESP_FUSES = {
+    'classic': (('FLASH_CRYPT_CNT', 'crypt_cnt'), ('ABS_DONE_0', 'bool'), ('ABS_DONE_1', 'bool')),
+    'modern': (('SPI_BOOT_CRYPT_CNT', 'crypt_cnt'), ('SECURE_BOOT_EN', 'bool')),
+}
+
+
+def _esp_chip_family(chip):
+    """Which ESP32 fuse layout `chip` uses ('classic' or 'modern'), or None when unrecognized."""
+    if not isinstance(chip, str):
+        return None
+    variant = re.search(r'\bESP32-([A-Z0-9]+)\b', chip, re.IGNORECASE)
+    if variant:
+        suffix = variant.group(1).upper()
+        if suffix in _ESP_MODERN_SUFFIXES:
+            return 'modern'
+        if suffix.startswith(_ESP_CLASSIC_PREFIXES):
+            return 'classic'
+        return None
+    if re.search(r'\bESP32\b', chip, re.IGNORECASE):
+        return 'classic'
+    return None
+
+
+def _esp_fuse_status(kind, token):
+    """Classify one efuse value token as 'locked', 'unlocked' or 'unknown'."""
+    lowered = token.lower()
+    if kind == 'bool':
+        if lowered in ('true', '1', '0b1', 'enable', 'enabled'):
+            return 'locked'
+        if lowered in ('false', '0', '0b0', 'disable', 'disabled'):
+            return 'unlocked'
+        return 'unknown'
+    if lowered in ('enable', 'enabled'):
+        return 'locked'
+    if lowered in ('disable', 'disabled'):
+        return 'unlocked'
+    try:
+        value = int(token, 0)
+    except ValueError:
+        return 'unknown'
+    if value < 0:
+        return 'unknown'
+    return 'locked' if value.bit_count() % 2 == 1 else 'unlocked'
+
+
+def _esp_protection_state(chip, summary):
+    """('locked' | 'unlocked' | 'unknown', reason) from the detected `chip` and `espefuse summary` text."""
+    family = _esp_chip_family(chip)
+    if family is None:
+        return 'unknown', f'Unrecognized ESP chip {chip!r}; flash protection state is unknown, so no dump was attempted'
+    expected = _ESP_FUSES[family]
+    seen = {}
+    for line in summary.splitlines():
+        for field, kind in expected:
+            match = re.match(r'^\s*' + re.escape(field) + r'\b[^=]*=\s*(\S+)', line)
+            if match:
+                seen[field] = _esp_fuse_status(kind, match.group(1))
+    if any(state == 'locked' for state in seen.values()):
+        return 'locked', 'flash encryption or secure boot is set; class 1 unavailable'
+    missing = [field for field, _ in expected if seen.get(field) != 'unlocked']
+    if missing:
+        return ('unknown', 'Flash protection state is unknown (missing or unreadable fuse fields: '
+                + ', '.join(missing) + '); no dump was attempted')
+    return 'unlocked', None
+
+
 @core.tool("acquire_flash")
 def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=None, allow_reset=False, **_):
     """Read an explicitly selected ESP32 controller; a serial port alone is not an ESP identity.
@@ -145,11 +213,11 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
         efuse = os.path.join(out, "efuse.txt")
         with open(efuse, "w", encoding="utf-8") as fh:
             fh.write(fo)
-        locked = any(("SPI_BOOT_CRYPT_CNT" in l and "Disable" not in l and "disabled" not in l) or
-                     ("SECURE_BOOT_EN" in l and "True" in l) for l in fo.splitlines())
-        if locked:
-            return ({"available": False, "reason": "flash encryption or secure boot is set; class 1 unavailable",
-                          "chip": chip, "mac": mac, "_exit": 0})
+        protection, reason = _esp_protection_state(chip, fo)
+        if protection == "locked":
+            return ({"available": False, "reason": reason, "chip": chip, "mac": mac, "_exit": 0})
+        if protection != "unlocked":
+            return ({"available": False, "reason": reason, "chip": chip, "mac": mac, "_exit": 1})
         flash = os.path.join(out, "flash.bin")
         if chunked:
             rc3, do, de = core.sh([core.VENV_PY, os.path.join(core.BENCH, "tools", "read_flash_chunked.py"),

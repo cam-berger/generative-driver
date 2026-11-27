@@ -171,7 +171,7 @@ print(json.dumps({'_exit': 0}))
         from generative_driver._toolchain import core
         good = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
         cases = {"fuse failure": (good, (1, "")), "locked": (good, (0, "SECURE_BOOT_EN = True\n")),
-                 "no partition table": (b"\xff" * 0x20000, (0, "SECURE_BOOT_EN = False\n"))}
+                 "no partition table": (b"\xff" * 0x20000, (0, "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"))}
         for name, (image, fuses) in cases.items():
             for grant in (True, False):
                 with self.subTest(name, grant=grant):
@@ -308,6 +308,60 @@ print(json.dumps({'_exit': 0}))
             self.assertTrue(result["interpret_input"].endswith("interpret-input.elf"))
             self.assertTrue(result["artifacts"])
             self.assertTrue(any("default-reset" in c for c in commands))
+
+    def test_01_B6_esp_flash_selects_protection_fuses_by_chip_and_refuses_unknown_protection(self):
+        from unittest.mock import patch
+        from generative_driver.toolkit import call_tool
+        from generative_driver._toolchain import core
+        image = self._esp_flash_image([(0, 0x00, 0x10000, 0x100, b"factory")])
+
+        def run_case(chip_line, fuse_text):
+            commands = []
+            inner = self._esp_fake_sh(commands, image, fuses=(0, fuse_text))
+            def fake(cmd, **kw):
+                if "chip-id" in cmd:
+                    commands.append(cmd)
+                    return 0, chip_line + "\nMAC: 80:45:6b:2d:2f:6c\n", ""
+                return inner(cmd, **kw)
+            with tempfile.TemporaryDirectory() as temp, patch.object(core, "sh", fake):
+                res = call_tool("acquire_flash", {"run_dir": temp, "port": "/dev/cu.fake", "backend": "esp32"})
+            return res, commands
+
+        # Classic ESP32: locked by FLASH_CRYPT_CNT (odd bits), ABS_DONE_0, or ABS_DONE_1 -> exit 0, no dump.
+        for label, fuses in (
+                ("esp32 flash crypt odd", "FLASH_CRYPT_CNT (BLOCK0) = 1 R/W (0b0000001)\nABS_DONE_0 = False\nABS_DONE_1 = False\n"),
+                ("esp32 abs_done_0", "FLASH_CRYPT_CNT = 0\nABS_DONE_0 = True\nABS_DONE_1 = False\n"),
+                ("esp32 abs_done_1", "FLASH_CRYPT_CNT = 0\nABS_DONE_0 = False\nABS_DONE_1 = True\n")):
+            with self.subTest(label):
+                res, cmds = run_case("Chip is ESP32-D0WD-V3 (revision v3.0)", fuses)
+                self.assertFalse(res["available"], res)
+                self.assertEqual(res["_exit"], 0, res)
+                self.assertFalse(any("read-flash" in c for c in cmds), cmds)
+
+        # Classic ESP32: unlocked (even FLASH_CRYPT_CNT and both ABS_DONE false) -> dumps.
+        for label, fuses in (
+                ("esp32 unlocked zero", "FLASH_CRYPT_CNT (BLOCK0) = 0 R/W (0b0000000)\nABS_DONE_0 (BLOCK0) = False R/W (0b0)\nABS_DONE_1 (BLOCK0) = False R/W (0b0)\n"),
+                ("esp32 unlocked even bits", "FLASH_CRYPT_CNT = 3\nABS_DONE_0 = False\nABS_DONE_1 = False\n")):
+            with self.subTest(label):
+                res, cmds = run_case("Chip is ESP32-D0WD-V3 (revision v3.0)", fuses)
+                self.assertTrue(res["available"], res)
+                self.assertTrue(any("read-flash" in c for c in cmds), cmds)
+
+        # Missing expected fields or unrecognized chip -> protection unknown, exit 1, no dump.
+        for label, chip_line, fuses in (
+                ("esp32 missing classic fields", "Chip is ESP32-D0WD-V3 (revision v3.0)",
+                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"),
+                ("esp32s3 missing crypt cnt", "Chip is ESP32-S3 (QFN56)", "SECURE_BOOT_EN = False\n"),
+                ("esp32s3 unreadable field", "Chip is ESP32-S3 (QFN56)",
+                 "SPI_BOOT_CRYPT_CNT = ???\nSECURE_BOOT_EN = False\n"),
+                ("unrecognized chip", "Chip is ESP32-X99 (rev 1)",
+                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n")):
+            with self.subTest(label):
+                res, cmds = run_case(chip_line, fuses)
+                self.assertFalse(res["available"], res)
+                self.assertEqual(res["_exit"], 1, res)
+                self.assertIn("unknown", res["reason"].lower(), res)
+                self.assertFalse(any("read-flash" in c for c in cmds), cmds)
 
     def test_01_B6_classification_names_no_front_end_for_an_elf_image_a_datasheet_or_a_bus_scan(self):
         from unittest.mock import patch

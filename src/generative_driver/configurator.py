@@ -673,6 +673,87 @@ def _observed_packages(named, built, given, unseen):
     return observed, not_handed_off, dropped
 
 
+def _recorded_live_probes(events):
+    """SHA-256 digests of successful live `probe_run` records the configurator itself recorded on its owned
+    connection (`tool.finished` payloads). Only a package whose bundled probe bytes match one of these digests
+    replays device exchanges recorded by the configurator."""
+    shas = set()
+    for event in events:
+        if event.get('name') != 'probe_run' or event.get('connected') is not True:
+            continue
+        result = _result_of(event)
+        if result.get('evidence_kind', 'live') != 'live':
+            continue
+        if not dispatch_outcome.read('probe_run', event.get('result')).succeeded:
+            continue
+        probe = result.get('probe')
+        if isinstance(probe, str):
+            sha = (event.get('artifacts') or {}).get(str(Path(probe).resolve()))
+            if isinstance(sha, str):
+                shas.add(sha)
+    return shas
+
+
+def _fixed_parameters(op):
+    """Parameter values for any parameter of `op` whose schema admits only one value."""
+    params = op.get('parameters') if isinstance(op, dict) else None
+    if not isinstance(params, dict):
+        return {}
+    fixed = {}
+    for pname, spec in params.items():
+        if not isinstance(spec, dict):
+            continue
+        kind = spec.get('type')
+        if kind == 'string' and isinstance(spec.get('enum'), list) and len(spec['enum']) == 1:
+            fixed[pname] = spec['enum'][0]
+        elif kind == 'bytes' and spec.get('min_length') == 0 and spec.get('max_length') == 0:
+            fixed[pname] = ''
+        elif (kind in ('integer', 'number') and 'minimum' in spec and 'maximum' in spec
+              and spec['minimum'] == spec['maximum']):
+            fixed[pname] = spec['minimum']
+    return fixed
+
+
+def _operation_requests(op, parameters=None):
+    """What each non-delay step of `op` sends to the device, compared by encoded device bytes when every referenced
+    argument is known (`parameters`, or single-valued parameters when `parameters` is None). Steps that depend on
+    multi-valued parameters stay as canonical templates so they remain distinct from constant identity requests."""
+    from interface_runtime.engine import _encode
+    steps = op.get('steps') if isinstance(op, dict) else None
+    if not isinstance(steps, list):
+        return set()
+    known = parameters if parameters is not None else _fixed_parameters(op)
+    out = set()
+    for step in steps:
+        if not isinstance(step, dict) or step.get('op') == 'delay':
+            continue
+        op_kind = step.get('op')
+        tx = step.get('tx')
+        setup = step.get('setup') if op_kind == 'usb_control' else None
+        tx_args = ({part['arg'] for part in tx if isinstance(part, dict) and 'arg' in part}
+                   if isinstance(tx, list) else set())
+        setup_args = ({val['arg'] for val in setup.values() if isinstance(val, dict) and 'arg' in val}
+                      if isinstance(setup, dict) else set())
+        if isinstance(tx, list) and (tx_args | setup_args) <= known.keys():
+            try:
+                tx_hex = _encode(tx, known).hex()
+                resolved_setup = ({k: known[v['arg']] if isinstance(v, dict) and 'arg' in v else v
+                                   for k, v in setup.items()} if isinstance(setup, dict) else None)
+            except (ValueError, TypeError, KeyError):
+                tx_hex = None
+            if tx_hex is not None:
+                entry = {'kind': 'encoded', 'op': op_kind, 'tx_hex': tx_hex}
+                if op_kind == 'usb_control':
+                    entry.update(setup=resolved_setup, rx=step.get('rx'))
+                out.add(json.dumps(entry, sort_keys=True))
+                continue
+        entry = {'kind': 'template', 'op': op_kind, 'tx': tx}
+        if op_kind == 'usb_control':
+            entry.update(setup=setup, rx=step.get('rx'))
+        out.add(json.dumps(entry, sort_keys=True))
+    return out
+
+
 def _frozen_package(package, strict=False):
     """What judging a run of a frozen package needs, read from its bytes through the runtime's check of the package
     (`interface_runtime.package`): its content digest, its manifest's digest (which the proof of a generated call
@@ -711,30 +792,34 @@ def _frozen_package(package, strict=False):
     named = isinstance(operations, dict)
     effects = ({name: op.get('effect', 'actuate') if isinstance(op, dict) else None for name, op in operations.items()}
                if named else None)
-    def requests(op):
-        """What each step that reaches the device asks of it."""
-        steps = op.get('steps') if isinstance(op, dict) else None
-        sent = lambda step: ('op', 'tx', 'setup', 'rx') if step.get('op') == 'usb_control' else ('op', 'tx')
-        return {json.dumps({key: step.get(key) for key in sent(step)}, sort_keys=True)
-                for step in steps if isinstance(step, dict) and step.get('op') != 'delay'} if isinstance(steps, list) else set()
-    own = requests(operations.get(identity)) if named and identity is not None else set()
-    functions = (sorted(name for name, op in operations.items() if name != identity and requests(op) - own)
+    own = _operation_requests(operations.get(identity), {}) if named and identity is not None else set()
+    functions = (sorted(name for name, op in operations.items() if name != identity and _operation_requests(op) - own)
                  if named and identity is not None else None)
     probed = None
+    probed_parameters = None
+    evidence_sha256 = None
     if checked['ok'] and entry is not None:
+        evidence_sha256 = (checked.get('manifest') or {}).get('files', {}).get(entry['evidence'])
         from interface_runtime.evidence import read_json
         try:
             evidence = read_json(root / entry['evidence'])
             if isinstance(evidence, dict) and isinstance(evidence.get('operation'), str):
                 probed = evidence['operation']
+                if isinstance(evidence.get('parameters'), dict):
+                    probed_parameters = evidence['parameters']
         except ((ValueError, TypeError, RecursionError) if strict else (OSError, ValueError, TypeError, RecursionError)):
             probed = None
-    replayed_function = bool(probed is not None and isinstance(functions, list) and probed in functions)
+    replayed_function = bool(
+        probed is not None and isinstance(functions, list) and probed in functions
+        and bool(_operation_requests(operations.get(probed), probed_parameters) - own)
+    )
     channel = model.get('channel') if isinstance(model, dict) else None
     return {'sha256': package['sha256'], 'manifest_sha256': checked['manifest_sha256'], 'tools': tools,
-            'identity': identity, 'effects': effects,
+            'identity': identity, 'effects': effects, 'operations': operations if named else None,
+            'identity_requests': own if named and identity is not None else None,
             'resets_on_open': isinstance(channel, dict) and channel.get('resets_on_open') is True,
-            'functions': functions, 'probed_operation': probed, 'replayed_function': replayed_function}
+            'functions': functions, 'probed_operation': probed, 'replayed_function': replayed_function,
+            'evidence_sha256': evidence_sha256}
 
 
 NEVER_RAN = 'fresh reuse never ran a tool of the frozen package'
@@ -846,8 +931,15 @@ def _fresh_reuse(package, events, started=(), grants=None, unreachable=None):
         return outcome, detail
     def functional(event, outcome):
         """Whether the call ran, or may have run, a function of the frozen package on the device."""
-        if outcome == 'refused' or tools.get(event.get('name')) not in functions:
+        op_name = tools.get(event.get('name'))
+        if outcome == 'refused' or op_name not in functions:
             return False
+        params = event.get('parameters')
+        if isinstance(params, dict) and package and isinstance(package.get('operations'), dict):
+            op = package['operations'].get(op_name)
+            own = package.get('identity_requests')
+            if op is not None and isinstance(own, set) and not (_operation_requests(op, params) - own):
+                return False
         # A dispatch without a recorded result has no proof. It may have run the function when the configurator
         # recorded, as it dispatched the tool, the digest of the frozen package.
         return emitted(event) or (outcome == 'unresolved'
@@ -919,14 +1011,19 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     passed = frozen is not None and check_of(emit).get('passed') is True
     verified = check_of(emit).get('verified_by')
     kind = verified[0] if isinstance(verified, list) and len(verified) == 1 and isinstance(verified[0], str) else None
-    # Ruling 7 counts only a replay of the recorded device exchanges: a replay of supplied exchanges reached no device,
-    # and a check that recorded neither establishes no replay.
-    replayed = passed and kind == REPLAYED
     reuse = next((h for h in reversed(accepted) if h['stage'] == 'reuse'), None)
     judged = {a['id'] for a in assignments if frozen is not None and frozen['sha256'] in set((a.get('inputs') or {}).values())}
     judged |= {reuse['assignment_id']} if reuse is not None else set()
     mine = lambda e: e.get('assignment_id') in judged
     package = _frozen_package(packages[0], strict=True) if frozen else None
+    live_probes = _recorded_live_probes(events)
+    evidence_sha = package.get('evidence_sha256') if package else None
+    recorded_live = isinstance(evidence_sha, str) and evidence_sha in live_probes
+    # Ruling 7 counts only a replay of live device exchanges recorded by the configurator itself: a replay of
+    # supplied or relabelled exchanges reached no recorded device connection, and a check that recorded neither
+    # establishes no replay.
+    replayed = passed and kind == REPLAYED and recorded_live
+    shown_kind = SUPPLIED if (passed and kind == REPLAYED and not recorded_live) else kind
     operations, live = _fresh_reuse(package, [e for e in events if mine(e)], [e for e in started if mine(e)], grants,
                                     unreachable)
     mission = {**operations, 'diff': live,
@@ -947,7 +1044,7 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
     else:
         if passed:
             reason = ('the emitted package passed emit_check without a replay of the recorded device exchanges'
-                      + (' (' + kind + ')' if kind else ''))
+                      + (' (' + shown_kind + ')' if shown_kind else ''))
         elif packages:
             reason = ('the emitted package has no passed emit_check' if frozen else
                       str(len(packages)) + ' emitted packages; no single driver to judge')
@@ -970,7 +1067,7 @@ def _self_evidence(accepted, events, started=(), assignments=(), grants=None, un
         equivalent = None if unprobed and passed else False
         replay_passed = None if equivalent is None else False
     replay = {'id': 'emitted_package_replay', 'passed': replay_passed, **({'package': frozen} if frozen else {}),
-              'basis': 'emit_check' + (' ' + kind if kind else '') + ', run by the configurator at emit'}
+              'basis': 'emit_check' + (' ' + shown_kind if shown_kind else '') + ', run by the configurator at emit'}
     return {'equivalent': equivalent, 'basis': 'self-evidence', 'checks': [replay], 'diff': diff, 'mission': mission}
 
 
@@ -2567,6 +2664,11 @@ class Controller:
             candidates, unobserved, gone = _observed_packages(
                 named, built, given, 'not built by emit_package or given to emit_check through the configurator')
             dropped += gone
+            with self._db() as db:
+                finished_rows = db.execute(
+                    "SELECT payload FROM events WHERE run_id=? AND kind='tool.finished' ORDER BY seq",
+                    (run_dir.name,)).fetchall()
+            live_probes = _recorded_live_probes([json.loads(row['payload']) for row in finished_rows])
             verified, rejected = [], []
             for package in candidates:
                 # The check's own records go outside the worker's workspace, so nothing the worker leaves there can
@@ -2593,9 +2695,14 @@ class Controller:
                 replayed=result.get('replay_status')=='passed'
                 if result.get('ok') and result.get('_exit',0)==0 and result.get('integrity_ok') and replayed:
                     selected.append(str(package))
-                    # A package replays the exchanges it bundles, which are device exchanges only when its probe
-                    # evidence was recorded live.
-                    verified.append(REPLAYED if result.get('source_evidence_kind') == 'live' else SUPPLIED)
+                    # A package replays recorded device exchanges only when its bundled probe bytes match a
+                    # successful live probe_run recorded by the configurator itself, never a relabelled probe file.
+                    evidence_sha = result.get('evidence_sha256')
+                    if evidence_sha is None:
+                        evidence_sha = _frozen_package({'path': str(package), 'sha256': digest(package)}).get('evidence_sha256')
+                    recorded_live = (result.get('source_evidence_kind') == 'live'
+                                     and isinstance(evidence_sha, str) and evidence_sha in live_probes)
+                    verified.append(REPLAYED if recorded_live else SUPPLIED)
                 else:
                     why = _emit_check_failure(result)
                     rejected.append({'package': package.name, 'reason': why})

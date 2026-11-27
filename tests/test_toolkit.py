@@ -347,6 +347,22 @@ print(json.dumps({'_exit': 0}))
                 self.assertTrue(res["available"], res)
                 self.assertTrue(any("read-flash" in c for c in cmds), cmds)
 
+        # Documented ESP32-S2 package variants and esptool 5 "Chip type:" output -> modern unlocked dumps.
+        modern_unlocked = "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"
+        for label, chip_line in (
+                ("esptool 4 ESP32-S2FNR2", "Chip is ESP32-S2FNR2 (revision v0.0)"),
+                ("esptool 4 ESP32-S2FH2", "Chip is ESP32-S2FH2 (revision v1.0)"),
+                ("esptool 4 ESP32-S2FH4", "Chip is ESP32-S2FH4 (revision v1.0)"),
+                ("esptool 4 ESP32-S2FN4R2", "Chip is ESP32-S2FN4R2 (revision v1.0)"),
+                ("esptool 4 ESP32-S2R2", "Chip is ESP32-S2R2 (revision v0.0)"),
+                ("esptool 5 Chip type S3", "Detecting chip type... ESP32-S3\nChip type:      ESP32-S3 (QFN56) (revision v0.2)"),
+                ("esptool 5 Chip type S2FH2", "Chip type: ESP32-S2FH2 (revision v1.0)")):
+            with self.subTest(label):
+                res, cmds = run_case(chip_line, modern_unlocked)
+                self.assertTrue(res["available"], res)
+                self.assertNotEqual(res["chip"], "unknown", res)
+                self.assertTrue(any("read-flash" in c for c in cmds), cmds)
+
         # Missing expected fields or unrecognized chip -> protection unknown, exit 1, no dump.
         for label, chip_line, fuses in (
                 ("esp32 missing classic fields", "Chip is ESP32-D0WD-V3 (revision v3.0)",
@@ -355,7 +371,10 @@ print(json.dumps({'_exit': 0}))
                 ("esp32s3 unreadable field", "Chip is ESP32-S3 (QFN56)",
                  "SPI_BOOT_CRYPT_CNT = ???\nSECURE_BOOT_EN = False\n"),
                 ("unrecognized chip", "Chip is ESP32-X99 (rev 1)",
-                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n")):
+                 "SPI_BOOT_CRYPT_CNT = Disable\nSECURE_BOOT_EN = False\n"),
+                ("esptool 5 unrecognized chip", "Chip type: ESP32-X99 (rev 1)", modern_unlocked),
+                ("unrecognized S2 suffix", "Chip is ESP32-S2BOGUS (rev 1)", modern_unlocked),
+                ("missing chip line", "Detecting chip type... failed", modern_unlocked)):
             with self.subTest(label):
                 res, cmds = run_case(chip_line, fuses)
                 self.assertFalse(res["available"], res)

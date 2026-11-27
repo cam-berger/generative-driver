@@ -1,8 +1,10 @@
 """External scripted processes exercise adapter contracts, never model performance."""
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 import time
 
@@ -239,6 +241,103 @@ time.sleep(30)
                     {'runtime': 'codex', 'command': [sys.executable, str(flood)]})
             self.assertEqual((result['status'], result['cause']), ('failed', 'output_limit'), result)
             self.assertLess(time.monotonic() - started, 5, 'single line without newline waited instead of hitting limit')
+
+    def test_large_prompt_never_deadlocks_chatty_worker_and_honors_budget(self):
+        from generative_driver import agents
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            big_prompt = 'P' * (512 * 1024)
+            # Subtest 1: worker floods stdout (> _QUEUE_MAX lines and pipe buffer) before reading a 512 KiB prompt.
+            chatty = root / 'chatty.py'
+            chatty.write_text('''import json, sys
+for i in range(500):
+    print(json.dumps({'type': 'chat', 'i': i, 'pad': 'x' * 512}), flush=True)
+data = sys.stdin.read()
+print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': str(len(data))}}), flush=True)
+''', encoding='utf-8')
+            outcome = {}
+            def run_chatty():
+                try:
+                    outcome['result'] = agents.execute(
+                        agents.StageRequest(stage='interpret', workspace=root / 'chatty', prompt=big_prompt,
+                                            budget_seconds=15, report_required=False),
+                        {'runtime': 'codex', 'command': [sys.executable, str(chatty)]})
+                except BaseException as exc:
+                    outcome['error'] = exc
+            t = threading.Thread(target=run_chatty, daemon=True)
+            t.start()
+            t.join(5)
+            self.assertFalse(t.is_alive(), 'execute() deadlocked writing a large prompt to a chatty worker')
+            self.assertNotIn('error', outcome)
+            self.assertEqual(outcome['result']['status'], 'completed', outcome['result'])
+            self.assertEqual(outcome['result']['final_text'], str(len(big_prompt)))
+
+            # Subtest 2: worker never reads stdin; budget must still fire promptly despite large prompt.
+            deaf = root / 'deaf.py'
+            deaf.write_text('import time\ntime.sleep(30)\n', encoding='utf-8')
+            outcome2 = {}
+            started = time.monotonic()
+            def run_deaf():
+                try:
+                    outcome2['result'] = agents.execute(
+                        agents.StageRequest(stage='interpret', workspace=root / 'deaf', prompt=big_prompt,
+                                            budget_seconds=0.5, report_required=False),
+                        {'runtime': 'codex', 'command': [sys.executable, str(deaf)]})
+                except BaseException as exc:
+                    outcome2['error'] = exc
+            t2 = threading.Thread(target=run_deaf, daemon=True)
+            t2.start()
+            t2.join(4)
+            self.assertFalse(t2.is_alive(), 'execute() hung in stdin.write instead of enforcing budget')
+            self.assertEqual((outcome2['result']['status'], outcome2['result']['cause']),
+                             ('blocked', 'run_budget'), outcome2['result'])
+            self.assertLess(time.monotonic() - started, 4)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process-group teardown after leader exit')
+    def test_exited_leader_with_live_posix_descendant_is_terminated_on_callback_error(self):
+        from generative_driver import agents
+        from interpret_task_fixtures import gone
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            child_pid_file = root / 'child.pid'
+            worker = root / 'leader.py'
+            worker.write_text(f'''import json, os, subprocess, sys
+child_code = """import json, os, pathlib, sys, time
+pathlib.Path({str(child_pid_file)!r}).write_text(str(os.getpid()), encoding='utf-8')
+time.sleep(0.25)
+print(json.dumps({{'type': 'from_child'}}), flush=True)
+time.sleep(30)
+"""
+subprocess.Popen([sys.executable, '-c', child_code], stdin=subprocess.DEVNULL)
+os._exit(0)
+''', encoding='utf-8')
+            outcome = {}
+            def boom(event):
+                if event.get('type') == 'from_child':
+                    raise RuntimeError('callback boom after leader exited')
+            def run():
+                try:
+                    agents.execute(
+                        agents.StageRequest(stage='interpret', workspace=root / 'leader', prompt='hi',
+                                            budget_seconds=15, report_required=False),
+                        {'runtime': 'codex', 'command': [sys.executable, str(worker)]},
+                        on_event=boom)
+                except BaseException as exc:
+                    outcome['error'] = exc
+            t = threading.Thread(target=run, daemon=True)
+            t.start()
+            t.join(3)
+            try:
+                self.assertFalse(t.is_alive(), 'execute() hung closing pipe held by descendant after leader exited')
+                self.assertIsInstance(outcome.get('error'), RuntimeError, outcome)
+                self.assertTrue(gone(int(child_pid_file.read_text(encoding='utf-8')), seconds=3),
+                                'descendant process survived callback failure after leader exited')
+            finally:
+                if child_pid_file.is_file():
+                    try:
+                        os.kill(int(child_pid_file.read_text(encoding='utf-8')), 9)
+                    except OSError:
+                        pass
 
 
 if __name__ == '__main__':

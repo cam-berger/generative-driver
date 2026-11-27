@@ -341,24 +341,41 @@ def execute(request, config, cancel_event=None, on_event=None):
         if (isinstance(item, dict) and item.get('type') == 'agent_message'
                 and event.get('type') == 'item.completed' and isinstance(item.get('text'), str)):
             text_parts.append(item['text'])
+    def writer():
+        try:
+            for offset in range(0, len(prompt), _CHUNK_BYTES):
+                if stop_reading.is_set():
+                    break
+                proc.stdin.write(prompt[offset:offset + _CHUNK_BYTES])
+                proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        finally:
+            with contextlib.suppress(OSError, ValueError):
+                proc.stdin.close()
+    io_threads = []
+    terminated = False
+    exited_cleanly = False
     try:
         for channel, stream in (('out', proc.stdout), ('err', proc.stderr)):
-            threading.Thread(target=reader, args=(stream, channel), daemon=True).start()
-        try:
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
+            t = threading.Thread(target=reader, args=(stream, channel), daemon=True)
+            t.start()
+            io_threads.append((t, stream))
+        prompt_writer = threading.Thread(target=writer, daemon=True)
+        prompt_writer.start()
+        io_threads.append((prompt_writer, proc.stdin))
         with transcript.open('w', encoding='utf-8') as transcript_file, stderr_path.open('w', encoding='utf-8') as stderr_file:
             while len(done) < 2 or proc.poll() is None:
                 if cancel_event and cancel_event.is_set():
                     outcome = ('cancelled', 'Run cancelled; external worker stopped', 'cancelled')
                     stop_reading.set()
+                    terminated = True
                     _terminate(proc)
                     break
                 if time.monotonic() - started > request.budget_seconds:
                     outcome = ('blocked', 'Stage exhausted the remaining run time budget', 'run_budget')
                     stop_reading.set()
+                    terminated = True
                     _terminate(proc)
                     break
                 try:
@@ -375,6 +392,7 @@ def execute(request, config, cancel_event=None, on_event=None):
                 if size > OUTPUT_LIMIT_BYTES:
                     outcome = ('failed', 'External worker output exceeded 32 MiB', 'output_limit')
                     stop_reading.set()
+                    terminated = True
                     _terminate(proc)
                     break
                 if channel == 'err':
@@ -386,12 +404,17 @@ def execute(request, config, cancel_event=None, on_event=None):
                     handle_stdout_line(''.join(out_buf), transcript_file)
                     out_buf.clear()
         result.update(exit_code=proc.wait(), elapsed_seconds=time.monotonic() - started)
+        exited_cleanly = outcome is None and len(done) == 2
     finally:
         stop_reading.set()
         if proc.poll() is None:
             _terminate(proc)
-        for pipe in (proc.stdin, proc.stdout, proc.stderr):
-            if pipe is not None:
+        elif os.name != 'nt' and not terminated and (not exited_cleanly or len(done) < 2):
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+        for t, pipe in io_threads:
+            t.join(timeout=1.0)
+            if not t.is_alive() and pipe is not None:
                 with contextlib.suppress(OSError, ValueError):
                     pipe.close()
     if outcome:

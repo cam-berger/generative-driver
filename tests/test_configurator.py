@@ -1572,7 +1572,16 @@ class FinalVerdictTests(unittest.TestCase):
         # The package is emitted before the toolkit is scripted; the scripted emit_package hands out its bytes.
         built = tempfile.TemporaryDirectory()
         emitted = thermometer_package(built.name, operations=operations, channel=channel, probed=probed)
+        emitted_model = emitted / 'drivers' / 'scripted_thermometer.json'
+        emitted_probe = emitted / 'evidence' / 'scripted_thermometer.probe.json'
+        emitted_probe_data = json.loads(emitted_probe.read_text(encoding='utf-8'))
         def fake_call_tool(name, arguments):
+            if name == 'probe_run':
+                target = Path(arguments['run_dir']) / 'probe' / 'interface-1.json'
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(emitted_probe, target)
+                return {'ok': True, '_exit': 0, 'probe': str(target), 'evidence_kind': 'live',
+                        'results': emitted_probe_data['results']}
             if name == 'emit_package':
                 package = Path(shutil.copytree(emitted, Path(arguments['run_dir']) / 'package'))
                 return {'ok': True, '_exit': 0, 'package_dir': str(package), 'manifest_sha256': digest(package / 'manifest.json')}
@@ -1587,7 +1596,8 @@ class FinalVerdictTests(unittest.TestCase):
                 passed = replay in ('passed', 'supplied')
                 return {'ok': passed, '_exit': 0 if passed else 1, 'integrity_ok': True,
                         'replay_status': 'passed' if passed else replay,
-                        'source_evidence_kind': 'replay' if replay == 'supplied' else 'live'}
+                        'source_evidence_kind': 'replay' if replay == 'supplied' else 'live',
+                        'evidence_sha256': digest(emitted_probe)}
             raise AssertionError('Unexpected tool ' + name)
         def invoke_package(package, pin, operation, parameters, binding, effects):
             result = next(results)
@@ -1597,6 +1607,8 @@ class FinalVerdictTests(unittest.TestCase):
         def prepare(original, spec, stage, run_dir, workspace, accepted):
             if stage == 'acquire' and listen is not None:
                 return {'inputs': [], 'allowed_tools': ['acquire_serial_listen']}
+            if stage == 'probe' and replay == 'passed':
+                return {'inputs': [], 'allowed_tools': ['probe_run']}
             return original(spec, stage, run_dir, workspace, accepted) if stage in ('emit', 'reuse') else {'inputs': [], 'allowed_tools': []}
         def check(spec, stage, run_dir, workspace, report, accepted, assignment):
             if stage in ('emit', 'reuse'):
@@ -1609,6 +1621,12 @@ class FinalVerdictTests(unittest.TestCase):
                                              'arguments': {'seconds': 0} if listen == 'bad-arguments' else {}})
                 except (RuntimeError, OSError):
                     pass
+            if request.stage == 'probe' and replay == 'passed':
+                workspace = Path(request.workspace)
+                model_dir = workspace / 'model'; model_dir.mkdir(exist_ok=True)
+                shutil.copyfile(emitted_model, model_dir / 'model.json')
+                controller.call('tool', {**gateway_identity(request), 'name': 'probe_run', 'arguments': {
+                    'model_dir': str(model_dir), 'operation': emitted_probe_data['operation']}})
             if request.stage == 'emit':
                 workspace = Path(request.workspace)
                 controller.call('tool', {**gateway_identity(request), 'name': 'emit_package', 'arguments': {
@@ -2608,7 +2626,8 @@ class FinalVerdictTests(unittest.TestCase):
             self.assertEqual((facts['probed_operation'], facts['replayed_function']), ('read_temperature', True))
             # Nothing of a package's own command line or of an earlier format is among the facts.
             self.assertEqual(set(facts), {'sha256', 'manifest_sha256', 'tools', 'identity', 'effects', 'resets_on_open',
-                                          'functions', 'probed_operation', 'replayed_function'})
+                                          'functions', 'probed_operation', 'replayed_function', 'evidence_sha256',
+                                          'operations', 'identity_requests'})
             real_digest = runtime_package.digest
             def unreadable(path):
                 if Path(path).parent.name == 'drivers':
@@ -3551,6 +3570,123 @@ class RealToolVerdictTests(unittest.TestCase):
             self.assertEqual((result['status'], eq['equivalent']), ('completed', None), eq)
             self.assertEqual(eq['diff'], [{'id': 'emitted_package_replay', 'reason': REPLAY_UNGRANTED}])
             self.assertIsNone(eq['mission']['passed'], eq['mission'])
+
+    def test_relabelled_or_fabricated_live_probe_is_never_counted_as_recorded_live_evidence(self):
+        """A probe file whose evidence_kind was edited to 'live' (or fabricated) was never recorded by the
+        configurator on its device connection: emit records SUPPLIED and the verdict is not equivalent."""
+        from generative_driver.configurator import REPLAYED, SUPPLIED, _self_evidence, digest
+        from generative_driver.toolkit import call_tool
+        rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model = root / 'model'; model.mkdir()
+            (model / 'model.json').write_text(json.dumps(thermometer_model()))
+            replay = root / 'replay.json'
+            replay.write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
+                {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000},
+                {'tx_hex': b'T\n'.hex(), 'rx_hex': b'21.5\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+            supplied = call_tool('probe_run', {'run_dir': str(root / 'supplied'), 'model_dir': str(model),
+                                               'operation': 'read_temperature', 'n': 1, 'replay': str(replay)})
+            self.assertEqual((supplied['_exit'], supplied['evidence_kind']), (0, 'replay'), supplied)
+            relabelled = json.loads(Path(supplied['probe']).read_text(encoding='utf-8'))
+            relabelled['evidence_kind'] = 'live'
+            relabelled['timing_policy'] = 'real'
+
+            def emit_relabelled(call, model_dir, record, workspace):
+                forged = workspace / 'forged-live-probe.json'
+                forged.write_text(json.dumps(relabelled, indent=2), encoding='utf-8')
+                return call('emit_package', model_dir=str(model_dir), probe_json=str(forged))['package_dir']
+
+            # Even when probe stage only ran identify live, relabelling a replay read_temperature probe as live fails.
+            result, _ = self.run_generic(root / 'home', self.reads, emit=emit_relabelled, probe_operation='identify')
+            eq = result['equivalence']
+            self.assertEqual((result['status'], eq['equivalent']), ('completed', False), eq)
+            emit_handoff = next(h for h in result['accepted_handoffs'] if h['stage'] == 'emit')
+            check = next(c for c in emit_handoff['checks'] if c['name'] == 'package_integrity_and_replay')
+            self.assertEqual(check.get('verified_by'), [SUPPLIED], check)
+            self.assertEqual(eq['diff'], [{'id': 'emitted_package_replay', 'reason': 'the emitted package passed '
+                             'emit_check without a replay of the recorded device exchanges (' + SUPPLIED + ')'}])
+
+            # Defense-in-depth: _self_evidence refuses REPLAYED when events contain no matching recorded live probe.
+            pkg = thermometer_package(root / 'pkg')
+            fake_emit = {'stage': 'emit', 'revision': 0, 'artifacts': [{'path': str(pkg), 'sha256': digest(pkg)}],
+                         'checks': [{'name': 'package_integrity_and_replay', 'passed': True, 'verified_by': [REPLAYED]}]}
+            direct = _self_evidence([fake_emit], [])
+            self.assertIs(direct['equivalent'], False, direct)
+
+    def test_encoded_identity_aliases_and_zero_param_identity_replays_are_not_functions(self):
+        """Steps are compared by the encoded bytes reaching the device, not raw tx token lists."""
+        from generative_driver.configurator import REPLAY_IDENTITY_ONLY, _frozen_package, digest
+        rx = {'mode': 'until', 'delimiter_hex': '0a', 'max_bytes': 64}
+        cases = (
+            ('split text', {}, [{'text': 'ID'}, {'text': '\n'}]),
+            ('hex bytes', {}, [{'hex': b'ID\n'.hex()}]),
+            ('mixed text and hex', {}, [{'text': 'I'}, {'hex': '44'}, {'text': '\n'}]),
+            ('single-value string enum param', {'ch': {'type': 'string', 'enum': ['D']}},
+             [{'text': 'I'}, {'arg': 'ch', 'format': 'ascii'}, {'text': '\n'}]),
+        )
+        for label, params, tx in cases:
+            model = thermometer_model()
+            model['operations']['alias_id'] = {
+                'effect': 'read', 'parameters': params, 'outputs': {},
+                'steps': [{'op': 'exchange', 'tx': tx, 'rx': rx, 'timeout_ms': 1000}],
+            }
+            model['provenance'].append({'item': 'operations.alias_id', 'source': 'scripted fixture'})
+            with self.subTest(alias=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                # Build package directly and inspect _frozen_package static functions.
+                pkg = thermometer_package(root / 'pkg', operations={
+                    'identify': model['operations']['identify'],
+                    'read_temperature': model['operations']['read_temperature'],
+                    'alias_id': model['operations']['alias_id'],
+                }, probed='identify')
+                frozen = _frozen_package({'path': str(pkg), 'sha256': digest(pkg)}, strict=True)
+                self.assertEqual(frozen['functions'], ['read_temperature'], (label, frozen))
+
+        # Parameterless split-text alias probed live must still be judged not equivalent (REPLAY_IDENTITY_ONLY).
+        split_model = thermometer_model()
+        split_model['operations']['alias_id'] = {
+            'effect': 'read', 'parameters': {}, 'outputs': {},
+            'steps': [{'op': 'exchange', 'tx': [{'text': 'ID'}, {'text': '\n'}], 'rx': rx, 'timeout_ms': 1000}],
+        }
+        split_model['provenance'].append({'item': 'operations.alias_id', 'source': 'scripted fixture'})
+        with tempfile.TemporaryDirectory() as directory:
+            result, _ = self.run_generic(Path(directory) / 'home', self.reads, model=split_model,
+                                         probe_operation='alias_id')
+            self.assertEqual((result['status'], result['equivalence']['equivalent']), ('completed', False), result)
+            self.assertEqual(result['equivalence']['diff'],
+                             [{'id': 'emitted_package_replay', 'reason': REPLAY_IDENTITY_ONLY}])
+
+        # Multi-valued parameter op: probing with pad='' sends identity bytes (not a replayed function), while
+        # probing with pad='31' sends distinct bytes (is a replayed function).
+        from generative_driver.toolkit import call_tool
+        param_model = thermometer_model()
+        param_model['operations']['echo_id'] = {
+            'effect': 'read', 'parameters': {'pad': {'type': 'bytes', 'min_length': 0, 'max_length': 2}},
+            'outputs': {}, 'steps': [{'op': 'exchange', 'tx': [{'text': 'ID'}, {'arg': 'pad', 'format': 'raw'}, {'text': '\n'}],
+                                      'rx': rx, 'timeout_ms': 1000}],
+        }
+        param_model['provenance'].append({'item': 'operations.echo_id', 'source': 'scripted fixture'})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mdir = root / 'model'; mdir.mkdir()
+            (mdir / 'model.json').write_text(json.dumps(param_model))
+            for pad_hex, expected_replayed in (('', False), ('31', True)):
+                with self.subTest(pad_hex=pad_hex):
+                    tx_bytes = b'ID' + bytes.fromhex(pad_hex) + b'\n'
+                    rfile = root / f'replay-{pad_hex or "empty"}.json'
+                    rfile.write_text(json.dumps({'schema': 'interface-replay/1', 'transactions': [
+                        {'tx_hex': b'ID\n'.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000},
+                        {'tx_hex': tx_bytes.hex(), 'rx_hex': b'THERMO-1\n'.hex(), 'rx': rx, 'timeout_ms': 1000}]}))
+                    probe = call_tool('probe_run', {'run_dir': str(root / 'run'), 'model_dir': str(mdir),
+                                                    'operation': 'echo_id', 'parameters': {'pad': pad_hex},
+                                                    'n': 1, 'replay': str(rfile)})
+                    self.assertEqual(probe['_exit'], 0, probe)
+                    pkg = call_tool('emit_package', {'run_dir': str(root / 'run'), 'model_dir': str(mdir),
+                                                     'probe_json': probe['probe']})['package_dir']
+                    frozen = _frozen_package({'path': pkg, 'sha256': digest(pkg)}, strict=True)
+                    self.assertIn('echo_id', frozen['functions'])
+                    self.assertIs(frozen['replayed_function'], expected_replayed, frozen)
 
 
 class ConfiguratorTests(unittest.TestCase):

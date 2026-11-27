@@ -374,6 +374,70 @@ class OneFormatTests(unittest.TestCase):
         self.assertEqual(outcome["results"][-1]["error"]["code"], "close_error", outcome["results"][-1])
         self.assertEqual(outcome["results"][-1]["error"]["fault"], "host", outcome["results"][-1])
 
+    def test_check_probe_accepts_legacy_transcripts_without_dispatched_and_keeps_current_probes_exact(self):
+        import copy
+        from interface_runtime.evidence import check_probe, run_samples
+        model = one_format_model()
+        # Include a delay step so delay vs non-delay legacy handling is exercised too.
+        model["operations"]["identify"]["steps"].append({"op": "delay", "ms": 1})
+        lines = model["operations"]["identify"]["steps"][0]["rx"]
+        frame = model["operations"]["status"]["steps"][0]["rx"]
+        request = b"\x02\x31"
+        body = b"\x02\x91\x8b\x00"
+        status_tx = b"\x35\x7a" + request + binascii.crc_hqx(request, 0xffff).to_bytes(2, "big")
+        status_rx = b"\x7a\x35" + body + binascii.crc_hqx(body, 0xffff).to_bytes(2, "big")
+        replay = {"schema": "interface-replay/1", "transactions": [
+            {"tx_hex": b"ID\n".hex(), "rx_hex": b"FAMILY:TOY-ALL\nREADY\n".hex(), "rx": lines, "timeout_ms": 1000},
+            {"tx_hex": status_tx.hex(), "rx_hex": status_rx.hex(), "rx": frame, "timeout_ms": 1000}]}
+        sample = run_samples(model, "status", replay=replay)
+        self.assertTrue(sample["ok"], sample)
+        sha = "0" * 64
+        current = {"schema": "interface-probe/1", "model_sha256": sha, "operation": "status",
+                   "parameters": {}, "allow_effects": [], **sample}
+        self.assertTrue(check_probe(model, current, sha)["ok"])
+
+        # Legacy probe recorded before `dispatched` existed: no transcript step carries `dispatched`.
+        legacy = copy.deepcopy(current)
+        for res in legacy["results"]:
+            for step in res["transcript"]:
+                step.pop("dispatched", None)
+        checked_legacy = check_probe(model, legacy, sha)
+        self.assertTrue(checked_legacy["ok"], checked_legacy)
+
+        # Current probes keep exact comparison: missing on only one step, false dispatched, or dispatched on delay fail.
+        partial = copy.deepcopy(current)
+        partial["results"][0]["transcript"][0].pop("dispatched")
+        self.assertFalse(check_probe(model, partial, sha)["ok"])
+
+        false_dispatched = copy.deepcopy(current)
+        false_dispatched["results"][0]["transcript"][0]["dispatched"] = False
+        self.assertFalse(check_probe(model, false_dispatched, sha)["ok"])
+
+        delay_dispatched = copy.deepcopy(current)
+        delay_step = next(s for s in delay_dispatched["results"][0]["transcript"] if s["op"] == "delay")
+        delay_step["dispatched"] = True
+        self.assertFalse(check_probe(model, delay_dispatched, sha)["ok"])
+
+    def test_resetting_uart_closes_session_when_interrupted_and_preserves_interrupt(self):
+        from unittest.mock import patch
+        from interface_runtime.evidence import run_samples
+        model = one_format_model()
+        model["channel"] = {"type": "uart", "baudrate": 115200, "resets_on_open": True}
+        for close_raises in (False, True):
+            with self.subTest(close_raises=close_raises):
+                closed = []
+                class InterruptHandle:
+                    def exchange(self, tx, rx, timeout_ms):
+                        raise KeyboardInterrupt("user cancelled")
+                    def close(self):
+                        closed.append(True)
+                        if close_raises:
+                            raise OSError("close also failed")
+                with patch("interface_runtime.evidence.open_transport", lambda channel, binding: InterruptHandle()):
+                    with self.assertRaises(KeyboardInterrupt):
+                        run_samples(model, "identify", n=1, binding={"port": "/dev/fake"}, allow_effects=("reset",))
+                self.assertEqual(closed, [True])
+
 
 if __name__ == "__main__":
     unittest.main()

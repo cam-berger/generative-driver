@@ -174,11 +174,18 @@ def run_samples(model, operation, parameters=None, *, n=1, binding=None, allow_e
         from .faults import Fault
         session = Session(model, binding=binding, allow_effects=allow_effects, transport_factory=recorder,
                           delay_fn=(lambda seconds: None) if player is not None else None)
-        for _ in range(n):
-            result = session.execute(operation, parameters)
-            results.append(result)
-            if not result['ok']:
-                break
+        try:
+            for _ in range(n):
+                result = session.execute(operation, parameters)
+                results.append(result)
+                if not result['ok']:
+                    break
+        except BaseException:
+            try:
+                session.close()
+            except Exception:
+                pass
+            raise
         try:
             session.close()
         except Exception as exc:
@@ -216,6 +223,31 @@ def _without_notes(results):
     return out
 
 
+def _comparable_results(results):
+    """Results as replay can reproduce them: transport_notes are validated and set aside, and legacy probes recorded
+    before transcript entries carried `dispatched` (when no entry has the key) fill `dispatched: True` on non-delay
+    entries so existing probes stay replayable while current probes compare exactly."""
+    out = _without_notes(results)
+    has_dispatched = any(
+        type(step) is dict and 'dispatched' in step
+        for result in out if type(result) is dict and type(result.get('transcript')) is list
+        for step in result['transcript']
+    )
+    if has_dispatched:
+        return out
+    normalized = []
+    for result in out:
+        if type(result) is dict and type(result.get('transcript')) is list:
+            transcript = [
+                ({**step, 'dispatched': True}
+                 if type(step) is dict and 'op' in step and step['op'] != 'delay' else step)
+                for step in result['transcript']
+            ]
+            result = {**result, 'transcript': transcript}
+        normalized.append(result)
+    return normalized
+
+
 def check_probe(model, probe, model_sha256):
     """Replay is a consistency check, never evidence of a new physical observation."""
     defects = []
@@ -237,7 +269,7 @@ def check_probe(model, probe, model_sha256):
             raise ValueError('probe has no results')
         replayed = run_samples(model, probe['operation'], probe['parameters'], n=len(probe['results']),
             allow_effects=probe['allow_effects'], replay={'schema':'interface-replay/1','transactions':probe['transactions']})
-        if not replayed['ok'] or replayed['results'] != _without_notes(probe['results']):
+        if not replayed['ok'] or replayed['results'] != _comparable_results(probe['results']):
             raise ValueError('replayed outputs/transcripts differ from recorded probe')
     except (ValueError, TypeError, KeyError) as exc:
         defects.append({'where':'probe','what':str(exc)})

@@ -104,12 +104,27 @@ def _carve_app(flash, app):
     return True
 
 
-_ESP_MODERN_SUFFIXES = frozenset({'S2', 'S3', 'S31', 'C2', 'C3', 'C5', 'C6', 'C61', 'H2', 'H21', 'H4', 'P4'})
+_ESP_MODERN_SUFFIXES = frozenset({
+    'S2', 'S2FH2', 'S2FH4', 'S2FNR2', 'S2FN4R2', 'S2R2',
+    'S3', 'S31', 'C2', 'C3', 'C5', 'C6', 'C61', 'H2', 'H21', 'H4', 'P4',
+})
 _ESP_CLASSIC_PREFIXES = ('D0WD', 'D2WD', 'S0WD', 'U4WDH', 'PICO')
 _ESP_FUSES = {
     'classic': (('FLASH_CRYPT_CNT', 'crypt_cnt'), ('ABS_DONE_0', 'bool'), ('ABS_DONE_1', 'bool')),
     'modern': (('SPI_BOOT_CRYPT_CNT', 'crypt_cnt'), ('SECURE_BOOT_EN', 'bool')),
 }
+
+
+def _esp_chip_name(output):
+    """Parse the chip description from esptool 4 (`Chip is ...`) or esptool 5 (`Chip type: ...`) output."""
+    for line in output.splitlines():
+        if 'Chip is' in line:
+            parsed = line.split('Detecting chip type...')[-1].strip()
+            return parsed or line.strip()
+        match = re.match(r'^\s*Chip type:\s*(.+?)\s*$', line, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return 'unknown'
 
 
 def _esp_chip_family(chip):
@@ -215,8 +230,7 @@ def acquire_flash(run_dir, port, chunked=False, strip_app_desc=False, backend=No
         rc, o, e = core.sh([*esptool, "-p", port, *before, *stay, "chip-id"])
         if rc != 0:
             return ({"available": False, "reason": f"no controller answered on {port}", "_exit": 1})
-        chip = next((l.split("Detecting chip type...")[-1].strip() for l in o.splitlines() if "Chip is" in l), None) \
-            or next((l.strip() for l in o.splitlines() if "Chip is" in l), "unknown")
+        chip = _esp_chip_name(o)
         mac = next((l.split()[-1] for l in o.splitlines() if l.startswith("MAC:")), None)
         rc2, fo, fe = core.sh([*espefuse, "-p", port, *before, "summary"])
         if rc2 != 0:

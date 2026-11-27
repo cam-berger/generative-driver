@@ -360,6 +360,7 @@ def _check_copy(pkg, checked, expected_manifest_sha256):
     return {'ok':compared['ok'],'defects':compared['defects'],'integrity_ok':True,
             'replay_status':'passed' if compared['ok'] else 'failed','evidence_kind':'replay',
             'source_evidence_kind':compared['source_evidence_kind'],
+            'evidence_sha256':checked['manifest']['files'][entry['evidence']],
             'manifest_pin_verified':expected_manifest_sha256 is not None,'_exit':0 if compared['ok'] else 1}
 
 
